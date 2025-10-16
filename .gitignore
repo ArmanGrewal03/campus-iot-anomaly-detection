@@ -15,3 +15,9 @@ $RECYCLE.BIN/
 *.tmp
 *.log
 
+# Ignore virtual environment directories
+venv/
+env/
+.venv/
+ENV/
+
