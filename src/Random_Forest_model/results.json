@@ -1,0 +1,461 @@
+{
+  "results": [
+    {
+      "event_id": "evt-000",
+      "anomaly_score": 0.01,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-001",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-002",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-003",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-004",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-005",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-006",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-007",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-008",
+      "anomaly_score": 0.005,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-009",
+      "anomaly_score": 0.005,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-010",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-011",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-012",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-013",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-014",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-015",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-016",
+      "anomaly_score": 0.01,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-017",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-018",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-019",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-020",
+      "anomaly_score": 0.02,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-021",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-022",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-023",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-024",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-025",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-026",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-027",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-028",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-029",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-030",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-031",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-032",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-033",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-034",
+      "anomaly_score": 0.02,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-035",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-036",
+      "anomaly_score": 0.025,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-037",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-038",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-039",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-040",
+      "anomaly_score": 0.01,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-041",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-042",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-043",
+      "anomaly_score": 0.005,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-044",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-045",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-046",
+      "anomaly_score": 0.71,
+      "anomaly_flag": 1,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-047",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-048",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-049",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-050",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-051",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-052",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-053",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-054",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-055",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-056",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-057",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-058",
+      "anomaly_score": 0.065,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-059",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-060",
+      "anomaly_score": 1.0,
+      "anomaly_flag": 1,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-061",
+      "anomaly_score": 0.975,
+      "anomaly_flag": 1,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-062",
+      "anomaly_score": 0.995,
+      "anomaly_flag": 1,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-063",
+      "anomaly_score": 0.915,
+      "anomaly_flag": 1,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    },
+    {
+      "event_id": "evt-064",
+      "anomaly_score": 0.955,
+      "anomaly_flag": 1,
+      "model_version": "rf-pseudolabel-v1.0",
+      "threshold": 0.7
+    }
+  ],
+  "model_version": "rf-pseudolabel-v1.0",
+  "threshold": 0.7
+}
