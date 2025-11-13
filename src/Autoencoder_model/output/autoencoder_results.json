@@ -1,0 +1,2007 @@
+{
+  "request_id": "autoencoder-test-001",
+  "model_version": "autoencoder-v1.0",
+  "threshold": 0.5608936546726586,
+  "results": [
+    {
+      "event_id": "evt-001000",
+      "anomaly_score": 0.0018651874017433594,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001001",
+      "anomaly_score": 0.00041602016565429753,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001002",
+      "anomaly_score": 0.00040878537776490594,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001003",
+      "anomaly_score": 4.601106542545211e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001004",
+      "anomaly_score": 0.00012166983422486343,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001005",
+      "anomaly_score": 0.00013827461924545778,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001006",
+      "anomaly_score": 0.0004487279150247292,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001007",
+      "anomaly_score": 0.006649172165728758,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001008",
+      "anomaly_score": 7.569824904061579e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001009",
+      "anomaly_score": 3.728862819277981e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001010",
+      "anomaly_score": 0.00021958859995177644,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001011",
+      "anomaly_score": 0.00031554554778952265,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001012",
+      "anomaly_score": 0.0024734471359273385,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001013",
+      "anomaly_score": 0.00050783556787729,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001014",
+      "anomaly_score": 0.0007652935249138238,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001015",
+      "anomaly_score": 8.540367347873843e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001016",
+      "anomaly_score": 0.01290167202922885,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001017",
+      "anomaly_score": 0.00044119332459404114,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001018",
+      "anomaly_score": 0.0001509121766540281,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001019",
+      "anomaly_score": 9.148602526786806e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001020",
+      "anomaly_score": 0.00020565937800932124,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001021",
+      "anomaly_score": 7.028672094247356e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001022",
+      "anomaly_score": 0.0019439483217182463,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001023",
+      "anomaly_score": 0.00033785310037694655,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001024",
+      "anomaly_score": 8.280626712791932e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001025",
+      "anomaly_score": 0.0003646354227519813,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001026",
+      "anomaly_score": 0.00010409937414987912,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001027",
+      "anomaly_score": 6.689853273610154e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001028",
+      "anomaly_score": 0.00011641113140254605,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001029",
+      "anomaly_score": 0.0015554015239671595,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001030",
+      "anomaly_score": 0.00014843450778551602,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001031",
+      "anomaly_score": 0.00018522237015302173,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001032",
+      "anomaly_score": 0.0008146926296964685,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001033",
+      "anomaly_score": 0.00011436808773491105,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001034",
+      "anomaly_score": 4.065849434747126e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001035",
+      "anomaly_score": 0.0001524616857187842,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001036",
+      "anomaly_score": 0.000715516995731905,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001037",
+      "anomaly_score": 3.197005866347103e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001038",
+      "anomaly_score": 0.00044335381110258604,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001039",
+      "anomaly_score": 0.00021393946397339295,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001040",
+      "anomaly_score": 0.001055299359930264,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001041",
+      "anomaly_score": 1.2176071804869844e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001042",
+      "anomaly_score": 0.0001619460968538318,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001043",
+      "anomaly_score": 0.0001388383752854992,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001044",
+      "anomaly_score": 0.0017495548117123227,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001045",
+      "anomaly_score": 0.251362063235664,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001046",
+      "anomaly_score": 0.00011956442182132305,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001047",
+      "anomaly_score": 5.62914027120959e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001048",
+      "anomaly_score": 0.00011964143667031836,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001049",
+      "anomaly_score": 3.653339179415943e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001050",
+      "anomaly_score": 1.1549514466504453e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001051",
+      "anomaly_score": 0.005538559289974106,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001052",
+      "anomaly_score": 0.0006030719429398917,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001053",
+      "anomaly_score": 0.00020138789787187673,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001054",
+      "anomaly_score": 0.001635424313285409,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001055",
+      "anomaly_score": 0.1537240114169939,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001056",
+      "anomaly_score": 0.0002444290301319031,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001057",
+      "anomaly_score": 0.0002710370231823727,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001058",
+      "anomaly_score": 5.887827022052642e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001059",
+      "anomaly_score": 0.00025607885738258097,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001060",
+      "anomaly_score": 0.00013877410968869404,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001061",
+      "anomaly_score": 0.00015650865412626566,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001062",
+      "anomaly_score": 0.09422132508197997,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001063",
+      "anomaly_score": 0.18282632424908318,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001064",
+      "anomaly_score": 0.00013674799848027928,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001065",
+      "anomaly_score": 0.00015897459771645954,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001066",
+      "anomaly_score": 0.0003377697862322449,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001067",
+      "anomaly_score": 2.9447990222456435e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001068",
+      "anomaly_score": 0.0003806869270128547,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001069",
+      "anomaly_score": 0.6594881847538345,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001070",
+      "anomaly_score": 9.736276687803789e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001071",
+      "anomaly_score": 0.007381059132680417,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001072",
+      "anomaly_score": 0.00022655644748586986,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001073",
+      "anomaly_score": 0.0003151984554612163,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001074",
+      "anomaly_score": 0.0001599696144905135,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001075",
+      "anomaly_score": 0.00011887848403246082,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001076",
+      "anomaly_score": 4.463365835932646e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001077",
+      "anomaly_score": 0.000189106587937052,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001078",
+      "anomaly_score": 0.00012420939049912475,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001079",
+      "anomaly_score": 0.0010497091270146445,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001080",
+      "anomaly_score": 0.0002699891830641057,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001081",
+      "anomaly_score": 0.00016833833166178357,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001082",
+      "anomaly_score": 0.21702365919933045,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001083",
+      "anomaly_score": 0.0005151451616182878,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001084",
+      "anomaly_score": 0.000741849021296867,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001085",
+      "anomaly_score": 0.0002606710615874831,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001086",
+      "anomaly_score": 0.0001880823757850986,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001087",
+      "anomaly_score": 0.0002942724638592539,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001088",
+      "anomaly_score": 0.00015016981459963757,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001089",
+      "anomaly_score": 0.0006504225248743349,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001090",
+      "anomaly_score": 0.00010245300960959401,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001091",
+      "anomaly_score": 0.001030178092071283,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001092",
+      "anomaly_score": 0.00011771038972240749,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001093",
+      "anomaly_score": 0.00574217287717465,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001094",
+      "anomaly_score": 0.00023304627516525247,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001095",
+      "anomaly_score": 0.000859917446331393,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001096",
+      "anomaly_score": 5.88637525616148e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001097",
+      "anomaly_score": 0.0004683574984524503,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001098",
+      "anomaly_score": 5.782737899988733e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001099",
+      "anomaly_score": 0.00017797489774104325,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001100",
+      "anomaly_score": 0.00012542311103645252,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001101",
+      "anomaly_score": 0.0001010041301068156,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001102",
+      "anomaly_score": 0.00013239179587929374,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001103",
+      "anomaly_score": 0.0027774063329722553,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001104",
+      "anomaly_score": 7.697793213759875e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001105",
+      "anomaly_score": 0.0005810618241656093,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001106",
+      "anomaly_score": 0.0004053756808882306,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001107",
+      "anomaly_score": 0.1020803569398864,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001108",
+      "anomaly_score": 0.04562473628563107,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001109",
+      "anomaly_score": 0.0007596665488920883,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001110",
+      "anomaly_score": 0.0005030309804854949,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001111",
+      "anomaly_score": 0.0005445419690939541,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001112",
+      "anomaly_score": 0.00015203784513541778,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001113",
+      "anomaly_score": 0.00018949518933190687,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001114",
+      "anomaly_score": 0.00029137846956850725,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001115",
+      "anomaly_score": 8.773944438097009e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001116",
+      "anomaly_score": 0.00031565639893820505,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001117",
+      "anomaly_score": 0.00045166989825842763,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001118",
+      "anomaly_score": 3.716512066280723e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001119",
+      "anomaly_score": 7.481910545526598e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001120",
+      "anomaly_score": 7.394474046918808e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001121",
+      "anomaly_score": 0.0001677600552141331,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001122",
+      "anomaly_score": 0.002235485604809882,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001123",
+      "anomaly_score": 0.0001501299534941916,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001124",
+      "anomaly_score": 0.0016021717475395633,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001125",
+      "anomaly_score": 0.0003175308579203314,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001126",
+      "anomaly_score": 0.000628907271485815,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001127",
+      "anomaly_score": 0.0004054441517670102,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001128",
+      "anomaly_score": 0.0001239273728282068,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001129",
+      "anomaly_score": 0.0013889926146935165,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001130",
+      "anomaly_score": 0.01223632031363942,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001131",
+      "anomaly_score": 0.00010959614863125204,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001132",
+      "anomaly_score": 0.0010626168850325264,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001133",
+      "anomaly_score": 7.478425813885409e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001134",
+      "anomaly_score": 0.00022700214098637112,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001135",
+      "anomaly_score": 0.000503556497083627,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001136",
+      "anomaly_score": 0.0001576950345440355,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001137",
+      "anomaly_score": 0.001849206083945993,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001138",
+      "anomaly_score": 0.04496580775722431,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001139",
+      "anomaly_score": 0.17012343209092978,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001140",
+      "anomaly_score": 0.0001454978919276047,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001141",
+      "anomaly_score": 0.04892769761368779,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001142",
+      "anomaly_score": 0.0001894388773610234,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001143",
+      "anomaly_score": 0.0002265595535498245,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001144",
+      "anomaly_score": 0.0002435656476445673,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001145",
+      "anomaly_score": 1.3691122681300057e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001146",
+      "anomaly_score": 0.0020044468388676177,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001147",
+      "anomaly_score": 0.0002724052214354123,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001148",
+      "anomaly_score": 0.00010485840519669012,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001149",
+      "anomaly_score": 0.0005985877180486335,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001150",
+      "anomaly_score": 0.00057059804988201,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001151",
+      "anomaly_score": 1.3514836772789264e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001152",
+      "anomaly_score": 0.0010992020976275457,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001153",
+      "anomaly_score": 6.584178246397638e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001154",
+      "anomaly_score": 8.800074070725429e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001155",
+      "anomaly_score": 0.00028988011482964764,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001156",
+      "anomaly_score": 0.0003490625975650147,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001157",
+      "anomaly_score": 0.00030054243789138455,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001158",
+      "anomaly_score": 0.0006292239919712618,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001159",
+      "anomaly_score": 0.0003011555010843544,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001160",
+      "anomaly_score": 0.0006652050866765845,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001161",
+      "anomaly_score": 0.00026229075983301214,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001162",
+      "anomaly_score": 0.0016482200721948171,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001163",
+      "anomaly_score": 0.00022438665683249869,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001164",
+      "anomaly_score": 0.0001224050665411421,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001165",
+      "anomaly_score": 0.00010936098938253088,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001166",
+      "anomaly_score": 0.000826464401770376,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001167",
+      "anomaly_score": 9.014710291917156e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001168",
+      "anomaly_score": 0.19042503605043568,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001169",
+      "anomaly_score": 0.00019516756854622382,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001170",
+      "anomaly_score": 0.0006507888631751865,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001171",
+      "anomaly_score": 0.00011972355005677243,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001172",
+      "anomaly_score": 0.00031810425202459194,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001173",
+      "anomaly_score": 0.00024645804045284904,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001174",
+      "anomaly_score": 8.443850771066303e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001175",
+      "anomaly_score": 0.0005329444118408986,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001176",
+      "anomaly_score": 5.3347828029123474e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001177",
+      "anomaly_score": 0.0002529167483996218,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001178",
+      "anomaly_score": 9.540204134649988e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001179",
+      "anomaly_score": 0.001503607105928283,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001180",
+      "anomaly_score": 3.2869036065630246e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001181",
+      "anomaly_score": 0.00023346835455221628,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001182",
+      "anomaly_score": 0.00023578483455925209,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001183",
+      "anomaly_score": 0.0005161126327352202,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001184",
+      "anomaly_score": 0.0012452323182857831,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001185",
+      "anomaly_score": 0.00028766617208714304,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001186",
+      "anomaly_score": 0.21322648632562277,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001187",
+      "anomaly_score": 9.499800051312637e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001188",
+      "anomaly_score": 0.000693473509083506,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001189",
+      "anomaly_score": 5.8653954754207717e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001190",
+      "anomaly_score": 0.00014639964816021419,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001191",
+      "anomaly_score": 0.0022733024170670047,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001192",
+      "anomaly_score": 0.0002324505544337471,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001193",
+      "anomaly_score": 0.0012806336972773372,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001194",
+      "anomaly_score": 0.00039180282240523784,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001195",
+      "anomaly_score": 0.03962775180652856,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001196",
+      "anomaly_score": 9.372405205095355e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001197",
+      "anomaly_score": 0.9439377332198801,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001198",
+      "anomaly_score": 0.00013306243559410008,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001199",
+      "anomaly_score": 0.0007586875144847114,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001200",
+      "anomaly_score": 0.0004451406884593933,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001201",
+      "anomaly_score": 0.00017836552802788085,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001202",
+      "anomaly_score": 2.7765713794551443e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001203",
+      "anomaly_score": 0.00010342101148365155,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001204",
+      "anomaly_score": 0.00018657108867728588,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001205",
+      "anomaly_score": 0.0016084372145978645,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001206",
+      "anomaly_score": 0.00022153757737062237,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001207",
+      "anomaly_score": 3.9189410403663074e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001208",
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001209",
+      "anomaly_score": 0.002137070202465943,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001210",
+      "anomaly_score": 0.00021689750621585943,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001211",
+      "anomaly_score": 0.0001167194230222355,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001212",
+      "anomaly_score": 0.00025368009628865196,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001213",
+      "anomaly_score": 0.0007118518506902368,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001214",
+      "anomaly_score": 6.573907318952805e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001215",
+      "anomaly_score": 0.0014224114680152823,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001216",
+      "anomaly_score": 0.00013360286323378553,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001217",
+      "anomaly_score": 0.0036137465646951666,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001218",
+      "anomaly_score": 0.0007050839419944701,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001219",
+      "anomaly_score": 0.0001480440345492461,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001220",
+      "anomaly_score": 0.00011960899482077492,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001221",
+      "anomaly_score": 0.0006232242054716592,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001222",
+      "anomaly_score": 0.0010010012830708609,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001223",
+      "anomaly_score": 0.04532563394999468,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001224",
+      "anomaly_score": 1.25376224204824e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001225",
+      "anomaly_score": 0.00011880663077749404,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001226",
+      "anomaly_score": 0.02070861958020323,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001227",
+      "anomaly_score": 0.03920334456702773,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001228",
+      "anomaly_score": 0.00015406832243776807,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001229",
+      "anomaly_score": 0.00010042597769838997,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001230",
+      "anomaly_score": 2.6012695014827355e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001231",
+      "anomaly_score": 5.043665969116509e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001232",
+      "anomaly_score": 0.00014977213697668813,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001233",
+      "anomaly_score": 0.00024466153750182904,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001234",
+      "anomaly_score": 0.0006572559746033973,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001235",
+      "anomaly_score": 0.06745668628750714,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001236",
+      "anomaly_score": 1.7186095277483058e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001237",
+      "anomaly_score": 0.0002160291980980215,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001238",
+      "anomaly_score": 3.8213561958832924e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001239",
+      "anomaly_score": 0.0003740823417937824,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001240",
+      "anomaly_score": 0.00016531900307314282,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001241",
+      "anomaly_score": 7.147454466905183e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001242",
+      "anomaly_score": 0.0005757347546454971,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001243",
+      "anomaly_score": 0.0863690419857858,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001244",
+      "anomaly_score": 0.0003013906659434557,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001245",
+      "anomaly_score": 0.0005295658822190598,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001246",
+      "anomaly_score": 0.0010501819582037861,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001247",
+      "anomaly_score": 0.00021536789791523698,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001248",
+      "anomaly_score": 0.001368966381082998,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001249",
+      "anomaly_score": 0.00041720471299155735,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001250",
+      "anomaly_score": 0.05449370629727863,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001251",
+      "anomaly_score": 0.00015556499207575883,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001252",
+      "anomaly_score": 0.0001237342785911209,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001253",
+      "anomaly_score": 0.00013911817918710678,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001254",
+      "anomaly_score": 0.10525622602340724,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001255",
+      "anomaly_score": 0.0006817459154058312,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001256",
+      "anomaly_score": 0.0002650069736012141,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001257",
+      "anomaly_score": 0.00019133362781050578,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001258",
+      "anomaly_score": 0.000771976142520391,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001259",
+      "anomaly_score": 0.0001469732510628858,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001260",
+      "anomaly_score": 0.001397687688723869,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001261",
+      "anomaly_score": 0.0006262677850492255,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001262",
+      "anomaly_score": 0.0001480439161030947,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001263",
+      "anomaly_score": 0.0001578875718551466,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001264",
+      "anomaly_score": 4.22592733170773e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001265",
+      "anomaly_score": 0.00029053034883313496,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001266",
+      "anomaly_score": 0.05003979565465611,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001267",
+      "anomaly_score": 0.0005831626311358015,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001268",
+      "anomaly_score": 0.0003381227347336904,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001269",
+      "anomaly_score": 6.082469174746317e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001270",
+      "anomaly_score": 0.00018069335141563997,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001271",
+      "anomaly_score": 4.6129027970668545e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001272",
+      "anomaly_score": 0.13399006265452051,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001273",
+      "anomaly_score": 0.00037368448759064396,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001274",
+      "anomaly_score": 0.017228914535980577,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001275",
+      "anomaly_score": 9.18488556773373e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001276",
+      "anomaly_score": 0.004465055972826379,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001277",
+      "anomaly_score": 0.0008444041162112428,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001278",
+      "anomaly_score": 7.603616469498417e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001279",
+      "anomaly_score": 0.0013755194102210418,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001280",
+      "anomaly_score": 0.0006518249104683181,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001281",
+      "anomaly_score": 7.902753077688888e-07,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001282",
+      "anomaly_score": 4.9223442337503214e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001283",
+      "anomaly_score": 6.345349686269726e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001284",
+      "anomaly_score": 0.00020090966486839052,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001285",
+      "anomaly_score": 0.00024317887349389365,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001286",
+      "anomaly_score": 0.0005689594792695951,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001287",
+      "anomaly_score": 0.004687633212621613,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001288",
+      "anomaly_score": 0.0020924982842008594,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001289",
+      "anomaly_score": 0.0002535976020560074,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001290",
+      "anomaly_score": 0.0007865059247539957,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001291",
+      "anomaly_score": 0.00014250283280585726,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001292",
+      "anomaly_score": 0.0002762334786531022,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001293",
+      "anomaly_score": 0.0003053940706624251,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001294",
+      "anomaly_score": 0.0004056547745089001,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001295",
+      "anomaly_score": 0.0005625895816966874,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001296",
+      "anomaly_score": 0.002119187960731492,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001297",
+      "anomaly_score": 0.18707384964070137,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001298",
+      "anomaly_score": 7.689878840349641e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001299",
+      "anomaly_score": 0.00047485824036151117,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001300",
+      "anomaly_score": 0.00011398436880500676,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001301",
+      "anomaly_score": 6.667548098333309e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001302",
+      "anomaly_score": 5.2295688492038995e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001303",
+      "anomaly_score": 0.0009122132031547809,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001304",
+      "anomaly_score": 0.00017397701499455732,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001305",
+      "anomaly_score": 7.453386550551967e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001306",
+      "anomaly_score": 0.00037867253742613125,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001307",
+      "anomaly_score": 0.000986475864490061,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001308",
+      "anomaly_score": 0.00024977317089088576,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001309",
+      "anomaly_score": 0.0006673543736805833,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001310",
+      "anomaly_score": 0.0002549823713649563,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001311",
+      "anomaly_score": 7.64347588351971e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001312",
+      "anomaly_score": 0.00019921111299102382,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001313",
+      "anomaly_score": 0.00025011141496005673,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001314",
+      "anomaly_score": 0.0005497245649906271,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001315",
+      "anomaly_score": 0.00019313059063241363,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001316",
+      "anomaly_score": 0.9999999999999963,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001317",
+      "anomaly_score": 0.05568185118309218,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001318",
+      "anomaly_score": 0.00016701343153098676,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001319",
+      "anomaly_score": 0.03368389567086225,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001320",
+      "anomaly_score": 0.0011617005495611372,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001321",
+      "anomaly_score": 0.00025768318927272144,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001322",
+      "anomaly_score": 0.0002777073955461977,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001323",
+      "anomaly_score": 0.0007844124365850135,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001324",
+      "anomaly_score": 8.084662760465269e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001325",
+      "anomaly_score": 0.0003674481392953326,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001326",
+      "anomaly_score": 0.0004179060477397429,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001327",
+      "anomaly_score": 0.0004384621423541875,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001328",
+      "anomaly_score": 0.00043254580384728767,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001329",
+      "anomaly_score": 0.0005987750553108886,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001330",
+      "anomaly_score": 0.0003843629239440091,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001331",
+      "anomaly_score": 0.00015480258459265014,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001332",
+      "anomaly_score": 0.0001909301129286004,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001333",
+      "anomaly_score": 0.00016898236069701184,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001334",
+      "anomaly_score": 0.20459168672810044,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001335",
+      "anomaly_score": 0.0002452467729347813,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001336",
+      "anomaly_score": 6.592783559469708e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001337",
+      "anomaly_score": 0.00013259401623015582,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001338",
+      "anomaly_score": 0.00029320621313552936,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001339",
+      "anomaly_score": 0.00022567361343257033,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001340",
+      "anomaly_score": 4.294744274166603e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001341",
+      "anomaly_score": 0.20161937220224668,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001342",
+      "anomaly_score": 0.0010478345432325263,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001343",
+      "anomaly_score": 4.3098456093174546e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001344",
+      "anomaly_score": 0.00026117555127921064,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001345",
+      "anomaly_score": 0.00038341949748820484,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001346",
+      "anomaly_score": 5.584735789335435e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001347",
+      "anomaly_score": 0.0002605954079494203,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001348",
+      "anomaly_score": 0.0007134117831007366,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001349",
+      "anomaly_score": 9.223313172425387e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001350",
+      "anomaly_score": 0.00045823428640146875,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001351",
+      "anomaly_score": 0.0006096822949922192,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001352",
+      "anomaly_score": 0.0004120487990102488,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001353",
+      "anomaly_score": 0.0002027847273084506,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001354",
+      "anomaly_score": 0.001536931051900813,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001355",
+      "anomaly_score": 0.0018016996967621295,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001356",
+      "anomaly_score": 5.800301095916837e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001357",
+      "anomaly_score": 5.316911079826196e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001358",
+      "anomaly_score": 0.0004717038740876561,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001359",
+      "anomaly_score": 0.0005430114054754751,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001360",
+      "anomaly_score": 0.000568716782417751,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001361",
+      "anomaly_score": 0.0004285939279479209,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001362",
+      "anomaly_score": 7.332231459841012e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001363",
+      "anomaly_score": 0.0005223835894084471,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001364",
+      "anomaly_score": 0.000301549174788774,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001365",
+      "anomaly_score": 0.0005557324783710216,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001366",
+      "anomaly_score": 5.5792805516962245e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001367",
+      "anomaly_score": 0.145481440425149,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001368",
+      "anomaly_score": 0.25448631076990486,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001369",
+      "anomaly_score": 0.00017494263575778982,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001370",
+      "anomaly_score": 0.23456640668280265,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001371",
+      "anomaly_score": 0.00014050589638648153,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001372",
+      "anomaly_score": 9.822395690107807e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001373",
+      "anomaly_score": 0.00031534754671667784,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001374",
+      "anomaly_score": 0.15666238998254028,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001375",
+      "anomaly_score": 0.0002648400807450843,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001376",
+      "anomaly_score": 0.0019267256178533425,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001377",
+      "anomaly_score": 0.00022049806944548044,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001378",
+      "anomaly_score": 0.011468237836344528,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001379",
+      "anomaly_score": 6.850690586999212e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001380",
+      "anomaly_score": 0.0003080014589088075,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001381",
+      "anomaly_score": 5.4312894086341135e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001382",
+      "anomaly_score": 0.00016865872041887302,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001383",
+      "anomaly_score": 0.0011079334947224095,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001384",
+      "anomaly_score": 0.0014182460699074344,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001385",
+      "anomaly_score": 9.854969572078028e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001386",
+      "anomaly_score": 7.214200143296325e-05,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001387",
+      "anomaly_score": 0.00032180427293336295,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001388",
+      "anomaly_score": 0.06249562467446093,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001389",
+      "anomaly_score": 0.00031883421992243746,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001390",
+      "anomaly_score": 0.06926255254565239,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001391",
+      "anomaly_score": 5.682567944548272e-06,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001392",
+      "anomaly_score": 0.00011244861750378036,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001393",
+      "anomaly_score": 0.00042740150918274815,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001394",
+      "anomaly_score": 0.05363128665346498,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001395",
+      "anomaly_score": 0.007202915661870529,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": "evt-001396",
+      "anomaly_score": 0.00023592112939452685,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001397",
+      "anomaly_score": 0.00038513096116900145,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001398",
+      "anomaly_score": 0.000818453628888724,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": "evt-001399",
+      "anomaly_score": 0.002646314268621201,
+      "anomaly_flag": 1
+    }
+  ]
+}
