@@ -112,3 +112,8 @@ dmypy.json
 campus_iot_data.db
 *.db-shm
 *.db-wal
+
+# Data Directory
+A-DataIngestion/Processed/
+
+
