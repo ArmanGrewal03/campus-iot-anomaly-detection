@@ -1,0 +1,57 @@
+{
+  "request_id": "rf-test-001",
+  "model_version": "random-forest-v1.0",
+  "threshold": 0.55,
+  "results": [
+    {
+      "event_id": 0,
+      "anomaly_score": 0.9996513723211631,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": 1,
+      "anomaly_score": 0.95099961136612,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": 2,
+      "anomaly_score": 0.031206183479194762,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": 3,
+      "anomaly_score": 0.0341521520585416,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": 4,
+      "anomaly_score": 1.0,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": 5,
+      "anomaly_score": 0.30974628654578606,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": 6,
+      "anomaly_score": 1.0,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": 7,
+      "anomaly_score": 0.0,
+      "anomaly_flag": 0
+    },
+    {
+      "event_id": 8,
+      "anomaly_score": 1.0,
+      "anomaly_flag": 1
+    },
+    {
+      "event_id": 9,
+      "anomaly_score": 0.2728959300741313,
+      "anomaly_flag": 0
+    }
+  ]
+}
