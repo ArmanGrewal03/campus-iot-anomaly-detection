@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Campus IoT Anomaly Detection Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -261,6 +262,149 @@
             color: #666;
             font-size: 14px;
         }
+
+        .kpi-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .kpi-card {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            text-align: center;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+
+        .kpi-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+        }
+
+        .kpi-value {
+            font-size: 2.5em;
+            font-weight: 700;
+            color: #667eea;
+            margin: 10px 0;
+        }
+
+        .kpi-label {
+            color: #666;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+
+        .kpi-subtitle {
+            color: #999;
+            font-size: 0.8em;
+            margin-top: 5px;
+        }
+
+        .kpi-percentage {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-top: 8px;
+        }
+
+        .kpi-percentage.training {
+            background: #2196f3;
+            color: white;
+        }
+
+        .kpi-percentage.testing {
+            background: #ff9800;
+            color: white;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+
+        .progress-fill.training {
+            background: #2196f3;
+        }
+
+        .progress-fill.testing {
+            background: #ff9800;
+        }
+
+        .kpi-chart-card {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            grid-column: 1 / -1;
+            margin-bottom: 30px;
+        }
+
+        .kpi-chart-card h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+            width: 100%;
+        }
+
+        .chart-loading {
+            text-align: center;
+            padding: 50px;
+            color: #999;
+        }
+
+        .chart-empty {
+            text-align: center;
+            padding: 50px;
+            color: #999;
+            font-style: italic;
+        }
+
+        .chart-btn {
+            background: #f5f5f5;
+            color: #666;
+            border: 2px solid #e0e0e0;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .chart-btn:hover {
+            background: #e0e0e0;
+            border-color: #667eea;
+        }
+
+        .chart-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-color: #667eea;
+        }
     </style>
 </head>
 <body>
@@ -271,6 +415,55 @@
                 <span class="status-indicator" id="statusIndicator"></span>
                 <span id="statusText">Checking API status...</span>
             </p>
+        </div>
+
+        <!-- KPI Indicators -->
+        <div class="kpi-container">
+            <div class="kpi-card">
+                <div class="kpi-label">Total Records</div>
+                <div class="kpi-value" id="kpiTotal">-</div>
+                <div class="kpi-subtitle">All data entries</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Training Data</div>
+                <div class="kpi-value" id="kpiTraining">-</div>
+                <div class="kpi-subtitle" id="kpiTrainingSub">Not labeled</div>
+                <div class="progress-bar">
+                    <div class="progress-fill training" id="progressTraining" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Testing Data</div>
+                <div class="kpi-value" id="kpiTesting">-</div>
+                <div class="kpi-subtitle" id="kpiTestingSub">Not labeled</div>
+                <div class="progress-bar">
+                    <div class="progress-fill testing" id="progressTesting" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">API Status</div>
+                <div class="kpi-value" id="kpiApiStatus" style="font-size: 1.8em;">-</div>
+                <div class="kpi-subtitle" id="kpiApiSub">Connection status</div>
+            </div>
+        </div>
+
+        <!-- Type Distribution Chart Card -->
+        <div class="kpi-chart-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="margin: 0;">📊 Type Distribution Analysis</h2>
+                <div style="display: flex; gap: 10px;">
+                    <button onclick="switchChartType('bar')" id="btnBar" class="chart-btn active">Bar Chart</button>
+                    <button onclick="switchChartType('pie')" id="btnPie" class="chart-btn">Pie Chart</button>
+                    <button onclick="switchChartType('split')" id="btnSplit" class="chart-btn">Training/Testing</button>
+                </div>
+            </div>
+            <div class="chart-container">
+                <canvas id="typeChart"></canvas>
+                <canvas id="typeChartPie" style="display: none;"></canvas>
+                <canvas id="typeChartSplit" style="display: none;"></canvas>
+                <div id="chartLoading" class="chart-loading" style="display: none;">Loading chart data...</div>
+                <div id="chartEmpty" class="chart-empty" style="display: none;">No type data available. Upload data to see distribution.</div>
+            </div>
         </div>
 
         <div class="grid">
@@ -380,14 +573,76 @@
     </div>
 
     <script>
+        // Chart.js instances
+        let typeChart = null;
+        let typeChartPie = null;
+        let typeChartSplit = null;
+        let currentChartType = 'bar';
+        let chartData = null;  // Store the full data for all charts
+
         // Check API health on page load
         window.onload = function() {
             checkHealth();
+            refreshKPIs();
+            refreshTypeChart();
             document.getElementById('csvFile').addEventListener('change', function(e) {
                 const fileName = e.target.files[0]?.name || '';
                 document.getElementById('fileName').textContent = fileName || '';
             });
         };
+
+        // Refresh KPI indicators
+        async function refreshKPIs() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                if (response.ok) {
+                    // Update Total Records
+                    document.getElementById('kpiTotal').textContent = data.total_records || 0;
+                    
+                    // Update Training Data
+                    const trainingCount = data.training_records || 0;
+                    const trainingPct = data.training_percentage || 0;
+                    document.getElementById('kpiTraining').textContent = trainingCount;
+                    document.getElementById('kpiTrainingSub').textContent = `${trainingPct}% of total`;
+                    document.getElementById('progressTraining').style.width = `${trainingPct}%`;
+                    
+                    // Update Testing Data
+                    const testingCount = data.testing_records || 0;
+                    const testingPct = data.testing_percentage || 0;
+                    document.getElementById('kpiTesting').textContent = testingCount;
+                    document.getElementById('kpiTestingSub').textContent = `${testingPct}% of total`;
+                    document.getElementById('progressTesting').style.width = `${testingPct}%`;
+                    
+                    // Update API Status
+                    if (data.api_online) {
+                        document.getElementById('kpiApiStatus').textContent = '✓ Online';
+                        document.getElementById('kpiApiStatus').style.color = '#4caf50';
+                        document.getElementById('kpiApiSub').textContent = 'Connected';
+                    } else {
+                        document.getElementById('kpiApiStatus').textContent = '✗ Offline';
+                        document.getElementById('kpiApiStatus').style.color = '#f44336';
+                        document.getElementById('kpiApiSub').textContent = 'Disconnected';
+                    }
+                } else {
+                    // Handle error
+                    document.getElementById('kpiTotal').textContent = 'Error';
+                    document.getElementById('kpiTraining').textContent = 'Error';
+                    document.getElementById('kpiTesting').textContent = 'Error';
+                    document.getElementById('kpiApiStatus').textContent = '✗ Error';
+                    document.getElementById('kpiApiStatus').style.color = '#f44336';
+                }
+            } catch (error) {
+                // Handle network error
+                document.getElementById('kpiTotal').textContent = '-';
+                document.getElementById('kpiTraining').textContent = '-';
+                document.getElementById('kpiTesting').textContent = '-';
+                document.getElementById('kpiApiStatus').textContent = '✗ Error';
+                document.getElementById('kpiApiStatus').style.color = '#f44336';
+                document.getElementById('kpiApiSub').textContent = 'Network error';
+            }
+        }
 
         function updateStatus(online) {
             const indicator = document.getElementById('statusIndicator');
@@ -413,9 +668,13 @@
                 const data = await response.json();
                 updateStatus(response.ok);
                 showResult('healthResult', data, !response.ok);
+                refreshKPIs();
+                refreshTypeChart();
             } catch (error) {
                 updateStatus(false);
                 showResult('healthResult', {error: error.message}, true);
+                refreshKPIs();
+                refreshTypeChart();
             }
         }
 
@@ -436,8 +695,12 @@
                 });
                 const data = await response.json();
                 showResult('uploadResult', data, !response.ok);
+                refreshKPIs();
+                refreshTypeChart();
             } catch (error) {
                 showResult('uploadResult', {error: error.message}, true);
+                refreshKPIs();
+                refreshTypeChart();
             }
         }
 
@@ -448,8 +711,12 @@
                 const response = await fetch(`/api/view?limit=${limit}&offset=${offset}`);
                 const data = await response.json();
                 showResult('viewResult', data, !response.ok);
+                refreshKPIs();
+                refreshTypeChart();
             } catch (error) {
                 showResult('viewResult', {error: error.message}, true);
+                refreshKPIs();
+                refreshTypeChart();
             }
         }
 
@@ -461,8 +728,12 @@
                 const response = await fetch('/api/validate', {method: 'PUT'});
                 const data = await response.json();
                 showResult('validateResult', data, !response.ok);
+                refreshKPIs();
+                refreshTypeChart();
             } catch (error) {
                 showResult('validateResult', {error: error.message}, true);
+                refreshKPIs();
+                refreshTypeChart();
             }
         }
 
@@ -473,8 +744,12 @@
                 const response = await fetch(`/api/training?limit=${limit}&offset=${offset}`);
                 const data = await response.json();
                 showResult('trainingResult', data, !response.ok);
+                refreshKPIs();
+                refreshTypeChart();
             } catch (error) {
                 showResult('trainingResult', {error: error.message}, true);
+                refreshKPIs();
+                refreshTypeChart();
             }
         }
 
@@ -485,8 +760,12 @@
                 const response = await fetch(`/api/testing?limit=${limit}&offset=${offset}`);
                 const data = await response.json();
                 showResult('testingResult', data, !response.ok);
+                refreshKPIs();
+                refreshTypeChart();
             } catch (error) {
                 showResult('testingResult', {error: error.message}, true);
+                refreshKPIs();
+                refreshTypeChart();
             }
         }
 
@@ -505,8 +784,12 @@
                 if (response.ok) {
                     document.getElementById('insertData').value = '';
                 }
+                refreshKPIs();
+                refreshTypeChart();
             } catch (error) {
                 showResult('insertResult', {error: 'Invalid JSON: ' + error.message}, true);
+                refreshKPIs();
+                refreshTypeChart();
             }
         }
 
@@ -521,9 +804,317 @@
                 const response = await fetch('/api/clear', {method: 'POST'});
                 const data = await response.json();
                 showResult('clearResult', data, !response.ok);
+                refreshKPIs();
+                refreshTypeChart();
             } catch (error) {
                 showResult('clearResult', {error: error.message}, true);
+                refreshKPIs();
+                refreshTypeChart();
             }
+        }
+
+        // Refresh Type Distribution Chart
+        async function refreshTypeChart() {
+            const loadingEl = document.getElementById('chartLoading');
+            const emptyEl = document.getElementById('chartEmpty');
+            const canvas = document.getElementById('typeChart');
+            
+            try {
+                loadingEl.style.display = 'block';
+                emptyEl.style.display = 'none';
+                canvas.style.display = 'none';
+                
+                const response = await fetch('/api/type-stats');
+                const data = await response.json();
+                
+                loadingEl.style.display = 'none';
+                
+                // Debug: log what we received
+                console.log('Type stats response:', data);
+                console.log('Type distribution:', data.type_distribution);
+                console.log('Number of types found:', Object.keys(data.type_distribution || {}).length);
+                
+                if (response.ok && data.type_distribution && Object.keys(data.type_distribution).length > 0) {
+                    chartData = data;  // Store full data for all charts
+                    canvas.style.display = 'block';
+                    emptyEl.style.display = 'none';
+                    updateAllCharts(data);
+                    switchChartType(currentChartType);  // Show the current chart type
+                } else {
+                    canvas.style.display = 'none';
+                    const emptyMsg = data.error ? `Error: ${data.error}` : 'No type data available. Upload data to see distribution.';
+                    emptyEl.textContent = emptyMsg;
+                    emptyEl.style.display = 'block';
+                    // Destroy all charts
+                    if (typeChart) { typeChart.destroy(); typeChart = null; }
+                    if (typeChartPie) { typeChartPie.destroy(); typeChartPie = null; }
+                    if (typeChartSplit) { typeChartSplit.destroy(); typeChartSplit = null; }
+                    chartData = null;
+                }
+            } catch (error) {
+                console.error('Error loading type chart:', error);
+                loadingEl.style.display = 'none';
+                canvas.style.display = 'none';
+                emptyEl.textContent = 'Error loading chart data: ' + error.message;
+                emptyEl.style.display = 'block';
+                // Destroy all charts
+                if (typeChart) { typeChart.destroy(); typeChart = null; }
+                if (typeChartPie) { typeChartPie.destroy(); typeChartPie = null; }
+                if (typeChartSplit) { typeChartSplit.destroy(); typeChartSplit = null; }
+                chartData = null;
+            }
+        }
+
+        // Update all charts with the data
+        function updateAllCharts(data) {
+            const typeDistribution = data.type_distribution || {};
+            const typePercentages = data.type_percentages || {};
+            
+            // Sort types by count for better visualization
+            const sortedTypes = Object.entries(typeDistribution)
+                .sort((a, b) => b[1] - a[1]);
+            
+            const labels = sortedTypes.map(item => item[0]);
+            const values = sortedTypes.map(item => item[1]);
+            const percentages = labels.map(label => typePercentages[label] || 0);
+            const colors = generateColors(labels.length);
+            
+            // Update or create Bar Chart
+            updateBarChart(labels, values, percentages, colors);
+            
+            // Update or create Pie Chart
+            updatePieChart(labels, values, percentages, colors);
+            
+            // Update or create Split Chart (Training/Testing)
+            if (data.type_training && data.type_testing) {
+                updateSplitChart(labels, data.type_training, data.type_testing, colors);
+            }
+        }
+        
+        // Switch between chart types
+        function switchChartType(type) {
+            if (!chartData) return;
+            
+            currentChartType = type;
+            
+            // Hide all canvases
+            document.getElementById('typeChart').style.display = 'none';
+            document.getElementById('typeChartPie').style.display = 'none';
+            document.getElementById('typeChartSplit').style.display = 'none';
+            
+            // Update button states
+            document.getElementById('btnBar').classList.remove('active');
+            document.getElementById('btnPie').classList.remove('active');
+            document.getElementById('btnSplit').classList.remove('active');
+            
+            // Show selected chart
+            if (type === 'bar') {
+                document.getElementById('typeChart').style.display = 'block';
+                document.getElementById('btnBar').classList.add('active');
+            } else if (type === 'pie') {
+                document.getElementById('typeChartPie').style.display = 'block';
+                document.getElementById('btnPie').classList.add('active');
+            } else if (type === 'split') {
+                document.getElementById('typeChartSplit').style.display = 'block';
+                document.getElementById('btnSplit').classList.add('active');
+            }
+        }
+        
+        // Update or create Bar Chart
+        function updateBarChart(labels, values, percentages, colors) {
+            const ctx = document.getElementById('typeChart').getContext('2d');
+            
+            if (typeChart) {
+                typeChart.data.labels = labels;
+                typeChart.data.datasets[0].data = values;
+                typeChart.data.datasets[0].backgroundColor = colors;
+                typeChart.update();
+            } else {
+                typeChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Count',
+                            data: values,
+                            backgroundColor: colors,
+                            borderColor: colors.map(c => c.replace('0.8', '1')),
+                            borderWidth: 2,
+                            borderRadius: 8,
+                            borderSkipped: false,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const percentage = percentages[context.dataIndex] || 0;
+                                        return `Count: ${context.parsed.y} (${percentage}%)`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: { precision: 0, stepSize: 1 },
+                                grid: { color: 'rgba(0, 0, 0, 0.05)' }
+                            },
+                            x: {
+                                grid: { display: false },
+                                ticks: { maxRotation: 45, minRotation: 0 }
+                            }
+                        },
+                        animation: { duration: 750 }
+                    }
+                });
+            }
+        }
+        
+        // Update or create Pie Chart
+        function updatePieChart(labels, values, percentages, colors) {
+            const ctx = document.getElementById('typeChartPie').getContext('2d');
+            
+            if (typeChartPie) {
+                typeChartPie.data.labels = labels;
+                typeChartPie.data.datasets[0].data = values;
+                typeChartPie.data.datasets[0].backgroundColor = colors;
+                typeChartPie.update();
+            } else {
+                typeChartPie = new Chart(ctx, {
+                    type: 'pie',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            data: values,
+                            backgroundColor: colors,
+                            borderColor: '#fff',
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'right',
+                                labels: {
+                                    padding: 15,
+                                    usePointStyle: true
+                                }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const label = context.label || '';
+                                        const value = context.parsed || 0;
+                                        const percentage = percentages[context.dataIndex] || 0;
+                                        return `${label}: ${value} (${percentage}%)`;
+                                    }
+                                }
+                            }
+                        },
+                        animation: { duration: 750 }
+                    }
+                });
+            }
+        }
+        
+        // Update or create Split Chart (Training/Testing)
+        function updateSplitChart(labels, typeTraining, typeTesting, colors) {
+            const ctx = document.getElementById('typeChartSplit').getContext('2d');
+            
+            const trainingData = labels.map(label => typeTraining[label] || 0);
+            const testingData = labels.map(label => typeTesting[label] || 0);
+            
+            if (typeChartSplit) {
+                typeChartSplit.data.labels = labels;
+                typeChartSplit.data.datasets[0].data = trainingData;
+                typeChartSplit.data.datasets[1].data = testingData;
+                typeChartSplit.update();
+            } else {
+                typeChartSplit = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: 'Training',
+                                data: trainingData,
+                                backgroundColor: 'rgba(33, 150, 243, 0.8)',
+                                borderColor: 'rgba(33, 150, 243, 1)',
+                                borderWidth: 2,
+                                borderRadius: 6
+                            },
+                            {
+                                label: 'Testing',
+                                data: testingData,
+                                backgroundColor: 'rgba(255, 152, 0, 0.8)',
+                                borderColor: 'rgba(255, 152, 0, 1)',
+                                borderWidth: 2,
+                                borderRadius: 6
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return `${context.dataset.label}: ${context.parsed.y}`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                stacked: false,
+                                ticks: { precision: 0 },
+                                grid: { color: 'rgba(0, 0, 0, 0.05)' }
+                            },
+                            x: {
+                                stacked: false,
+                                grid: { display: false },
+                                ticks: { maxRotation: 45, minRotation: 0 }
+                            }
+                        },
+                        animation: { duration: 750 }
+                    }
+                });
+            }
+        }
+
+        // Generate colors for chart
+        function generateColors(count) {
+            const baseColors = [
+                'rgba(102, 126, 234, 0.8)',  // Primary purple
+                'rgba(118, 75, 162, 0.8)',   // Secondary purple
+                'rgba(33, 150, 243, 0.8)',   // Blue
+                'rgba(255, 152, 0, 0.8)',    // Orange
+                'rgba(76, 175, 80, 0.8)',    // Green
+                'rgba(244, 67, 54, 0.8)',    // Red
+                'rgba(156, 39, 176, 0.8)',   // Purple
+                'rgba(0, 188, 212, 0.8)',    // Cyan
+                'rgba(255, 193, 7, 0.8)',    // Amber
+                'rgba(121, 85, 72, 0.8)',    // Brown
+            ];
+            
+            const colors = [];
+            for (let i = 0; i < count; i++) {
+                colors.push(baseColors[i % baseColors.length]);
+            }
+            return colors;
         }
     </script>
 </body>
