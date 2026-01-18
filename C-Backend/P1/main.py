@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Header, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 from fastapi.responses import JSONResponse
@@ -13,8 +14,25 @@ import logging
 import random
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = FastAPI(title="Campus IoT Anomaly Detection API", version="1.0.0")
+
+# Add CORS middleware to allow React frontend connections
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:3000",  # Alternative React dev server
+        "http://localhost:8080",  # Vue CLI dev server
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8080",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -103,7 +121,7 @@ async def startup_event():
     init_db(DEFAULT_DB_NAME)
 
 
-@app.get("/health")
+@app.get("/api/health")
 async def health_check(database_name: str = Depends(get_db_name)):
     return JSONResponse(
         content={
@@ -223,7 +241,7 @@ async def upload_csv(
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
 
-@app.get("/view")
+@app.get("/api/view")
 async def view_data(
     limit: int = 100, 
     offset: int = 0,
@@ -649,3 +667,288 @@ async def insert_data(
     except Exception as e:
         logger.error(f"Error inserting data: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error inserting data: {str(e)}")
+
+
+@app.get("/api/stats")
+async def get_stats(database_name: str = Depends(get_db_name)):
+    """Get aggregated statistics for KPI display"""
+    try:
+        init_db(database_name)
+        stats = {}
+        
+        # Get total records
+        try:
+            conn = get_db_connection(database_name)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) as total FROM csv_data")
+            stats['total_records'] = cursor.fetchone()['total']
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Error getting total records: {e}")
+            stats['total_records'] = 0
+        
+        # Get training records count
+        try:
+            conn = get_db_connection(database_name)
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(csv_data)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'T' in columns:
+                cursor.execute("SELECT COUNT(*) as total FROM csv_data WHERE T = ?", ("training",))
+                stats['training_records'] = cursor.fetchone()['total']
+            else:
+                stats['training_records'] = 0
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Error getting training records: {e}")
+            stats['training_records'] = 0
+        
+        # Get testing records count
+        try:
+            conn = get_db_connection(database_name)
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(csv_data)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'T' in columns:
+                cursor.execute("SELECT COUNT(*) as total FROM csv_data WHERE T = ?", ("testing",))
+                stats['testing_records'] = cursor.fetchone()['total']
+            else:
+                stats['testing_records'] = 0
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Error getting testing records: {e}")
+            stats['testing_records'] = 0
+        
+        # Calculate percentages if total > 0
+        if stats['total_records'] > 0:
+            stats['training_percentage'] = round((stats['training_records'] / stats['total_records']) * 100, 1)
+            stats['testing_percentage'] = round((stats['testing_records'] / stats['total_records']) * 100, 1)
+        else:
+            stats['training_percentage'] = 0
+            stats['testing_percentage'] = 0
+        
+        # API is always online if we got here
+        stats['api_online'] = True
+        
+        return JSONResponse(content=stats, status_code=200)
+    
+    except Exception as e:
+        logger.error(f"Error getting stats: {type(e).__name__}: {e}", exc_info=True)
+        return JSONResponse(
+            content={
+                "error": str(e),
+                "total_records": 0,
+                "training_records": 0,
+                "testing_records": 0,
+                "training_percentage": 0,
+                "testing_percentage": 0,
+                "api_online": False
+            },
+            status_code=500
+        )
+
+
+def extract_types_from_chunk(rows_data):
+    """Extract type values and training/testing labels from rows"""
+    type_counts = {}
+    type_training = {}
+    type_testing = {}
+    
+    for row in rows_data:
+        if isinstance(row, dict) and 'data' in row:
+            row_data = row['data']
+            if isinstance(row_data, dict):
+                # Find type field (case-insensitive)
+                type_value = None
+                for key in row_data.keys():
+                    if key.lower() == 'type':
+                        type_value = row_data[key]
+                        break
+                
+                # If not found, try other common field names
+                if type_value is None:
+                    for key in row_data.keys():
+                        if key.lower() in ['label', 'category', 'class']:
+                            type_value = row_data[key]
+                            break
+                
+                if type_value is not None:
+                    type_str = str(type_value).strip()
+                    if type_str and type_str.lower() not in ['none', 'null', 'nan', '', 'undefined']:
+                        # Count by type
+                        type_counts[type_str] = type_counts.get(type_str, 0) + 1
+                        
+                        # Count by training/testing split
+                        t_label = row.get('T', '').lower() if 'T' in row else None
+                        if t_label == 'training':
+                            type_training[type_str] = type_training.get(type_str, 0) + 1
+                        elif t_label == 'testing':
+                            type_testing[type_str] = type_testing.get(type_str, 0) + 1
+    
+    return type_counts, type_training, type_testing
+
+
+def fetch_chunk_data(db_name, offset, limit):
+    """Fetch a chunk of data from the database"""
+    try:
+        conn = get_db_connection(db_name)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT id, upload_timestamp, row_data, T 
+                FROM csv_data 
+                ORDER BY id 
+                LIMIT ? OFFSET ?
+            """, (limit, offset))
+        except sqlite3.OperationalError:
+            cursor.execute("""
+                SELECT id, upload_timestamp, row_data 
+                FROM csv_data 
+                ORDER BY id 
+                LIMIT ? OFFSET ?
+            """, (limit, offset))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        data = []
+        for row in rows:
+            try:
+                row_data = json.loads(row['row_data'])
+                row_dict = {
+                    "id": row['id'],
+                    "upload_timestamp": row['upload_timestamp'],
+                    "data": row_data
+                }
+                if 'T' in row.keys() and row['T']:
+                    row_dict["T"] = row['T']
+                data.append(row_dict)
+            except json.JSONDecodeError:
+                row_dict = {
+                    "id": row['id'],
+                    "upload_timestamp": row['upload_timestamp'],
+                    "data": {"error": "Failed to parse row data"}
+                }
+                if 'T' in row.keys() and row['T']:
+                    row_dict["T"] = row['T']
+                data.append(row_dict)
+        
+        return data
+    except Exception as e:
+        logger.error(f"Error fetching chunk at offset {offset}: {e}")
+        return []
+
+
+@app.get("/api/type-stats")
+async def get_type_stats(database_name: str = Depends(get_db_name)):
+    """Get type distribution statistics - processes all rows to find all types"""
+    try:
+        init_db(database_name)
+        
+        conn = get_db_connection(database_name)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as total FROM csv_data")
+        total_rows = cursor.fetchone()['total']
+        
+        if total_rows == 0:
+            conn.close()
+            return JSONResponse(
+                content={
+                    "type_distribution": {},
+                    "sample_size": 0,
+                    "total_rows": 0
+                },
+                status_code=200
+            )
+        
+        type_counts = {}
+        type_training = {}
+        type_testing = {}
+        
+        # Process all rows in batches for efficiency
+        batch_size = 5000
+        processed_count = 0
+        
+        logger.info(f"Processing all {total_rows} rows to find all types...")
+        
+        # Fetch all rows in batches
+        try:
+            cursor.execute("""
+                SELECT id, upload_timestamp, row_data, T 
+                FROM csv_data 
+                ORDER BY id
+            """)
+        except sqlite3.OperationalError:
+            # T column might not exist
+            cursor.execute("""
+                SELECT id, upload_timestamp, row_data 
+                FROM csv_data 
+                ORDER BY id
+            """)
+        
+        # Process in batches
+        while True:
+            rows = cursor.fetchmany(batch_size)
+            if not rows:
+                break
+            
+            # Extract types from this batch
+            batch_data = []
+            for row in rows:
+                try:
+                    row_data = json.loads(row['row_data'])
+                    row_dict = {
+                        "id": row['id'],
+                        "upload_timestamp": row['upload_timestamp'],
+                        "data": row_data
+                    }
+                    if 'T' in row.keys() and row['T']:
+                        row_dict["T"] = row['T']
+                    batch_data.append(row_dict)
+                except json.JSONDecodeError:
+                    continue
+            
+            # Extract types from batch
+            chunk_types, chunk_train, chunk_test = extract_types_from_chunk(batch_data)
+            
+            # Merge type counts
+            for type_val, count in chunk_types.items():
+                type_counts[type_val] = type_counts.get(type_val, 0) + count
+            for type_val, count in chunk_train.items():
+                type_training[type_val] = type_training.get(type_val, 0) + count
+            for type_val, count in chunk_test.items():
+                type_testing[type_val] = type_testing.get(type_val, 0) + count
+            
+            processed_count += len(batch_data)
+        
+        conn.close()
+        
+        # Calculate percentages
+        total_with_types = sum(type_counts.values())
+        type_percentages = {}
+        if total_with_types > 0:
+            for type_val, count in type_counts.items():
+                type_percentages[type_val] = round((count / total_with_types) * 100, 2)
+        
+        logger.info(f"Found {len(type_counts)} unique types from {processed_count} rows: {list(type_counts.keys())}")
+        
+        return JSONResponse(
+            content={
+                "type_distribution": type_counts,
+                "type_percentages": type_percentages,
+                "type_training": type_training,
+                "type_testing": type_testing,
+                "sample_size": processed_count,
+                "total_rows": total_rows,
+                "sampled": False  # We processed all rows
+            },
+            status_code=200
+        )
+    
+    except Exception as e:
+        logger.error(f"Error getting type stats: {type(e).__name__}: {e}", exc_info=True)
+        return JSONResponse(
+            content={"error": str(e), "type_distribution": {}},
+            status_code=500
+        )
