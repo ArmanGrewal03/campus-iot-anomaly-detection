@@ -1,0 +1,157 @@
+{
+  "model_type": "RandomForestClassifier",
+  "feature_names": [
+    "dur",
+    "proto",
+    "service",
+    "state",
+    "spkts",
+    "dpkts",
+    "sbytes",
+    "dbytes",
+    "rate",
+    "sttl",
+    "dttl",
+    "sload",
+    "dload",
+    "sloss",
+    "dloss",
+    "sinpkt",
+    "dinpkt",
+    "sjit",
+    "djit",
+    "swin",
+    "stcpb",
+    "dtcpb",
+    "dwin",
+    "tcprtt",
+    "synack",
+    "ackdat",
+    "smean",
+    "dmean",
+    "trans_depth",
+    "response_body_len",
+    "ct_srv_src",
+    "ct_state_ttl",
+    "ct_dst_ltm",
+    "ct_src_dport_ltm",
+    "ct_dst_sport_ltm",
+    "ct_dst_src_ltm",
+    "is_ftp_login",
+    "ct_ftp_cmd",
+    "ct_flw_http_mthd",
+    "ct_src_ltm",
+    "ct_srv_dst",
+    "is_sm_ips_ports"
+  ],
+  "n_features": 42,
+  "training_date": "2026-01-16T17:36:19.150010",
+  "training_params": {
+    "n_estimators": 100,
+    "max_depth": null,
+    "random_state": 42
+  },
+  "metrics": {
+    "accuracy": 0.9711103013898288,
+    "precision": 0.9792252620813091,
+    "recall": 0.9679335292073421,
+    "f1_score": 0.9735466548037051,
+    "confusion_matrix": [
+      [
+        25330,
+        650
+      ],
+      [
+        1015,
+        30638
+      ]
+    ],
+    "feature_importance": [
+      {
+        "feature": "ct_dst_src_ltm",
+        "importance": 0.08723277267492756
+      },
+      {
+        "feature": "ct_state_ttl",
+        "importance": 0.07470522406914903
+      },
+      {
+        "feature": "sload",
+        "importance": 0.0729218202791497
+      },
+      {
+        "feature": "sbytes",
+        "importance": 0.06928485915974429
+      },
+      {
+        "feature": "sttl",
+        "importance": 0.0601439421088888
+      },
+      {
+        "feature": "smean",
+        "importance": 0.05791998720447755
+      },
+      {
+        "feature": "ct_srv_dst",
+        "importance": 0.05304900310444442
+      },
+      {
+        "feature": "rate",
+        "importance": 0.05171102692159159
+      },
+      {
+        "feature": "ct_dst_sport_ltm",
+        "importance": 0.042661074340805134
+      },
+      {
+        "feature": "dbytes",
+        "importance": 0.034379355629380076
+      },
+      {
+        "feature": "dur",
+        "importance": 0.03192297870988384
+      },
+      {
+        "feature": "dload",
+        "importance": 0.028388400747893533
+      },
+      {
+        "feature": "synack",
+        "importance": 0.028147336470347
+      },
+      {
+        "feature": "dmean",
+        "importance": 0.027751887219720155
+      },
+      {
+        "feature": "ct_srv_src",
+        "importance": 0.02768862442579596
+      },
+      {
+        "feature": "tcprtt",
+        "importance": 0.02646604434586916
+      },
+      {
+        "feature": "sinpkt",
+        "importance": 0.025244190240257373
+      },
+      {
+        "feature": "dttl",
+        "importance": 0.02517990446659878
+      },
+      {
+        "feature": "dinpkt",
+        "importance": 0.02054842955864563
+      },
+      {
+        "feature": "ackdat",
+        "importance": 0.019345439916362558
+      }
+    ]
+  },
+  "label_mapping": {
+    "0": "safe",
+    "1": "unsafe"
+  },
+  "last_test_date": "2026-01-16T22:44:03.212686"
+}
