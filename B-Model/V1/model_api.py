@@ -9,7 +9,7 @@ Endpoints:
 - GET /model/metrics - Get model evaluation metrics
 """
 
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -31,6 +31,9 @@ import os
 from datetime import datetime
 import logging
 import warnings
+import sqlite3
+import asyncio
+import random
 warnings.filterwarnings('ignore')
 
 app = FastAPI(title="Campus IoT Anomaly Detection Model API", version="1.0.0")
@@ -47,6 +50,7 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 MODEL_DIR = "models"
 MODEL_FILENAME = "random_forest_model.pkl"
 METADATA_FILENAME = "model_metadata.json"
+WEBSOCKET_DB = "websocket_data.db"
 
 # Pydantic models for request/response
 class TrainRequest(BaseModel):
@@ -648,6 +652,127 @@ async def get_model_metrics():
         },
         status_code=200
     )
+
+def init_websocket_db():
+    conn = sqlite3.connect(WEBSOCKET_DB)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS websocket_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            data TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+    logger.info(f"Initialized WebSocket database: {WEBSOCKET_DB}")
+
+def load_feature_names() -> List[str]:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    feature_names_path = os.path.join(base_dir, "..", "..", "A-DataIngestion", "Processed", "feature_names.json")
+    feature_names_path = os.path.normpath(feature_names_path)
+    
+    if os.path.exists(feature_names_path):
+        try:
+            with open(feature_names_path, 'r') as f:
+                features = json.load(f)
+                logger.info(f"Loaded {len(features)} features from {feature_names_path}")
+                return features
+        except Exception as e:
+            logger.error(f"Error loading feature names: {e}")
+    else:
+        logger.warning(f"Feature names file not found at {feature_names_path}")
+    
+    logger.info("Using default feature set")
+    return [
+        "dur", "proto", "service", "state", "spkts", "dpkts", "sbytes", "dbytes",
+        "rate", "sttl", "dttl", "sload", "dload", "sloss", "dloss", "sinpkt", "dinpkt",
+        "sjit", "djit", "swin", "stcpb", "dtcpb", "dwin", "tcprtt", "synack", "ackdat",
+        "smean", "dmean", "trans_depth", "response_body_len", "ct_srv_src", "ct_state_ttl",
+        "ct_dst_ltm", "ct_src_dport_ltm", "ct_dst_sport_ltm", "ct_dst_src_ltm",
+        "is_ftp_login", "ct_ftp_cmd", "ct_flw_http_mthd", "ct_src_ltm", "ct_srv_dst", "is_sm_ips_ports"
+    ]
+
+def generate_random_data(feature_names: List[str]) -> Dict[str, Any]:
+    data = {}
+    
+    proto_features = [f for f in feature_names if f.startswith("proto_")]
+    state_features = [f for f in feature_names if f.startswith("state_")]
+    service_features = [f for f in feature_names if f.startswith("service_")]
+    
+    for feature in feature_names:
+        if feature == "dur":
+            data[feature] = round(random.uniform(0.0, 1000.0), 6)
+        elif feature.startswith("proto_"):
+            data[feature] = 1 if random.random() < 0.1 else 0
+        elif feature.startswith("state_"):
+            data[feature] = 1 if random.random() < 0.2 else 0
+        elif feature.startswith("service_"):
+            data[feature] = 1 if random.random() < 0.15 else 0
+        elif feature in ["Spkts", "Dpkts", "sbytes", "dbytes", "sttl", "dttl", 
+                         "sloss", "dloss", "swin", "stcpb", "dtcpb", "dwin",
+                         "tcprtt", "synack", "ackdat", "trans_depth", "res_bdy_len",
+                         "ct_srv_src", "ct_state_ttl", "ct_dst_ltm", "ct_src_dport_ltm",
+                         "ct_dst_sport_ltm", "ct_dst_src_ltm", "ct_ftp_cmd", "ct_flw_http_mthd",
+                         "ct_src_ltm", "ct_srv_dst"]:
+            data[feature] = random.randint(0, 10000)
+        elif feature in ["rate", "Sload", "Dload", "Sintpkt", "Dintpkt", "Sjit", "Djit", "smeansz", "dmeansz"]:
+            data[feature] = round(random.uniform(0.0, 1000000.0), 2)
+        elif feature in ["is_ftp_login", "is_sm_ips_ports"]:
+            data[feature] = random.randint(0, 1)
+        elif feature in ["byte_ratio", "pkt_ratio", "flow_rate", "pkt_rate"]:
+            data[feature] = round(random.uniform(0.0, 10.0), 4)
+        else:
+            data[feature] = random.randint(0, 1000)
+    
+    return data
+
+@app.websocket("/ws/data-stream")
+async def websocket_data_stream(websocket: WebSocket):
+    await websocket.accept()
+    logger.info("WebSocket connection established")
+    
+    init_websocket_db()
+    feature_names = load_feature_names()
+    logger.info(f"Loaded {len(feature_names)} features for data generation")
+    
+    try:
+        while True:
+            random_data = generate_random_data(feature_names)
+            timestamp = datetime.utcnow().isoformat()
+            
+            conn = sqlite3.connect(WEBSOCKET_DB)
+            cursor = conn.cursor()
+            data_json = json.dumps(random_data)
+            cursor.execute(
+                "INSERT INTO websocket_data (timestamp, data) VALUES (?, ?)",
+                (timestamp, data_json)
+            )
+            inserted_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            response = {
+                "id": inserted_id,
+                "timestamp": timestamp,
+                "data": random_data
+            }
+            
+            await websocket.send_json(response)
+            logger.info(f"Sent data record {inserted_id} via WebSocket")
+            
+            wait_time = random.uniform(20, 60)
+            logger.info(f"Waiting {wait_time:.2f} seconds before next data generation")
+            await asyncio.sleep(wait_time)
+            
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"Error in WebSocket: {e}", exc_info=True)
+        try:
+            await websocket.close()
+        except:
+            pass
 
 if __name__ == "__main__":
     import uvicorn
