@@ -1,0 +1,19 @@
+/* 60fps-friendly global styles */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* Reserve scrollbar space to prevent layout shift when dropdowns/modals lock scroll */
+  scrollbar-gutter: stable;
+}
+
+html, body {
+  overflow-x: hidden;
+}
+
+/* Smooth scrolling (respects prefers-reduced-motion) */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}

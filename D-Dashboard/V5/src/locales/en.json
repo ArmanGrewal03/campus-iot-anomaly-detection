@@ -81,6 +81,18 @@
     "noData": "No data available",
     "loading": "Loading...",
     "ofTotal": "of total",
+    "uniqueTypesInView": "Unique types in view",
+    "recordsShown": "Records shown",
+    "trainingSplit": "Training split",
+    "testingSplit": "Testing split",
+    "quickInsights": "Quick insights",
+    "insightApi": "API status",
+    "insightTotal": "Total records",
+    "insightTypes": "Attack types in dataset",
+    "insightSample": "Sample in table",
+    "records": "records",
+    "uniqueTypes": "unique types",
+    "fromTable": "in this view",
     "taskList": [
       {
         "title": "Update the Documentation",
