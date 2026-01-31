@@ -243,13 +243,11 @@ async def upload_csv(
 
 @app.get("/api/view")
 async def view_data(
-    limit: int = 100, 
+    limit: int = 1000,
     offset: int = 0,
     database_name: str = Depends(get_db_name)
 ):
     if limit < 1:
-        limit = 100
-    if limit > 1000:
         limit = 1000
     if offset < 0:
         offset = 0
@@ -635,28 +633,27 @@ async def insert_data(
         conn = get_db_connection(database_name)
         cursor = conn.cursor()
         
-        created_timestamp = datetime.utcnow().isoformat()
-        
-        data_json = json.dumps(data)
+        upload_timestamp = datetime.utcnow().isoformat()
+        row_data_json = json.dumps(data)
         
         cursor.execute("""
-            INSERT INTO inserted_data (created_timestamp, data)
+            INSERT INTO csv_data (upload_timestamp, row_data)
             VALUES (?, ?)
-        """, (created_timestamp, data_json))
+        """, (upload_timestamp, row_data_json))
         
         inserted_id = cursor.lastrowid
         
         conn.commit()
         conn.close()
         
-        logger.info(f"Successfully inserted row with ID: {inserted_id}")
+        logger.info(f"Successfully inserted row with ID: {inserted_id} into csv_data")
         
         return JSONResponse(
             content={
                 "status": "success",
                 "message": "Row inserted successfully",
                 "id": inserted_id,
-                "created_timestamp": created_timestamp,
+                "upload_timestamp": upload_timestamp,
                 "data": data
             },
             status_code=201

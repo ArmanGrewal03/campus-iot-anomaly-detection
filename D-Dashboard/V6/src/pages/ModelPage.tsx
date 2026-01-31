@@ -54,17 +54,25 @@ const createMockRows = (count: number) =>
 
 const MOCK_INITIAL_ROWS = createMockRows(12);
 
+const API_BASE = 'http://localhost:8000';
+
 export default function ModelPage() {
   const [datasetName, setDatasetName] = React.useState('');
   const [datasetNameError, setDatasetNameError] = React.useState('');
+  const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
   const [uploading, setUploading] = React.useState(false);
   const [datasets, setDatasets] = React.useState<{ id: string; name: string }[]>([]);
   const [rows, setRows] = React.useState<Record<string, unknown>[]>([]);
+  const [viewLimit, setViewLimit] = React.useState(1000);
+  const [viewLoading, setViewLoading] = React.useState(false);
+  const [viewTotalRows, setViewTotalRows] = React.useState<number | null>(null);
   const [filterMode, setFilterMode] = React.useState<'all' | 'training' | 'testing'>('all');
   const [searchQuery, setSearchQuery] = React.useState('');
   const [validating, setValidating] = React.useState(false);
   const [insertText, setInsertText] = React.useState('');
   const [clearConfirmOpen, setClearConfirmOpen] = React.useState(false);
+  const [clearLoading, setClearLoading] = React.useState(false);
+  const [insertLoading, setInsertLoading] = React.useState(false);
   const [modelName, setModelName] = React.useState('');
   const [modelNameError, setModelNameError] = React.useState('');
   const [selectedDatasetId, setSelectedDatasetId] = React.useState('');
@@ -98,106 +106,271 @@ export default function ModelPage() {
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  const handleUploadClick = () => {
-    if (!datasetName.trim()) {
-      setDatasetNameError('Dataset name is required');
-      setSnackbar({ open: true, message: 'Enter a dataset name first.', severity: 'info' });
-      return;
-    }
+  const handleAttachClick = () => {
     setDatasetNameError('');
     fileInputRef.current?.click();
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !datasetName.trim()) return;
+    if (!file) return;
+    setSelectedFile(file);
+    e.target.value = '';
+  };
+
+  const handleUploadToBackend = async () => {
+    if (!selectedFile) {
+      setSnackbar({ open: true, message: 'Attach a CSV file first.', severity: 'info' });
+      return;
+    }
     setUploading(true);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
+    setDatasetNameError('');
+    try {
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      const headers: Record<string, string> = {};
+      if (datasetName.trim()) {
+        headers['X-Database-Name'] = datasetName.trim();
+      }
+      const res = await fetch(`${API_BASE}/new`, {
+        method: 'POST',
+        headers,
+        body: formData,
+      });
+      const responseText = await res.text();
+      if (!res.ok) {
+        let detail = res.statusText;
+        try {
+          const errBody = JSON.parse(responseText) as { detail?: unknown };
+          detail = Array.isArray(errBody.detail)
+            ? (errBody.detail as { msg?: string }[]).map((d) => d.msg ?? '').join('; ')
+            : (errBody.detail as string) ?? detail;
+        } catch {
+          if (responseText) detail = responseText;
+        }
+        setSnackbar({ open: true, message: `Upload failed: ${detail}`, severity: 'error' });
+        setUploading(false);
+        return;
+      }
+      let message = 'CSV uploaded successfully.';
       try {
-        const text = ev.target?.result as string;
-        const lines = text.trim().split('\n');
-        const headers = lines[0].split(',').map((h) => h.trim());
-        const parsed = lines.slice(1).map((line, i) => {
-          const values = line.split(',').map((v) => v.trim());
-          const row: Record<string, unknown> = { id: i + 1 };
-          headers.forEach((h, j) => { row[h] = values[j] ?? ''; });
-          return row;
-        });
+        const result = JSON.parse(responseText) as string | { message?: string };
+        message = typeof result === 'string' ? result : result.message ?? message;
+      } catch {
+        if (responseText) message = responseText;
+      }
+      setSnackbar({ open: true, message, severity: 'success' });
+      setSelectedFile(null);
+      if (datasetName.trim()) {
         const id = `ds-${Date.now()}`;
         setDatasets((d) => [...d, { id, name: datasetName.trim() }]);
         setSelectedDatasetId(id);
-        setRows(parsed.length > 0 ? parsed : MOCK_INITIAL_ROWS);
-        setSnackbar({ open: true, message: `Uploaded ${parsed.length || MOCK_INITIAL_ROWS.length} rows`, severity: 'success' });
-      } catch {
-        setRows(MOCK_INITIAL_ROWS);
-        setDatasets((d) => [...d, { id: `ds-${Date.now()}`, name: datasetName.trim() }]);
-        setSelectedDatasetId(`ds-${Date.now()}`);
-        setSnackbar({ open: true, message: 'Parsing failed. Using sample data.', severity: 'info' });
       }
+      fetchViewData(viewLimit, 0);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Network error. Is the backend running at http://localhost:8000?';
+      setSnackbar({ open: true, message, severity: 'error' });
+    } finally {
       setUploading(false);
-    };
-    reader.onerror = () => {
-      setSnackbar({ open: true, message: 'Failed to read file', severity: 'error' });
-      setUploading(false);
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+    }
+  };
+
+  const fetchViewData = React.useCallback(
+    async (limit: number, offset: number) => {
+      setViewLoading(true);
+      setViewTotalRows(null);
+      try {
+        const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+        const headers: Record<string, string> = {};
+        if (datasetName.trim()) headers['X-Database-Name'] = datasetName.trim();
+        const res = await fetch(`${API_BASE}/api/view?${params}`, { headers });
+        const json = (await res.json()) as {
+          status?: string;
+          data?: { id: number; upload_timestamp?: string; data: Record<string, unknown>; T?: unknown }[];
+          total_rows?: number;
+          returned_rows?: number;
+        };
+        if (!res.ok) {
+          const detail = (json as { detail?: string | { msg?: string }[] }).detail;
+          const msg = Array.isArray(detail) ? detail.map((d) => d.msg ?? '').join('; ') : String(detail ?? res.statusText);
+          setSnackbar({ open: true, message: `View data failed: ${msg}`, severity: 'error' });
+          setViewLoading(false);
+          return;
+        }
+        const raw = json.data ?? [];
+        const gridRows: Record<string, unknown>[] = raw.map((item) => ({
+          id: item.id,
+          ...item.data,
+          ...(item.upload_timestamp != null && { upload_timestamp: item.upload_timestamp }),
+          ...(item.T != null && { T: item.T }),
+        }));
+        setRows(gridRows);
+        if (typeof json.total_rows === 'number') setViewTotalRows(json.total_rows);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to load view data.';
+        setSnackbar({ open: true, message, severity: 'error' });
+      } finally {
+        setViewLoading(false);
+      }
+    },
+    [datasetName]
+  );
+
+  React.useEffect(() => {
+    fetchViewData(viewLimit, 0);
+  }, [viewLimit, fetchViewData]);
+
+  const handleViewLimitChange = (newLimit: number) => {
+    setViewLimit(newLimit);
   };
 
   const [validationResult, setValidationResult] = React.useState<{ message: string; severity: 'success' | 'warning' } | null>(null);
 
-  const handleRevalidate = () => {
-    if (rows.length === 0) {
-      setSnackbar({ open: true, message: 'No dataset loaded. Upload a CSV first.', severity: 'info' });
-      return;
-    }
+  const handleRevalidate = async () => {
     setValidating(true);
     setValidationResult(null);
-    setTimeout(() => {
-      setValidating(false);
-      // Simulate validation outcome (frontend only)
-      const passed = Math.random() > 0.2;
-      if (passed) {
-        setValidationResult({ message: 'Validation: ✅ Passed', severity: 'success' });
-        setSnackbar({ open: true, message: 'Validation: ✅ Passed', severity: 'success' });
-      } else {
-        const rejected = Math.floor(Math.random() * 20) + 1;
-        const msg = `⚠ ${rejected} rows rejected`;
-        setValidationResult({ message: msg, severity: 'warning' });
-        setSnackbar({ open: true, message: msg, severity: 'warning' });
+    try {
+      const headers: Record<string, string> = {};
+      if (datasetName.trim()) headers['X-Database-Name'] = datasetName.trim();
+      const res = await fetch(`${API_BASE}/validate`, { method: 'PUT', headers });
+      const text = await res.text();
+      if (!res.ok) {
+        let detail = res.statusText;
+        try {
+          const json = JSON.parse(text) as { detail?: string };
+          detail = json.detail ?? detail;
+        } catch {
+          if (text) detail = text;
+        }
+        setValidationResult({ message: `Validation failed: ${detail}`, severity: 'warning' });
+        setSnackbar({ open: true, message: `Validation failed: ${detail}`, severity: 'error' });
+        setValidating(false);
+        return;
       }
-    }, 800);
+      let message = 'Validation completed.';
+      try {
+        const json = JSON.parse(text) as {
+          message?: string;
+          total_rows?: number;
+          training_rows?: number;
+          testing_rows?: number;
+          training_percentage?: number;
+          testing_percentage?: number;
+        };
+        if (json.message) message = json.message;
+        if (
+          typeof json.training_rows === 'number' &&
+          typeof json.testing_rows === 'number'
+        ) {
+          message = `Validation: ✅ ${json.training_rows} training (${json.training_percentage ?? '—'}%), ${json.testing_rows} testing (${json.testing_percentage ?? '—'}%)`;
+        } else if (json.total_rows === 0) {
+          message = 'No rows to validate.';
+        }
+      } catch {
+        if (text) message = text;
+      }
+      setValidationResult({ message, severity: 'success' });
+      setSnackbar({ open: true, message, severity: 'success' });
+      fetchViewData(viewLimit, 0);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to validate dataset.';
+      setValidationResult({ message: msg, severity: 'warning' });
+      setSnackbar({ open: true, message: msg, severity: 'error' });
+    } finally {
+      setValidating(false);
+    }
   };
 
-  const handleInsert = () => {
+  const handleInsert = async () => {
     if (!insertText.trim()) {
       setSnackbar({ open: true, message: 'Paste a CSV row first.', severity: 'info' });
       return;
     }
+    const cols = rows.length > 0 ? Object.keys(rows[0] as object).filter((k) => k !== 'id' && k !== 'upload_timestamp' && k !== 'T') : DEFAULT_FEATURE_COLUMNS;
     if (rows.length === 0) {
-      setSnackbar({ open: true, message: 'No dataset loaded. Upload a CSV first.', severity: 'info' });
+      setSnackbar({ open: true, message: 'Load view data first so columns are known, or paste a CSV row with columns: ' + cols.join(', '), severity: 'info' });
       return;
     }
     const parts = insertText.trim().split(',').map((p) => p.trim());
-    const cols = rows.length > 0 ? Object.keys(rows[0] as object).filter((k) => k !== 'id') : DEFAULT_FEATURE_COLUMNS;
-    if (parts.length >= cols.length) {
-      const newRow: Record<string, unknown> = { id: rows.length + 1 };
-      cols.forEach((c, i) => { newRow[c] = parts[i] ?? ''; });
-      setRows((r) => [...r, newRow]);
-      setInsertText('');
-      setSnackbar({ open: true, message: 'Row added successfully', severity: 'success' });
-    } else {
+    if (parts.length < cols.length) {
       setSnackbar({ open: true, message: `Invalid format. Use: ${cols.join(', ')}`, severity: 'error' });
+      return;
+    }
+    const data: Record<string, unknown> = {};
+    cols.forEach((c, i) => { data[c] = parts[i] ?? ''; });
+    setInsertLoading(true);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (datasetName.trim()) headers['X-Database-Name'] = datasetName.trim();
+      const res = await fetch(`${API_BASE}/insert`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(data),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        let detail = res.statusText;
+        try {
+          const json = JSON.parse(text) as { detail?: string | { msg?: string }[] };
+          detail = Array.isArray(json.detail) ? (json.detail as { msg?: string }[]).map((d) => d.msg ?? '').join('; ') : String(json.detail ?? detail);
+        } catch {
+          if (text) detail = text;
+        }
+        setSnackbar({ open: true, message: `Insert failed: ${detail}`, severity: 'error' });
+        setInsertLoading(false);
+        return;
+      }
+      setInsertText('');
+      setSnackbar({ open: true, message: 'Row inserted successfully.', severity: 'success' });
+      fetchViewData(viewLimit, 0);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to insert row.';
+      setSnackbar({ open: true, message: msg, severity: 'error' });
+    } finally {
+      setInsertLoading(false);
     }
   };
 
-  const handleClearConfirm = () => {
-    setRows([]);
-    setMetrics(null);
-    setValidationResult(null);
-    setClearConfirmOpen(false);
-    setSnackbar({ open: true, message: 'Database table cleared', severity: 'info' });
+  const handleClearConfirm = async () => {
+    setClearLoading(true);
+    try {
+      const headers: Record<string, string> = {};
+      if (datasetName.trim()) headers['X-Database-Name'] = datasetName.trim();
+      const res = await fetch(`${API_BASE}/clear`, { method: 'POST', headers });
+      const text = await res.text();
+      if (!res.ok) {
+        let detail = res.statusText;
+        try {
+          const json = JSON.parse(text) as { detail?: string };
+          detail = json.detail ?? detail;
+        } catch {
+          if (text) detail = text;
+        }
+        setSnackbar({ open: true, message: `Clear failed: ${detail}`, severity: 'error' });
+        setClearLoading(false);
+        return;
+      }
+      let message = 'Database table cleared.';
+      try {
+        const json = JSON.parse(text) as { rows_deleted?: number; message?: string };
+        if (typeof json.rows_deleted === 'number') message = `Database cleared. ${json.rows_deleted} row(s) deleted.`;
+        else if (json.message) message = json.message;
+      } catch {
+        if (text) message = text;
+      }
+      setRows([]);
+      setMetrics(null);
+      setValidationResult(null);
+      setViewTotalRows(0);
+      setClearConfirmOpen(false);
+      setSnackbar({ open: true, message, severity: 'success' });
+      fetchViewData(viewLimit, 0);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to clear database.';
+      setSnackbar({ open: true, message: msg, severity: 'error' });
+    } finally {
+      setClearLoading(false);
+    }
   };
 
   const handleTrain = () => {
@@ -272,7 +445,7 @@ export default function ModelPage() {
                 <Stack spacing={2}>
                   <Box>
                     <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 500, display: 'block', mb: 0.75 }}>
-                      Dataset Name
+                      Dataset Name (optional – sent as X-Database-Name header)
                     </Typography>
                     <TextField
                       fullWidth
@@ -291,12 +464,37 @@ export default function ModelPage() {
                     onChange={handleFileChange}
                     style={{ display: 'none' }}
                   />
+                  <Stack direction="row" alignItems="center" spacing={2} flexWrap="wrap" useFlexGap>
+                    <Button
+                      variant="outlined"
+                      color="info"
+                      onClick={handleAttachClick}
+                      sx={{ flexShrink: 0 }}
+                    >
+                      Attach file
+                    </Button>
+                    {selectedFile ? (
+                      <Stack direction="row" alignItems="center" spacing={1}>
+                        <Chip
+                          label={selectedFile.name}
+                          size="small"
+                          onDelete={() => setSelectedFile(null)}
+                          color="info"
+                          variant="outlined"
+                        />
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        No file attached
+                      </Typography>
+                    )}
+                  </Stack>
                   <Button
                     variant="contained"
                     color="info"
                     startIcon={uploading ? <CircularProgress size={16} color="inherit" /> : <UploadFileRoundedIcon />}
-                    onClick={handleUploadClick}
-                    disabled={uploading}
+                    onClick={handleUploadToBackend}
+                    disabled={uploading || !selectedFile}
                     sx={(theme) => ({
                       alignSelf: 'flex-start',
                       color: `${theme.palette.info.contrastText || '#fff'} !important`,
@@ -327,7 +525,32 @@ export default function ModelPage() {
                   <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'primary.main' }}>
                     View Data
                   </Typography>
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
+                    <FormControl size="small" sx={{ minWidth: 140 }}>
+                      <InputLabel id="rows-label">Rows to show</InputLabel>
+                      <Select
+                        labelId="rows-label"
+                        value={viewLimit}
+                        label="Rows to show"
+                        onChange={(e) => handleViewLimitChange(Number(e.target.value))}
+                        disabled={viewLoading}
+                      >
+                        <MenuItem value={500}>500</MenuItem>
+                        <MenuItem value={1000}>1000</MenuItem>
+                        <MenuItem value={2000}>2000</MenuItem>
+                        <MenuItem value={5000}>5000</MenuItem>
+                        <MenuItem value={10000}>10,000</MenuItem>
+                      </Select>
+                    </FormControl>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={viewLoading ? <CircularProgress size={14} color="inherit" /> : <RefreshRoundedIcon />}
+                      onClick={() => fetchViewData(viewLimit, 0)}
+                      disabled={viewLoading}
+                    >
+                      Refresh
+                    </Button>
                     <FormControl size="small" sx={{ minWidth: 130 }}>
                       <InputLabel id="filter-label">Filter</InputLabel>
                       <Select
@@ -351,20 +574,32 @@ export default function ModelPage() {
                     />
                   </Stack>
                 </Stack>
+                {viewTotalRows != null && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                    Showing {rows.length} of {viewTotalRows} rows from backend
+                  </Typography>
+                )}
                 <Box sx={{ height: 280, width: '100%' }}>
-                  {filteredRows.length > 0 ? (
+                  {viewLoading && rows.length === 0 ? (
+                    <Stack alignItems="center" justifyContent="center" sx={{ height: '100%', color: 'text.secondary' }}>
+                      <CircularProgress size={32} sx={{ mb: 1 }} />
+                      <Typography variant="body2">Loading view data…</Typography>
+                    </Stack>
+                  ) : filteredRows.length > 0 ? (
                     <DataGrid
                       rows={filteredRows}
                       columns={columns}
-                      initialState={{ pagination: { paginationModel: { pageSize: 5 } } }}
-                      pageSizeOptions={[5, 10, 25]}
+                      initialState={{ pagination: { paginationModel: { pageSize: 100 } } }}
+                      pageSizeOptions={[25, 50, 100]}
                       disableColumnResize
                       density="compact"
                     />
                   ) : (
                     <Stack alignItems="center" justifyContent="center" sx={{ height: '100%', color: 'text.secondary' }}>
                       <SearchRoundedIcon sx={{ fontSize: 48, mb: 1, opacity: 0.5 }} />
-                      <Typography variant="body2">No dataset loaded yet. Upload a CSV to view data.</Typography>
+                      <Typography variant="body2">
+                        {viewLoading ? 'Loading…' : 'No data. Upload a CSV or check backend at http://localhost:8000.'}
+                      </Typography>
                     </Stack>
                   )}
                 </Box>
@@ -437,8 +672,9 @@ export default function ModelPage() {
                       <Button
                         variant="contained"
                         color="success"
-                        startIcon={<AddRoundedIcon />}
+                        startIcon={insertLoading ? <CircularProgress size={16} color="inherit" /> : <AddRoundedIcon />}
                         onClick={handleInsert}
+                        disabled={insertLoading}
                         sx={(theme) => ({
                           alignSelf: 'flex-end',
                           color: `${theme.palette.success.contrastText || '#fff'} !important`,
@@ -449,7 +685,7 @@ export default function ModelPage() {
                           '& .MuiSvgIcon-root': { color: 'inherit' },
                         })}
                       >
-                        Add Row
+                        {insertLoading ? 'Inserting…' : 'Add Row'}
                       </Button>
                     </Stack>
                   </Box>
@@ -486,9 +722,14 @@ export default function ModelPage() {
               }}
             >
               <CardContent>
-                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2, color: 'hsl(199, 89%, 38%)' }}>
-                  Model Configuration & Training
-                </Typography>
+                <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'hsl(199, 89%, 38%)' }}>
+                    Model Configuration & Training
+                  </Typography>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'red' }}>
+                    (UNDER CONSTRUCTION)
+                  </Typography>
+                </Stack>
                 <Stack spacing={2}>
                   <Box>
                     <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 500, display: 'block', mb: 0.75 }}>
@@ -625,9 +866,14 @@ export default function ModelPage() {
               }}
             >
               <CardContent>
-                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2, color: 'hsl(142, 76%, 38%)' }}>
-                  Model KPIs and metrics
-                </Typography>
+                <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'hsl(142, 76%, 38%)' }}>
+                    Model KPIs and metrics
+                  </Typography>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'red' }}>
+                    (UNDER CONSTRUCTION)
+                  </Typography>
+                </Stack>
                 {metrics ? (
                   <Stack spacing={2}>
                     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -687,7 +933,7 @@ export default function ModelPage() {
       </Stack>
 
       {/* Clear Confirm Dialog */}
-      <Dialog open={clearConfirmOpen} onClose={() => setClearConfirmOpen(false)}>
+      <Dialog open={clearConfirmOpen} onClose={() => !clearLoading && setClearConfirmOpen(false)}>
         <DialogTitle>Clear Database Table?</DialogTitle>
         <DialogContent>
           <DialogContentText>
@@ -695,9 +941,9 @@ export default function ModelPage() {
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setClearConfirmOpen(false)}>Cancel</Button>
-          <Button onClick={handleClearConfirm} color="error" variant="contained">
-            Confirm
+          <Button onClick={() => setClearConfirmOpen(false)} disabled={clearLoading}>Cancel</Button>
+          <Button onClick={handleClearConfirm} color="error" variant="contained" disabled={clearLoading} startIcon={clearLoading ? <CircularProgress size={16} color="inherit" /> : undefined}>
+            {clearLoading ? 'Clearing…' : 'Confirm'}
           </Button>
         </DialogActions>
       </Dialog>
