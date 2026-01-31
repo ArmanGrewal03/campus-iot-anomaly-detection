@@ -85,6 +85,8 @@ export default function ModelPage() {
     message: '',
     severity: 'success',
   });
+  const [apiHealth, setApiHealth] = React.useState<'healthy' | 'unhealthy' | 'loading' | null>(null);
+  const [apiHealthDetail, setApiHealthDetail] = React.useState<{ service?: string; database?: string; timestamp?: string } | null>(null);
 
   const filteredRows = React.useMemo(() => {
     let result = rows;
@@ -219,6 +221,37 @@ export default function ModelPage() {
   React.useEffect(() => {
     fetchViewData(viewLimit, 0);
   }, [viewLimit, fetchViewData]);
+
+  const fetchApiHealth = React.useCallback(async (silent = false) => {
+    if (!silent) {
+      setApiHealth('loading');
+      setApiHealthDetail(null);
+    }
+    try {
+      const headers: Record<string, string> = {};
+      if (datasetName.trim()) headers['X-Database-Name'] = datasetName.trim();
+      const res = await fetch(`${API_BASE}/api/health`, { headers });
+      const json = (await res.json()) as { status?: string; service?: string; database?: string; timestamp?: string };
+      if (res.ok && json.status === 'healthy') {
+        setApiHealth('healthy');
+        setApiHealthDetail({
+          service: json.service,
+          database: json.database,
+          timestamp: json.timestamp,
+        });
+      } else {
+        setApiHealth('unhealthy');
+      }
+    } catch {
+      setApiHealth('unhealthy');
+    }
+  }, [datasetName]);
+
+  React.useEffect(() => {
+    fetchApiHealth();
+    const interval = setInterval(() => fetchApiHealth(true), 2000);
+    return () => clearInterval(interval);
+  }, [fetchApiHealth]);
 
   const handleViewLimitChange = (newLimit: number) => {
     setViewLimit(newLimit);
@@ -429,6 +462,38 @@ export default function ModelPage() {
       </Stack>
 
       <Stack spacing={3}>
+            {/* API Health (above Dataset Setup) */}
+            <Stack
+              direction="row"
+              alignItems="center"
+              spacing={1.5}
+              sx={{
+                px: 2,
+                py: 1.25,
+                borderRadius: 1,
+                bgcolor: 'action.hover',
+              }}
+            >
+              {apiHealth === 'loading' && (
+                <CircularProgress size={16} sx={{ color: 'text.secondary' }} />
+              )}
+              {apiHealth === 'healthy' && (
+                <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: 'success.main' }} />
+              )}
+              {apiHealth === 'unhealthy' && (
+                <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: 'error.main' }} />
+              )}
+              <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                API: {apiHealth === 'loading' ? 'Checking…' : apiHealth === 'healthy' ? 'Healthy' : 'Unreachable'}
+              </Typography>
+              {apiHealth === 'healthy' && apiHealthDetail?.service && (
+                <Typography variant="caption" color="text.secondary">
+                  {apiHealthDetail.service}
+                  {apiHealthDetail.database ? ` · DB: ${apiHealthDetail.database}` : ''}
+                </Typography>
+              )}
+            </Stack>
+
             {/* Section A: Dataset Setup */}
             <Card
               variant="outlined"
