@@ -217,6 +217,116 @@
             >
             </base-table>
           </div>
+
+          <!-- Summary tiles under the table -->
+          <div class="row mt-4 pt-3 border-top border-secondary">
+            <div class="col-6 col-md-3 mb-3">
+              <div class="card card-stats bg-gradient-primary">
+                <div class="card-body">
+                  <div class="row">
+                    <div class="col-5">
+                      <div class="icon-big text-center">
+                        <i class="tim-icons icon-tag text-white"></i>
+                      </div>
+                    </div>
+                    <div class="col-7 d-flex align-items-center">
+                      <div class="numbers">
+                        <p class="card-category text-white mb-0" style="opacity: 0.9;">{{ $t("dashboard.uniqueTypesInView") }}</p>
+                        <h4 class="card-title text-white mb-0">{{ uniqueTypesCount }}</h4>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-6 col-md-3 mb-3">
+              <div class="card card-stats bg-gradient-info">
+                <div class="card-body">
+                  <div class="row">
+                    <div class="col-5">
+                      <div class="icon-big text-center">
+                        <i class="tim-icons icon-bullet-list-67 text-white"></i>
+                      </div>
+                    </div>
+                    <div class="col-7 d-flex align-items-center">
+                      <div class="numbers">
+                        <p class="card-category text-white mb-0" style="opacity: 0.9;">{{ $t("dashboard.recordsShown") }}</p>
+                        <h4 class="card-title text-white mb-0">{{ recentRecords.length }}</h4>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-6 col-md-3 mb-3">
+              <div class="card card-stats bg-gradient-success">
+                <div class="card-body">
+                  <div class="row">
+                    <div class="col-5">
+                      <div class="icon-big text-center">
+                        <i class="tim-icons icon-chart-bar-32 text-white"></i>
+                      </div>
+                    </div>
+                    <div class="col-7 d-flex align-items-center">
+                      <div class="numbers">
+                        <p class="card-category text-white mb-0" style="opacity: 0.9;">{{ $t("dashboard.trainingSplit") }}</p>
+                        <h4 class="card-title text-white mb-0">{{ stats ? stats.training_percentage + '%' : '-' }}</h4>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-6 col-md-3 mb-3">
+              <div class="card card-stats bg-gradient-warning">
+                <div class="card-body">
+                  <div class="row">
+                    <div class="col-5">
+                      <div class="icon-big text-center">
+                        <i class="tim-icons icon-send text-white"></i>
+                      </div>
+                    </div>
+                    <div class="col-7 d-flex align-items-center">
+                      <div class="numbers">
+                        <p class="card-category text-white mb-0" style="opacity: 0.9;">{{ $t("dashboard.testingSplit") }}</p>
+                        <h4 class="card-title text-white mb-0">{{ stats ? stats.testing_percentage + '%' : '-' }}</h4>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick insights under tiles -->
+          <div class="row mt-2">
+            <div class="col-12">
+              <card>
+                <h5 slot="header" class="card-title mb-0">
+                  <i class="tim-icons icon-light-bulb text-warning mr-2"></i>
+                  {{ $t("dashboard.quickInsights") }}
+                </h5>
+                <ul class="list-unstyled mb-0">
+                  <li class="mb-2">
+                    <i class="tim-icons icon-check-2 text-success mr-2"></i>
+                    <span>{{ $t("dashboard.insightApi") }}: {{ stats && stats.api_online ? $t("dashboard.apiOnline") : $t("dashboard.apiOffline") }}</span>
+                  </li>
+                  <li class="mb-2">
+                    <i class="tim-icons icon-bullet-list-67 text-info mr-2"></i>
+                    <span>{{ $t("dashboard.insightTotal") }}: {{ stats ? stats.total_records : '-' }} {{ $t("dashboard.records") }}</span>
+                  </li>
+                  <li class="mb-2">
+                    <i class="tim-icons icon-tag text-primary mr-2"></i>
+                    <span>{{ $t("dashboard.insightTypes") }}: {{ typeStats && typeStats.type_distribution ? Object.keys(typeStats.type_distribution).length : '-' }} {{ $t("dashboard.uniqueTypes") }}</span>
+                  </li>
+                  <li class="mb-2">
+                    <i class="tim-icons icon-chart-pie-36 text-warning mr-2"></i>
+                    <span>{{ $t("dashboard.insightSample") }}: {{ recentRecords.length }} {{ $t("dashboard.records") }} {{ $t("dashboard.fromTable") }}</span>
+                  </li>
+                </ul>
+              </card>
+            </div>
+          </div>
         </card>
       </div>
     </div>
@@ -252,6 +362,11 @@ export default {
   computed: {
     isRTL() {
       return this.$rtl && this.$rtl.isRTL;
+    },
+    uniqueTypesCount() {
+      if (!this.recentRecords || this.recentRecords.length === 0) return 0;
+      const types = new Set(this.recentRecords.map((r) => (r.type && String(r.type).trim()) || "—"));
+      return types.size;
     },
     typeChartOptions() {
       // Get base options without hardcoded min/max
@@ -582,4 +697,12 @@ export default {
   },
 };
 </script>
-<style></style>
+<style scoped>
+.card-stats .icon-big {
+  font-size: 2rem;
+}
+.card-stats.bg-gradient-primary { background: linear-gradient(87deg, #1d8cf8 0, #3358f4 100%); }
+.card-stats.bg-gradient-info { background: linear-gradient(87deg, #11cdef 0, #1171ef 100%); }
+.card-stats.bg-gradient-success { background: linear-gradient(87deg, #2dce89 0, #2dcecc 100%); }
+.card-stats.bg-gradient-warning { background: linear-gradient(87deg, #fb6340 0, #f56036 100%); }
+</style>
