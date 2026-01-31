@@ -1,5 +1,26 @@
 # Campus IoT Anomaly Detection
 
+## Quick start (dashboard)
+
+**Run the backend first**, then the frontend.
+
+1. **Backend** (from repo root):
+   ```bash
+   cd C-Backend/P1
+   uvicorn main:app --reload
+   ```
+   API runs at http://localhost:8000
+
+2. **Frontend** (in a new terminal):
+   ```bash
+   cd D-Dashboard/V6
+   npm install
+   npm run dev
+   ```
+   Open http://localhost:5173 in your browser.
+
+---
+
 ## 1. Data Processing
 Run the preprocessing script to clean and encode the UNSW-NB15 dataset.
 
