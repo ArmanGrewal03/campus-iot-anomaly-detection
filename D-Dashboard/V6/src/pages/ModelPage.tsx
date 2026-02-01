@@ -249,7 +249,7 @@ export default function ModelPage() {
 
   React.useEffect(() => {
     fetchApiHealth();
-    const interval = setInterval(() => fetchApiHealth(true), 2000);
+    const interval = setInterval(() => fetchApiHealth(true), 15000);
     return () => clearInterval(interval);
   }, [fetchApiHealth]);
 
@@ -452,13 +452,60 @@ export default function ModelPage() {
   return (
     <Box sx={{ width: '100%', maxWidth: { sm: '100%', md: '1700px' } }}>
       {/* Page Header */}
-      <Stack sx={{ mb: 3 }}>
-        <Typography component="h1" variant="h5" sx={{ fontWeight: 600 }}>
-          Model Handling
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Upload a dataset, validate it, then configure and train a model.
-        </Typography>
+      <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 2.5 }}>
+        <Box
+          sx={(theme) => ({
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 52,
+            height: 52,
+            borderRadius: 2,
+            background: `linear-gradient(145deg, ${theme.palette.primary.main}28 0%, ${theme.palette.primary.dark}12 100%)`,
+            border: '2px solid',
+            borderColor: 'primary.main',
+            position: 'relative',
+            overflow: 'visible',
+            transformOrigin: 'center',
+            '@keyframes pulseGlow': {
+              '0%, 100%': {
+                boxShadow: `0 0 0 3px ${theme.palette.primary.main}35`,
+              },
+              '50%': {
+                boxShadow: `0 0 0 10px ${theme.palette.primary.main}22, 0 0 28px ${theme.palette.primary.main}18`,
+              },
+            },
+            '@keyframes breathe': {
+              '0%, 100%': { transform: 'scale(1)' },
+              '50%': { transform: 'scale(1.05)' },
+            },
+            animation: 'pulseGlow 2.2s ease-in-out infinite, breathe 2.2s ease-in-out infinite',
+            '@media (prefers-reduced-motion: reduce)': {
+              animation: 'none',
+            },
+          })}
+        >
+          <PsychologyRoundedIcon
+            sx={(theme) => ({
+              fontSize: 28,
+              color: 'primary.main',
+              '@keyframes iconGlow': {
+                '0%, 100%': { opacity: 1, filter: 'brightness(1)' },
+                '50%': { opacity: 0.92, filter: 'brightness(1.08)' },
+              },
+              animation: 'iconGlow 2.2s ease-in-out infinite',
+              '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
+            })}
+          />
+        </Box>
+        <Stack spacing={0.25}>
+          <Typography component="h1" variant="h5" sx={{ fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.3 }}>
+            Model Handling
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.45 }}>
+            Campus IoT anomaly detection — upload a dataset, validate it, then configure and train a model.
+          </Typography>
+        </Stack>
       </Stack>
 
       <Stack spacing={3}>
@@ -470,8 +517,10 @@ export default function ModelPage() {
               sx={{
                 px: 2,
                 py: 1.25,
-                borderRadius: 1,
+                borderRadius: 1.5,
                 bgcolor: 'action.hover',
+                border: '1px solid',
+                borderColor: 'divider',
               }}
             >
               {apiHealth === 'loading' && (
@@ -501,10 +550,13 @@ export default function ModelPage() {
                 borderLeft: `4px solid ${theme.palette.info.main}`,
                 borderTopLeftRadius: 0,
                 borderBottomLeftRadius: 0,
+                boxShadow: 'none',
+                transition: 'box-shadow 0.2s ease',
+                '&:hover': { boxShadow: theme.shadows[1] },
               })}
             >
               <CardContent>
-                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2, color: 'info.main' }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2, color: 'info.main', letterSpacing: '0.03em' }}>
                   Dataset Setup & Upload
                 </Typography>
                 <Stack spacing={2}>
@@ -580,14 +632,17 @@ export default function ModelPage() {
             <Card
               variant="outlined"
               sx={(theme) => ({
-                borderLeft: `4px solid ${theme.palette.primary.main}`,
+                borderLeft: '4px solid hsl(173, 58%, 42%)',
                 borderTopLeftRadius: 0,
                 borderBottomLeftRadius: 0,
+                boxShadow: 'none',
+                transition: 'box-shadow 0.2s ease',
+                '&:hover': { boxShadow: theme.shadows[1] },
               })}
             >
               <CardContent>
                 <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems="center" sx={{ mb: 2, gap: 2 }}>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'primary.main' }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'hsl(173, 58%, 32%)', letterSpacing: '0.03em' }}>
                     View Data
                   </Typography>
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
@@ -644,7 +699,7 @@ export default function ModelPage() {
                     Showing {rows.length} of {viewTotalRows} rows from backend
                   </Typography>
                 )}
-                <Box sx={{ height: 280, width: '100%' }}>
+                <Box sx={{ height: 280, width: '100%', borderRadius: 1, overflow: 'hidden', border: '1px solid', borderColor: 'divider' }}>
                   {viewLoading && rows.length === 0 ? (
                     <Stack alignItems="center" justifyContent="center" sx={{ height: '100%', color: 'text.secondary' }}>
                       <CircularProgress size={32} sx={{ mb: 1 }} />
@@ -674,14 +729,17 @@ export default function ModelPage() {
         {/* Section C: Dataset Actions */}
             <Card
               variant="outlined"
-              sx={{
+              sx={(theme) => ({
                 borderLeft: '4px solid hsl(280, 65%, 55%)',
                 borderTopLeftRadius: 0,
                 borderBottomLeftRadius: 0,
-              }}
+                boxShadow: 'none',
+                transition: 'box-shadow 0.2s ease',
+                '&:hover': { boxShadow: theme.shadows[1] },
+              })}
             >
               <CardContent>
-                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2, color: 'hsl(280, 65%, 45%)' }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2, color: 'hsl(280, 65%, 45%)', letterSpacing: '0.03em' }}>
                   Dataset Actions
                 </Typography>
                 <Stack spacing={2}>
@@ -780,20 +838,21 @@ export default function ModelPage() {
         {/* Section D: Model Configuration */}
             <Card
               variant="outlined"
-              sx={{
+              sx={(theme) => ({
                 borderLeft: '4px solid hsl(199, 89%, 48%)',
                 borderTopLeftRadius: 0,
                 borderBottomLeftRadius: 0,
-              }}
+                boxShadow: 'none',
+                transition: 'box-shadow 0.2s ease',
+                '&:hover': { boxShadow: theme.shadows[1] },
+              })}
             >
               <CardContent>
-                <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'hsl(199, 89%, 38%)' }}>
+                <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mb: 2, flexWrap: 'wrap', gap: 0.5 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'hsl(199, 89%, 38%)', letterSpacing: '0.03em' }}>
                     Model Configuration & Training
                   </Typography>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'red' }}>
-                    (UNDER CONSTRUCTION)
-                  </Typography>
+                  <Chip label="UNDER CONSTRUCTION" size="small" color="error" sx={{ fontSize: '0.7rem', height: 20, fontWeight: 600, color: 'red', textTransform: 'uppercase' }} />
                 </Stack>
                 <Stack spacing={2}>
                   <Box>
@@ -924,20 +983,21 @@ export default function ModelPage() {
         {/* Section E: Metrics */}
             <Card
               variant="outlined"
-              sx={{
+              sx={(theme) => ({
                 borderLeft: '4px solid hsl(142, 76%, 48%)',
                 borderTopLeftRadius: 0,
                 borderBottomLeftRadius: 0,
-              }}
+                boxShadow: 'none',
+                transition: 'box-shadow 0.2s ease',
+                '&:hover': { boxShadow: theme.shadows[1] },
+              })}
             >
               <CardContent>
-                <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'hsl(142, 76%, 38%)' }}>
+                <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mb: 2, flexWrap: 'wrap', gap: 0.5 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'hsl(142, 76%, 38%)', letterSpacing: '0.03em' }}>
                     Model KPIs and metrics
                   </Typography>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'red' }}>
-                    (UNDER CONSTRUCTION)
-                  </Typography>
+                  <Chip label="UNDER CONSTRUCTION" size="small" color="error" sx={{ fontSize: '0.7rem', height: 20, fontWeight: 600, color: 'red', textTransform: 'uppercase' }} />
                 </Stack>
                 {metrics ? (
                   <Stack spacing={2}>
@@ -949,38 +1009,50 @@ export default function ModelPage() {
                     <Grid container spacing={2}>
                       {metrics.accuracy != null && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" color="text.secondary">Accuracy</Typography>
-                          <Typography variant="h6">{(Number(metrics.accuracy) * 100).toFixed(1)}%</Typography>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">Accuracy</Typography>
+                            <Typography variant="h6">{(Number(metrics.accuracy) * 100).toFixed(1)}%</Typography>
+                          </Box>
                         </Grid>
                       )}
                       {metrics.precision != null && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" color="text.secondary">Precision</Typography>
-                          <Typography variant="h6">{(Number(metrics.precision) * 100).toFixed(1)}%</Typography>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">Precision</Typography>
+                            <Typography variant="h6">{(Number(metrics.precision) * 100).toFixed(1)}%</Typography>
+                          </Box>
                         </Grid>
                       )}
                       {metrics.recall != null && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" color="text.secondary">Recall</Typography>
-                          <Typography variant="h6">{(Number(metrics.recall) * 100).toFixed(1)}%</Typography>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">Recall</Typography>
+                            <Typography variant="h6">{(Number(metrics.recall) * 100).toFixed(1)}%</Typography>
+                          </Box>
                         </Grid>
                       )}
                       {metrics.f1 != null && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" color="text.secondary">F1</Typography>
-                          <Typography variant="h6">{(Number(metrics.f1) * 100).toFixed(1)}%</Typography>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">F1</Typography>
+                            <Typography variant="h6">{(Number(metrics.f1) * 100).toFixed(1)}%</Typography>
+                          </Box>
                         </Grid>
                       )}
                       {metrics.anomalyRate != null && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" color="text.secondary">Anomaly Rate</Typography>
-                          <Typography variant="h6">{String(metrics.anomalyRate)}</Typography>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">Anomaly Rate</Typography>
+                            <Typography variant="h6">{String(metrics.anomalyRate)}</Typography>
+                          </Box>
                         </Grid>
                       )}
                       {metrics.flagged != null && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" color="text.secondary">Flagged</Typography>
-                          <Typography variant="h6">{String(metrics.flagged)}</Typography>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">Flagged</Typography>
+                            <Typography variant="h6">{String(metrics.flagged)}</Typography>
+                          </Box>
                         </Grid>
                       )}
                     </Grid>
