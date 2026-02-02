@@ -18,6 +18,7 @@ const StyledBreadcrumbs = styled(Breadcrumbs)(({ theme }) => ({
 
 const routeNames: Record<string, string> = {
   '/home': 'Home',
+  '/test': 'Test',
   '/model': 'Model',
   '/analytics': 'Analytics',
   '/clients': 'Clients',

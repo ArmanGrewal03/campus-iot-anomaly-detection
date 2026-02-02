@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Dashboard from './dashboard/Dashboard';
 import HomePage from './pages/HomePage';
+import TestPage from './pages/TestPage';
 import ModelPage from './pages/ModelPage';
 import AnalyticsPage from './pages/AnalyticsPage';
 import ClientsPage from './pages/ClientsPage';
@@ -14,6 +15,7 @@ export default function App() {
       <Route path="/" element={<Dashboard />}>
         <Route index element={<Navigate to="/home" replace />} />
         <Route path="home" element={<HomePage />} />
+        <Route path="test" element={<TestPage />} />
         <Route path="model" element={<ModelPage />} />
         <Route path="analytics" element={<AnalyticsPage />} />
         <Route path="clients" element={<ClientsPage />} />
