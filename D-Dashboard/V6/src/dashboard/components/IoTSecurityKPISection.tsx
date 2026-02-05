@@ -693,8 +693,8 @@ export default function IoTSecurityKPISection() {
 
         {/* Right column: globe only (no card/section) + small tiles below – seamless */}
         <Grid size={{ xs: 12, md: 5 }} sx={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch' }}>
-          <Box sx={{ flex: 1, minHeight: 420 }}>
-            <InteractiveGlobe height={420} seamless />
+          <Box sx={{ flex: 1, minHeight: 520 }}>
+            <InteractiveGlobe height={520} seamless />
           </Box>
           <Grid container spacing={2} columns={12} sx={{ mt: 2 }}>
             <Grid size={{ xs: 12, sm: 4 }}>
