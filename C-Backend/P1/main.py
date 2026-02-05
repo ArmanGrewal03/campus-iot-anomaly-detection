@@ -22,10 +22,12 @@ app = FastAPI(title="Campus IoT Anomaly Detection API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",  # Vite dev server
+        "http://localhost:5173",  # Vite dev server (default)
+        "http://localhost:5174",  # Vite dev server (this project)
         "http://localhost:3000",  # Alternative React dev server
         "http://localhost:8080",  # Vue CLI dev server
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:8080",
     ],
