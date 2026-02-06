@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -15,6 +15,12 @@ import random
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from training_manager import train_model_dispatch
+import pandas as pd
+import joblib
+from sklearn.ensemble import IsolationForest
+from sklearn.neural_network import MLPRegressor
+import numpy as np
 
 app = FastAPI(title="Campus IoT Anomaly Detection API", version="1.0.0")
 
@@ -41,6 +47,16 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+class TrainRequest(BaseModel):
+    model_name: str
+    dataset_name: Optional[str] = None
+    features: List[str]
+    model_type: str
+
+class PredictRequest(BaseModel):
+    model_path: str
+    data: List[Dict[str, Any]]
 
 DEFAULT_DB_NAME = "campus_iot_data.db"
 
@@ -745,6 +761,257 @@ async def get_stats(database_name: str = Depends(get_db_name)):
             },
             status_code=500
         )
+
+
+@app.post("/api/train")
+async def train_model_endpoint(
+    request: TrainRequest,
+    database_name: str = Depends(get_db_name)
+):
+    """Train a model based on selected features and dataset"""
+    db_to_use = request.dataset_name if request.dataset_name else database_name
+    logger.info(f"Training request for model '{request.model_name}' on dataset '{db_to_use}'")
+    
+    try:
+        init_db(db_to_use)
+        conn = get_db_connection(db_to_use)
+        
+        # Check if T column exists
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(csv_data)")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        if 'T' not in columns:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Dataset not validated. Please run validation first.")
+            
+        # Fetch training data
+        cursor.execute("SELECT row_data FROM csv_data WHERE T = ?", ("training",))
+        rows = cursor.fetchall()
+        
+        if len(rows) < 10:
+            conn.close()
+            # If not enough data, return a simulated success for demonstration if requested, 
+            # but here we'll try to be "real" or return a helpful error.
+            logger.warning(f"Insufficient training data: {len(rows)} rows")
+            
+        # Parse data into DataFrame
+        data_list = []
+        for r in rows:
+            try:
+                data_list.append(json.loads(r['row_data']))
+            except:
+                continue
+                
+        if not data_list:
+            conn.close()
+            raise HTTPException(status_code=400, detail="No valid training data found.")
+            
+        df = pd.DataFrame(data_list)
+        conn.close()
+        
+        # Filter for requested features + label
+        if not request.features:
+            # AUTO-SELECT FEATURES (rfV1 logic)
+            exclude_cols = ["label", "id", "attack_cat", "upload_timestamp", "T"]
+            available_features = [col for col in df.columns if col not in exclude_cols]
+            logger.info(f"Auto-selected {len(available_features)} features for training")
+        else:
+            available_features = [f for f in request.features if f in df.columns]
+            
+        if not available_features:
+            raise HTTPException(status_code=400, detail="No suitable features found for training.")
+            
+        label_col = 'label' if 'label' in df.columns else None
+        if not label_col:
+            # Try to find a label-like column
+            for col in df.columns:
+                if col.lower() in ['label', 'target', 'class', 'anomaly']:
+                    label_col = col
+                    break
+        
+        if not label_col:
+            raise HTTPException(status_code=400, detail="No label/target column found in dataset.")
+            
+        # exclude label from X
+        if label_col in available_features:
+            available_features.remove(label_col)
+            
+        # ALWAYS EXCLUDE LABEL from features list passed to model
+        if label_col in available_features:
+            available_features.remove(label_col)
+
+        # Delegate to Training Manager
+        try:
+            metrics = train_model_dispatch(
+                model_type=request.model_type,
+                model_name=request.model_name,
+                df=df,
+                features=available_features,
+                label_col=label_col
+            )
+        except Exception as e:
+            logger.error(f"Error in training manager: {e}")
+            raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
+        
+        # Add extra context to metrics
+        metrics["dataset"] = db_to_use
+        metrics["features"] = ", ".join(available_features)
+        metrics["row_count"] = len(df)
+        metrics["timestamp"] = datetime.utcnow().isoformat()
+        
+        return JSONResponse(content=metrics, status_code=200)
+        
+    except Exception as e:
+        logger.error(f"Training error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/predict")
+async def predict_endpoint(request: PredictRequest):
+    """Make predictions using a trained model"""
+    logger.info(f"Prediction request using model: {request.model_path}")
+    
+    try:
+        if not os.path.exists(request.model_path):
+            raise HTTPException(status_code=404, detail=f"Model file not found: {request.model_path}")
+            
+        model = joblib.load(request.model_path)
+        
+        # Load feature names from metadata
+        meta_path = request.model_path.replace(".joblib", "_meta.json")
+        features = None
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                    features = meta.get("features")
+            except Exception as e:
+                logger.warning(f"Could not load metadata: {e}")
+        
+        df = pd.DataFrame(request.data)
+        
+        # Filter columns to match training features
+        if features:
+            # Ensure all features exist in input, fill missing with 0
+            for f in features:
+                if f not in df.columns:
+                    df[f] = 0
+            X = df[features].copy()
+        else:
+            # Fallback for old models: remove known labels/IDs
+            exclude_cols = ["label", "id", "attack_cat", "upload_timestamp", "T"]
+            X = df.drop(columns=[c for c in exclude_cols if c in df.columns])
+            
+        # Preprocess input data to match model expectations
+        for col in X.columns:
+            if X[col].dtype == 'object':
+                X[col] = pd.factorize(X[col])[0]
+        
+        # Prediction Logic based on Model Type
+        predictions = []
+        probabilities = [] # Confidence scores
+        
+        is_if = isinstance(model, IsolationForest)
+        
+        # Handle Autoencoder
+        # Since we use standard MLPRegressor from sklearn, it doesn't have a special type attribute 
+        # unless we check the class name or metadata.
+        is_ae = isinstance(model, MLPRegressor)
+        
+        if is_if:
+            # Isolation Forest
+            if os.path.exists(request.model_path.replace(".joblib", "_scaler.joblib")):
+                scaler = joblib.load(request.model_path.replace(".joblib", "_scaler.joblib"))
+                X_scaled = scaler.transform(X)
+            else:
+                X_scaled = X # Should not happen now
+                
+            # predict returns -1 (anomaly) and 1 (normal)
+            raw_preds = model.predict(X_scaled)
+            # decision_function returns anomaly score (lower = more anomalous)
+            scores = model.decision_function(X_scaled)
+            
+            predictions = np.where(raw_preds == -1, 1, 0)
+            # Normalize confidence roughly
+            probabilities = (scores.max() - scores) / (scores.max() - scores.min() + 1e-6)
+            # Or just use the score magnitude:
+            # High anomaly score (very negative) -> High confidence in anomaly
+             
+        elif is_ae:
+            # Autoencoder
+            if os.path.exists(request.model_path.replace(".joblib", "_scaler.joblib")):
+                scaler = joblib.load(request.model_path.replace(".joblib", "_scaler.joblib"))
+                X_scaled = scaler.transform(X)
+            else:
+                X_scaled = X # Should not happen if trained correctly
+                
+            X_recon = model.predict(X_scaled)
+            mse = np.mean(np.power(X_scaled - X_recon, 2), axis=1)
+            
+            # Retrieve threshold if possible
+            threshold = 0.1 # Default fallback
+            meta_path = request.model_path.replace(".joblib", "_meta.json")
+            if os.path.exists(meta_path):
+                with open(meta_path, 'r') as f:
+                    m = json.load(f)
+                    threshold = m.get("threshold", 0.1)
+            
+            predictions = (mse > threshold).astype(int)
+            # Confidence based on distance from threshold
+            probabilities = mse 
+            
+        else:
+            # Random Forest / Classifier
+            predictions = model.predict(X)
+            probabilities = model.predict_proba(X)[:, 1] # Prob of class 1
+        
+        results = []
+        for i, pred in enumerate(predictions):
+            conf = float(probabilities[i]) if isinstance(probabilities, np.ndarray) else 0.0
+            
+            # Logic for readable confidence:
+            # If pred=0 (Normal), we want confidence of it being Normal.
+            # If pred=1 (Anomaly), we want confidence of it being Anomaly.
+            
+            if is_ae:
+                 # AE returns MSE as "probabilities". It's not a % confidence.
+                 # Let's just return it raw or normalized if possible.
+                 # For now, let's keep it raw but maybe cap it for the UI bar.
+                 pass
+            elif is_if:
+                 # IF returns normalized anomaly score. 
+                 # If pred is Normal (0), score was likely high (in decision_function).
+                 # If pred is Anomaly (1), score was low.
+                 # Our 'probabilities' var maps roughly to anomaly likelihood.
+                 if pred == 0:
+                     conf = 1.0 - conf
+            else:
+                 # Random Forest (Standard Classifier)
+                 # probabilities is P(Anomaly)
+                 if pred == 0:
+                     conf = 1.0 - conf
+            
+            # Cap confidence for display
+            if conf > 1.0: conf = 1.0
+            if conf < 0.0: conf = 0.0
+            
+            results.append({
+                "index": i,
+                "prediction": int(pred),
+                "label": "anomaly" if pred == 1 else "normal",
+                "confidence": conf
+            })
+            
+        return JSONResponse(content={
+            "status": "success",
+            "results": results,
+            "model_type": type(model).__name__
+        })
+        
+    except Exception as e:
+        logger.error(f"Prediction error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def extract_types_from_chunk(rows_data):
