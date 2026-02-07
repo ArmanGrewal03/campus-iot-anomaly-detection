@@ -13,6 +13,16 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 
 logger = logging.getLogger(__name__)
 
+
+def _ensure_numeric_features(X):
+    """Encode any non-numeric columns (object, string, category, etc.) so sklearn can use them."""
+    X = X.copy()
+    for col in X.columns:
+        if not pd.api.types.is_numeric_dtype(X[col]):
+            X[col] = pd.factorize(X[col])[0]
+    return X
+
+
 class ModelTrainer:
     def __init__(self, model_name, model_type):
         self.model_name = model_name
@@ -56,15 +66,10 @@ class ModelTrainer:
 
 class RandomForestTrainer(ModelTrainer):
     def train(self, df, features, label_col):
-        X = df[features].copy()
+        X = _ensure_numeric_features(df[features])
         y = df[label_col].copy()
-        
-        # Encoding
-        for col in X.columns:
-            if X[col].dtype == 'object':
-                X[col] = pd.factorize(X[col])[0]
-        if y.dtype == 'object':
-            y = pd.factorize(y)[0]
+        if not pd.api.types.is_numeric_dtype(y):
+            y = pd.Series(pd.factorize(y)[0], index=y.index)
             
         # Split (Internal Validation)
         X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -90,12 +95,7 @@ class RandomForestTrainer(ModelTrainer):
 class IsolationForestTrainer(ModelTrainer):
     def train(self, df, features, label_col=None):
         # IF is unsupervised, but we use label to estimate contamination if available
-        X = df[features].copy()
-        
-        # Encoding
-        for col in X.columns:
-            if X[col].dtype == 'object':
-                X[col] = pd.factorize(X[col])[0]
+        X = _ensure_numeric_features(df[features])
                 
         # Scaling is important for IF
         scaler = StandardScaler()
@@ -106,7 +106,8 @@ class IsolationForestTrainer(ModelTrainer):
         if label_col and label_col in df.columns:
             # Assume 1 is anomaly
             y = df[label_col].copy()
-            if y.dtype == 'object': y = pd.factorize(y)[0]
+            if not pd.api.types.is_numeric_dtype(y):
+                y = pd.Series(pd.factorize(y)[0], index=y.index)
             contamination = float(sum(y == 1) / len(y))
             contamination = max(0.01, min(0.4, contamination)) # Camp betwen 1% and 40%
             
@@ -130,7 +131,8 @@ class IsolationForestTrainer(ModelTrainer):
         # If we have labels, add classification metrics
         if label_col and label_col in df.columns:
              y = df[label_col].copy()
-             if y.dtype == 'object': y = pd.factorize(y)[0]
+             if not pd.api.types.is_numeric_dtype(y):
+                 y = pd.Series(pd.factorize(y)[0], index=y.index)
              metrics["accuracy"] = float(accuracy_score(y, y_pred))
              metrics["precision"] = float(precision_score(y, y_pred, zero_division=0))
              metrics["recall"] = float(recall_score(y, y_pred, zero_division=0))
@@ -139,12 +141,7 @@ class IsolationForestTrainer(ModelTrainer):
 
 class AutoEncoderTrainer(ModelTrainer):
     def train(self, df, features, label_col=None):
-        X = df[features].copy()
-        
-        # Encoding
-        for col in X.columns:
-            if X[col].dtype == 'object':
-                X[col] = pd.factorize(X[col])[0]
+        X = _ensure_numeric_features(df[features])
                 
         # Scaling is CRITICAL for Autoencoders
         scaler = StandardScaler()
@@ -181,7 +178,8 @@ class AutoEncoderTrainer(ModelTrainer):
         
         if label_col and label_col in df.columns:
              y = df[label_col].copy()
-             if y.dtype == 'object': y = pd.factorize(y)[0]
+             if not pd.api.types.is_numeric_dtype(y):
+                 y = pd.Series(pd.factorize(y)[0], index=y.index)
              metrics["accuracy"] = float(accuracy_score(y, y_pred))
              metrics["precision"] = float(precision_score(y, y_pred, zero_division=0))
              metrics["recall"] = float(recall_score(y, y_pred, zero_division=0))

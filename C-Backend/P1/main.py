@@ -903,9 +903,9 @@ async def predict_endpoint(request: PredictRequest):
             exclude_cols = ["label", "id", "attack_cat", "upload_timestamp", "T"]
             X = df.drop(columns=[c for c in exclude_cols if c in df.columns])
             
-        # Preprocess input data to match model expectations
+        # Preprocess input data to match model expectations (encode non-numeric columns)
         for col in X.columns:
-            if X[col].dtype == 'object':
+            if not pd.api.types.is_numeric_dtype(X[col]):
                 X[col] = pd.factorize(X[col])[0]
         
         # Prediction Logic based on Model Type

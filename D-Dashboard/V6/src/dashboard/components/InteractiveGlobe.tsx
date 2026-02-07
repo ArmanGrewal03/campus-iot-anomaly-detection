@@ -10,7 +10,7 @@ import globeLandPoints from '../../data/globeLandPoints.json';
 const RADIUS = 1;
 const DOT_COLOR = '#8b9dc3'; // light blue-gray – dots = land
 const CAMERA_DISTANCE = 2.85;
-const AUTO_ROTATE_SPEED = 0.24;
+const AUTO_ROTATE_SPEED = 0.3;
 
 function latLonToXYZ(lat: number, lon: number): [number, number, number] {
   const latRad = (lat * Math.PI) / 180;
