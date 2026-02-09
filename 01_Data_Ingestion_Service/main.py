@@ -22,10 +22,12 @@ app = FastAPI(title="Campus IoT Anomaly Detection API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",  # Vite dev server
+        "http://localhost:5173",  # Vite dev server (default)
+        "http://localhost:5174",  # Vite dev server (this project)
         "http://localhost:3000",  # Alternative React dev server
         "http://localhost:8080",  # Vue CLI dev server
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:8080",
     ],
@@ -248,12 +250,33 @@ async def upload_csv(
         logger.info("Parsing CSV...")
         csv_reader = csv.DictReader(io.StringIO(csv_string))
         
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         logger.info(f"Connecting to database: {DEFAULT_DB_NAME}, dataset: {dataset_name}, table: {csv_table}")
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name=?
+        """, (csv_table,))
+        table_exists = cursor.fetchone() is not None
+        
+        if table_exists:
+            cursor.execute(f"SELECT COUNT(*) as count FROM {csv_table}")
+            row_count = cursor.fetchone()['count']
+            
+            if row_count > 0:
+                conn.close()
+                logger.warning(f"Table {csv_table} already exists with {row_count} rows. Upload rejected.")
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Table '{csv_table}' already exists with {row_count} row(s). Cannot add new data. Use DELETE /clear with dataset_name header to remove existing data first."
+                )
+        
+        if not table_exists:
+            init_db(dataset_name)
+            conn = get_db_connection()
+            cursor = conn.cursor()
         
         upload_timestamp = datetime.utcnow().isoformat()
         rows_inserted = 0
@@ -282,7 +305,7 @@ async def upload_csv(
                 "dataset": dataset_name,
                 "table": csv_table
             },
-            status_code=200
+            status_code=201
         )
     
     except HTTPException:
@@ -302,9 +325,9 @@ async def view_data(
     dataset_name: str = Depends(get_dataset_name)
 ):
     if limit < 1:
-        limit = 100
+        limit = 10000
     if limit > 1000:
-        limit = 1000
+        limit = 10000
     if offset < 0:
         offset = 0
     
@@ -388,9 +411,9 @@ async def get_training_data(
     dataset_name: str = Depends(get_dataset_name)
 ):
     if limit < 1:
-        limit = 100
-    if limit > 1000:
         limit = 1000
+    if limit > 10000:
+        limit = 10000
     if offset < 0:
         offset = 0
     
@@ -415,6 +438,26 @@ async def get_training_data(
         
         cursor.execute(f"SELECT COUNT(*) as total FROM {csv_table} WHERE T = ?", ("training",))
         total_count = cursor.fetchone()['total']
+        
+        try:
+            cursor.execute(f"""
+                SELECT COUNT(*) as count 
+                FROM {csv_table} 
+                WHERE T = ? AND (json_extract(row_data, '$.label') = '0' OR CAST(json_extract(row_data, '$.label') AS INTEGER) = 0)
+            """, ("training",))
+            label_0_count = cursor.fetchone()['count']
+        except sqlite3.OperationalError:
+            label_0_count = 0
+        
+        try:
+            cursor.execute(f"""
+                SELECT COUNT(*) as count 
+                FROM {csv_table} 
+                WHERE T = ? AND (json_extract(row_data, '$.label') = '1' OR CAST(json_extract(row_data, '$.label') AS INTEGER) = 1)
+            """, ("training",))
+            label_1_count = cursor.fetchone()['count']
+        except sqlite3.OperationalError:
+            label_1_count = 0
         
         cursor.execute(f"""
             SELECT id, upload_timestamp, row_data, T 
@@ -457,6 +500,10 @@ async def get_training_data(
                 "limit": limit,
                 "offset": offset,
                 "has_more": (offset + len(data)) < total_count,
+                "label_counts": {
+                    "label_0": label_0_count,
+                    "label_1": label_1_count
+                },
                 "data": data
             },
             status_code=200
@@ -476,9 +523,9 @@ async def get_testing_data(
     dataset_name: str = Depends(get_dataset_name)
 ):
     if limit < 1:
-        limit = 100
-    if limit > 1000:
-        limit = 1000
+        limit = 10000
+    if limit > 10000:
+        limit = 10000
     if offset < 0:
         offset = 0
     
@@ -503,6 +550,26 @@ async def get_testing_data(
         
         cursor.execute(f"SELECT COUNT(*) as total FROM {csv_table} WHERE T = ?", ("testing",))
         total_count = cursor.fetchone()['total']
+        
+        try:
+            cursor.execute(f"""
+                SELECT COUNT(*) as count 
+                FROM {csv_table} 
+                WHERE T = ? AND (json_extract(row_data, '$.label') = '0' OR CAST(json_extract(row_data, '$.label') AS INTEGER) = 0)
+            """, ("testing",))
+            label_0_count = cursor.fetchone()['count']
+        except sqlite3.OperationalError:
+            label_0_count = 0
+        
+        try:
+            cursor.execute(f"""
+                SELECT COUNT(*) as count 
+                FROM {csv_table} 
+                WHERE T = ? AND (json_extract(row_data, '$.label') = '1' OR CAST(json_extract(row_data, '$.label') AS INTEGER) = 1)
+            """, ("testing",))
+            label_1_count = cursor.fetchone()['count']
+        except sqlite3.OperationalError:
+            label_1_count = 0
         
         cursor.execute(f"""
             SELECT id, upload_timestamp, row_data, T 
@@ -545,6 +612,10 @@ async def get_testing_data(
                 "limit": limit,
                 "offset": offset,
                 "has_more": (offset + len(data)) < total_count,
+                "label_counts": {
+                    "label_0": label_0_count,
+                    "label_1": label_1_count
+                },
                 "data": data
             },
             status_code=200
@@ -749,7 +820,7 @@ async def clear_database(dataset_name: Optional[str] = Depends(get_optional_data
         raise HTTPException(status_code=500, detail=f"Error clearing database: {str(e)}")
 
 
-@app.get("/api/stats")
+@app.get("/stats")
 async def get_stats(dataset_name: str = Depends(get_dataset_name)):
     """Get aggregated statistics for KPI display"""
     try:
@@ -923,7 +994,7 @@ def fetch_chunk_data(dataset_name, offset, limit):
         return []
 
 
-@app.get("/api/type-stats")
+@app.get("/type-stats")
 async def get_type_stats(dataset_name: str = Depends(get_dataset_name)):
     """Get type distribution statistics - processes all rows to find all types"""
     try:
