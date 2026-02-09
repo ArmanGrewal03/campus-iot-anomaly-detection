@@ -1,0 +1,43 @@
+@startuml Training Sequence
+!theme plain
+
+title Model Training Sequence Diagram
+
+actor Client
+participant "Model API\n:8001" as ModelAPI
+participant "Backend API\n:8000" as BackendAPI
+database "SQLite DB" as Database
+participant "Random Forest\nModel" as Model
+
+Client -> ModelAPI: POST /train\n(Optional: X-Database-Name header)
+activate ModelAPI
+
+ModelAPI -> BackendAPI: GET /api/health\n(Check backend status)
+activate BackendAPI
+BackendAPI --> ModelAPI: 200 OK
+deactivate BackendAPI
+
+ModelAPI -> BackendAPI: GET /training\n?limit=1000&offset=0\nHeader: X-Database-Name
+activate BackendAPI
+BackendAPI -> Database: SELECT * FROM csv_data\nWHERE T = 'training'
+activate Database
+Database --> BackendAPI: Training Data Rows
+deactivate Database
+BackendAPI --> ModelAPI: JSON Response\n{data: [...], total_rows: N}
+deactivate BackendAPI
+
+ModelAPI -> ModelAPI: Extract Features\nParse JSON Data\nCreate DataFrame
+
+ModelAPI -> ModelAPI: Split Features & Labels\n(label: 0=safe, 1=unsafe)
+
+ModelAPI -> Model: Train RandomForestClassifier\nn_estimators=100
+activate Model
+Model --> ModelAPI: Trained Model
+deactivate Model
+
+ModelAPI -> ModelAPI: Save Model\nmodels/random_forest_model.pkl\nSave Metadata (JSON)
+
+ModelAPI --> Client: 200 OK\n{status: "success",\naccuracy: X.XX,\nmodel_path: "..."}
+deactivate ModelAPI
+
+@enduml

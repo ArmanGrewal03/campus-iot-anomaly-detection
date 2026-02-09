@@ -1,0 +1,69 @@
+    @startuml API Endpoint Flow
+    !theme plain
+
+    title API Endpoint Flow Diagram
+
+    package "Backend API (Port 8000)" {
+    [GET /api/health] as Health1
+    [POST /new] as New
+    [GET /api/view] as View
+    [GET /training] as Training
+    [GET /testing] as Testing
+    [PUT /validate] as Validate
+    [POST /clear] as Clear
+    [POST /insert] as Insert
+    [GET /api/stats] as Stats
+    }
+
+    package "Model API (Port 8001)" {
+    [GET /health] as Health2
+    [POST /train] as Train
+    [POST /test] as Test
+    [POST /predict] as Predict
+    [GET /model/status] as Status
+    [GET /model/metrics] as Metrics
+    [WebSocket /ws/data-stream] as WS
+    }
+
+    database "SQLite DBs" as DB
+    [Random Forest Model] as Model
+
+    ' Backend API flows
+    New --> DB : Store CSV data
+    View --> DB : Read paginated data
+    Training --> DB : Read WHERE T='training'
+    Testing --> DB : Read WHERE T='testing'
+    Validate --> DB : Update T field\n(30% training, 70% testing)
+    Clear --> DB : Truncate tables
+    Insert --> DB : Store JSON data
+
+    ' Model API flows
+    Train --> Training : Fetch training data\n(via Backend API)
+    Train --> Model : Train & Save Model
+    Test --> Testing : Fetch testing data\n(via Backend API)
+    Test --> Model : Evaluate Model
+    Predict --> Model : Load & Predict
+    Status --> Model : Read Metadata
+    Metrics --> Model : Read Metrics
+
+    WS --> DB : Store generated data\n(websocket_data.db)
+
+    note right of Train
+    Calls Backend API
+    GET /training
+    with X-Database-Name header
+    end note
+
+    note right of Test
+    Calls Backend API
+    GET /testing
+    with X-Database-Name header
+    end note
+
+    note right of WS
+    Generates random data
+    every 20-60 seconds
+    based on feature_names.json
+    end note
+
+    @enduml
