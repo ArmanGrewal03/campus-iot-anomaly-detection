@@ -1,0 +1,72 @@
+Loading data from /Users/armangrewal/Desktop/capstone/campus-iot-anomaly-detection/A-DataIngestion/Processed...
+Data loaded: Train=(65865, 194), Test=(16467, 194)
+Training Random Forest model...
+[Parallel(n_jobs=-1)]: Using backend ThreadingBackend with 10 concurrent workers.
+[Parallel(n_jobs=-1)]: Done  30 tasks      | elapsed:    0.3s
+[Parallel(n_jobs=-1)]: Done 180 tasks      | elapsed:    1.5s
+[Parallel(n_jobs=-1)]: Done 200 out of 200 | elapsed:    1.6s finished
+Training completed in 1.66 seconds.
+Evaluating model (Threshold=0.55)...
+[Parallel(n_jobs=10)]: Using backend ThreadingBackend with 10 concurrent workers.
+[Parallel(n_jobs=10)]: Done  30 tasks      | elapsed:    0.0s
+[Parallel(n_jobs=10)]: Done 180 tasks      | elapsed:    0.0s
+[Parallel(n_jobs=10)]: Done 200 out of 200 | elapsed:    0.0s finished
+
+--- Evaluation Metrics ---
+Precision: 0.9888
+Recall:    0.9569
+F1 Score:  0.9726
+ROC-AUC:   0.9968
+PR-AUC:    0.9975
+
+--- Threshold Sweep ---
+Threshold  Precision  Recall     F1        
+----------------------------------------
+[Parallel(n_jobs=10)]: Using backend ThreadingBackend with 10 concurrent workers.
+[Parallel(n_jobs=10)]: Done  30 tasks      | elapsed:    0.0s
+[Parallel(n_jobs=10)]: Done 180 tasks      | elapsed:    0.0s
+[Parallel(n_jobs=10)]: Done 200 out of 200 | elapsed:    0.0s finished
+0.10       0.8464     0.9983     0.9161    
+0.15       0.8922     0.9958     0.9412    
+0.20       0.9177     0.9916     0.9532    
+0.25       0.9366     0.9891     0.9621    
+0.30       0.9519     0.9865     0.9689    
+0.35       0.9643     0.9826     0.9733    
+0.40       0.9740     0.9767     0.9754    
+0.45       0.9805     0.9703     0.9754    
+0.50       0.9856     0.9646     0.9750    
+0.55       0.9888     0.9569     0.9726    
+0.60       0.9921     0.9473     0.9692    
+0.65       0.9936     0.9358     0.9638    
+0.70       0.9957     0.9205     0.9566    
+0.75       0.9973     0.9026     0.9476    
+0.80       0.9983     0.8825     0.9368    
+0.85       0.9987     0.8670     0.9282    
+0.90       0.9993     0.8431     0.9146    
+
+--- Top 10 Features ---
+1. byte_ratio: 0.0844
+2. ct_dst_src_ltm: 0.0661
+3. sttl: 0.0559
+4. smeansz: 0.0401
+5. sbytes: 0.0394
+6. dbytes: 0.0392
+7. ct_dst_sport_ltm: 0.0364
+8. ct_state_ttl: 0.0360
+9. Sload: 0.0349
+10. rate: 0.0346
+[Parallel(n_jobs=10)]: Using backend ThreadingBackend with 10 concurrent workers.
+[Parallel(n_jobs=10)]: Done  30 tasks      | elapsed:    0.0s
+[Parallel(n_jobs=10)]: Done 180 tasks      | elapsed:    0.0s
+[Parallel(n_jobs=10)]: Done 200 out of 200 | elapsed:    0.0s finished
+
+Sample JSON output saved to /Users/armangrewal/Desktop/capstone/campus-iot-anomaly-detection/B-Model/RFv1/sample_output.json
+[Parallel(n_jobs=10)]: Using backend ThreadingBackend with 10 concurrent workers.
+[Parallel(n_jobs=10)]: Done  30 tasks      | elapsed:    0.0s
+[Parallel(n_jobs=10)]: Done 180 tasks      | elapsed:    0.0s
+[Parallel(n_jobs=10)]: Done 200 out of 200 | elapsed:    0.0s finished
+
+=== Training Complete ===
+Model saved to: /Users/armangrewal/Desktop/capstone/campus-iot-anomaly-detection/B-Model/RFv1/random_forest_model.joblib
+Selected Threshold: 0.55
+Inference Latency: 0.1189 ms/sample

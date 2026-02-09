@@ -1,0 +1,61 @@
+{
+    "model": "RandomForestClassifier",
+    "hyperparameters": {
+        "n_estimators": 200,
+        "max_depth": 20,
+        "min_samples_split": 2,
+        "class_weight": "balanced",
+        "random_state": 42
+    },
+    "metrics": {
+        "precision": 0.988830635969911,
+        "recall": 0.9568765854196537,
+        "f1": 0.9725912224651084,
+        "roc_auc": 0.9968209187460318,
+        "pr_auc": 0.9975363148243414
+    },
+    "threshold": 0.55,
+    "training_time_sec": 1.6633849143981934,
+    "top_features": [
+        {
+            "feature": "byte_ratio",
+            "importance": 0.08444556299169619
+        },
+        {
+            "feature": "ct_dst_src_ltm",
+            "importance": 0.06612800186100114
+        },
+        {
+            "feature": "sttl",
+            "importance": 0.05587989762357629
+        },
+        {
+            "feature": "smeansz",
+            "importance": 0.04012519185206531
+        },
+        {
+            "feature": "sbytes",
+            "importance": 0.039427295235276556
+        },
+        {
+            "feature": "dbytes",
+            "importance": 0.0391598466833154
+        },
+        {
+            "feature": "ct_dst_sport_ltm",
+            "importance": 0.03641282954414195
+        },
+        {
+            "feature": "ct_state_ttl",
+            "importance": 0.03597220851035699
+        },
+        {
+            "feature": "Sload",
+            "importance": 0.03494906304466795
+        },
+        {
+            "feature": "rate",
+            "importance": 0.03455209289901654
+        }
+    ]
+}
