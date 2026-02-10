@@ -259,7 +259,7 @@ async def upload_csv(
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
 
-@app.get("/api/view")
+@app.get("/view")
 async def view_data(
     limit: int = 1000,
     offset: int = 0,

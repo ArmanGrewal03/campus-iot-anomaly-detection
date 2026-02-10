@@ -190,7 +190,7 @@ export default function ModelPage() {
         const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
         const headers: Record<string, string> = {};
         if (datasetName.trim()) headers['X-Database-Name'] = datasetName.trim();
-        const res = await fetch(`${API_BASE}/api/view?${params}`, { headers });
+        const res = await fetch(`${API_BASE}/view?${params}`, { headers });
         const json = (await res.json()) as {
           status?: string;
           data?: { id: number; upload_timestamp?: string; data: Record<string, unknown>; T?: unknown }[];
@@ -235,7 +235,7 @@ export default function ModelPage() {
     try {
       const headers: Record<string, string> = {};
       if (datasetName.trim()) headers['X-Database-Name'] = datasetName.trim();
-      const res = await fetch(`${API_BASE}/api/health`, { headers });
+      const res = await fetch(`${API_BASE}/health`, { headers });
       const json = (await res.json()) as { status?: string; service?: string; database?: string; timestamp?: string };
       if (res.ok && json.status === 'healthy') {
         setApiHealth('healthy');

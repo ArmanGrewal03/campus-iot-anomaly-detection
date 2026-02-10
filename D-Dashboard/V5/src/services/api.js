@@ -27,7 +27,7 @@ async function request(path, useCache = true) {
 }
 
 export async function getHealth(useCache = true) {
-  return request("/api/health", useCache);
+  return request("/health", useCache);
 }
 
 export async function getStats(useCache = true) {
@@ -40,7 +40,7 @@ export async function getTypeStats(useCache = true) {
 
 export async function getView(limit = 100, offset = 0, useCache = true) {
   // Don't cache view requests with different params
-  const cacheKey = `/api/view?limit=${limit}&offset=${offset}`;
+  const cacheKey = `/view?limit=${limit}&offset=${offset}`;
   return request(cacheKey, useCache);
 }
 

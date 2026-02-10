@@ -48,7 +48,7 @@ def upload_csv():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/view', methods=['GET'])
+@app.route('/view', methods=['GET'])
 def view_data():
     """View all data from /view endpoint"""
     try:
