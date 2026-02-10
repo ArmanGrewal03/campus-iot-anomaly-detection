@@ -210,14 +210,14 @@ export default function AnalyticsPage() {
     fetchModels();
     connectWebSocket();
 
-    // Poll for updated predictions every 30 seconds (as backup if websocket fails)
+    // Poll for updated predictions every 120 seconds (as backup if websocket fails)
     pollingIntervalRef.current = setInterval(() => {
       // Only poll if websocket is not connected
       if (!wsConnected) {
         console.log('Polling for updated history/predictions (websocket disconnected)...');
         fetchHistory(100, 0);
       }
-    }, 30000); // 30 seconds
+    }, 120000); // 120 seconds (2 minutes)
 
     // Cleanup on unmount
     return () => {

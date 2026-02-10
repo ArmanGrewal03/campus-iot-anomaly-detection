@@ -962,7 +962,7 @@ async def process_message_queue():
 
 async def missing_predictions_worker():
     """Background worker to process records without predictions"""
-    logger.info("Missing predictions worker started - checking every 30 seconds")
+    logger.info("Missing predictions worker started - checking every 120 seconds")
     while True:
         try:
             if MESSAGE_QUEUE_ENABLED:
@@ -979,17 +979,17 @@ async def missing_predictions_worker():
         except Exception as e:
             logger.error(f"Error in missing predictions worker: {e}", exc_info=True)
         
-        await asyncio.sleep(30)  # Check every 30 seconds
+        await asyncio.sleep(120)  # Check every 120 seconds (2 minutes)
 
 async def message_queue_worker():
-    logger.info("Message queue worker started - checking queue every 60 seconds")
+    logger.info("Message queue worker started - checking queue every 180 seconds")
     while True:
         try:
             await process_message_queue()
         except Exception as e:
             logger.error(f"Error in message queue worker: {e}", exc_info=True)
         
-        await asyncio.sleep(60)
+        await asyncio.sleep(180)  # Check every 180 seconds (3 minutes)
 
 def is_user_blocked(user_id: int) -> bool:
     conn = sqlite3.connect(USERS_DB)
@@ -1390,7 +1390,7 @@ async def websocket_data_stream(websocket: WebSocket):
             else:
                 logger.debug(f"Message queue disabled - skipping publish for network_id: {network_id}")
             
-            wait_time = random.uniform(20, 30)  # Wait 20-30 seconds between data generation
+            wait_time = random.uniform(60, 90)  # Wait 60-90 seconds between data generation
             logger.info(f"Waiting {wait_time:.2f} seconds before next data generation")
             await asyncio.sleep(wait_time)
             
