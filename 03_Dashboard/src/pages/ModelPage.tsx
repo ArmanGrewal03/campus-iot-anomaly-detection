@@ -21,6 +21,7 @@ import Snackbar from '@mui/material/Snackbar';
 import Alert from '@mui/material/Alert';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
+import Autocomplete from '@mui/material/Autocomplete';
 import CircularProgress from '@mui/material/CircularProgress';
 import Typography from '@mui/material/Typography';
 import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded';
@@ -80,7 +81,7 @@ export default function ModelPage() {
   const [modelNameError, setModelNameError] = React.useState('');
   const [selectedDatasetId, setSelectedDatasetId] = React.useState('');
   const [selectedFeatures, setSelectedFeatures] = React.useState<string[]>([]);
-  const [modelType, setModelType] = React.useState('Random Forest');
+  const [modelType, setModelType] = React.useState('');
   const [training, setTraining] = React.useState(false);
   const [metrics, setMetrics] = React.useState<any>(null);
   const [predictionResults, setPredictionResults] = React.useState<any[]>([]);
@@ -106,6 +107,8 @@ export default function ModelPage() {
   const [modelMetrics, setModelMetrics] = React.useState<Record<string, any>>({});
   const [currentModelIndex, setCurrentModelIndex] = React.useState(0);
   const [modelDetailsLoading, setModelDetailsLoading] = React.useState(false);
+  const [modelTypes, setModelTypes] = React.useState<Array<{ model_type: string; path: string; files: Array<{ name: string; size: number; modified: string }> }>>([]);
+  const [modelTypesLoading, setModelTypesLoading] = React.useState(false);
 
 
   const [snackbar, setSnackbar] = React.useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' | 'warning' }>({
@@ -383,6 +386,53 @@ export default function ModelPage() {
     fetchModels();
   }, [fetchModels]);
 
+  // Fetch model types
+  const fetchModelTypes = React.useCallback(async () => {
+    setModelTypesLoading(true);
+    try {
+      const res = await fetch(`${MODEL_API_BASE}/model-types`);
+      const json = await res.json() as { 
+        status?: string; 
+        model_types?: Array<{ model_type: string; path: string; files: Array<{ name: string; size: number; modified: string }> }>; 
+        total_model_types?: number;
+        detail?: string;
+      };
+      
+      if (res.ok && json.status === 'success') {
+        if (json.model_types && Array.isArray(json.model_types)) {
+          setModelTypes(json.model_types);
+          // Set first model type as default if none selected
+          if (!modelType && json.model_types.length > 0) {
+            setModelType(json.model_types[0].model_type);
+          }
+        } else {
+          setModelTypes([]);
+        }
+      } else {
+        setModelTypes([]);
+        if (json.detail) {
+          console.warn('Failed to fetch model types:', json.detail);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch model types:', err);
+      setModelTypes([]);
+    } finally {
+      setModelTypesLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchModelTypes();
+  }, [fetchModelTypes]);
+
+  // Update modelType when modelTypes are loaded
+  React.useEffect(() => {
+    if (modelTypes.length > 0 && !modelType) {
+      setModelType(modelTypes[0].model_type);
+    }
+  }, [modelTypes, modelType]);
+
   // Fetch status and metrics for all models
   const fetchModelDetails = React.useCallback(async (modelName: string) => {
     if (!modelName) return;
@@ -573,7 +623,7 @@ export default function ModelPage() {
 
   React.useEffect(() => {
     fetchApiHealth();
-    const interval = setInterval(() => fetchApiHealth(true), 15000);
+    const interval = setInterval(() => fetchApiHealth(true), 60000); // Check every 60 seconds (1 minute)
     return () => clearInterval(interval);
   }, [fetchApiHealth]);
 
@@ -699,6 +749,11 @@ export default function ModelPage() {
       return;
     }
     
+    if (!modelType) {
+      setSnackbar({ open: true, message: 'Please select a model architecture.', severity: 'warning' });
+      return;
+    }
+    
     // Use selectedViewDataset if available, otherwise fall back to datasetName
     const trainingDataset = selectedViewDataset.trim() || datasetName.trim();
     if (!trainingDataset) {
@@ -715,6 +770,7 @@ export default function ModelPage() {
         n_estimators: 100,
         max_depth: null,
         random_state: 42,
+        model_type: modelType,  // Include the selected model architecture
       };
       
       // Only include include_fields if fields are selected
@@ -745,9 +801,10 @@ export default function ModelPage() {
       setMetrics(data);
       // Refresh models list after training
       fetchModels();
+      const modelTypeDisplay = modelType || data.model_type || 'model';
       setSnackbar({ 
         open: true, 
-        message: `Model "${modelName.trim()}" trained successfully on dataset "${trainingDataset}"`, 
+        message: `Model "${modelName.trim()}" (${modelTypeDisplay}) trained successfully on dataset "${trainingDataset}"`, 
         severity: 'success' 
       });
     } catch (err) {
@@ -1325,33 +1382,62 @@ export default function ModelPage() {
                     ))}
                   </Select>
                 </FormControl>
-                <TextField
-                  fullWidth
-                  size="small"
-                  label="Model Name"
-                  placeholder="e.g., model_v1"
+                <Autocomplete
+                  freeSolo
+                  options={modelTypes.map((type) => type.model_type)}
                   value={modelName}
-                  onChange={(e) => setModelName(e.target.value)}
-                  error={!!modelNameError}
-                  helperText={modelNameError || 'Required: Unique name for this model'}
+                  onInputChange={(_, newValue) => setModelName(newValue)}
+                  loading={modelTypesLoading}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      fullWidth
+                      size="small"
+                      label="Model Name"
+                      placeholder="e.g., AEv1, IFv1, RFv1, or custom name"
+                      error={!!modelNameError}
+                      helperText={modelNameError || 'Required: Unique name for this model. Select from available types or enter custom name.'}
+                      InputProps={{
+                        ...params.InputProps,
+                        endAdornment: (
+                          <React.Fragment>
+                            {modelTypesLoading ? <CircularProgress color="inherit" size={20} /> : null}
+                            {params.InputProps.endAdornment}
+                          </React.Fragment>
+                        ),
+                      }}
+                    />
+                  )}
                   sx={{ mb: 2 }}
                 />
-                <TextField
-                  select
-                  fullWidth
-                  size="small"
-                  label="Select Model Architecture"
-                  value={modelType}
-                  onChange={(e) => setModelType(e.target.value)}
-                  SelectProps={{
-                    displayEmpty: true,
-                  }}
-                  sx={{ mb: 2 }}
-                >
-                  <MenuItem value="Random Forest">Random Forest (rfV1)</MenuItem>
-                  <MenuItem value="Isolation Forest">Isolation Forest</MenuItem>
-                  <MenuItem value="Autoencoder">Autoencoder (MLP)</MenuItem>
-                </TextField>
+                <FormControl fullWidth size="small" sx={{ mb: 2 }}>
+                  <InputLabel id="model-architecture-label">Select Model Architecture</InputLabel>
+                  <Select
+                    labelId="model-architecture-label"
+                    id="model-architecture-select"
+                    value={modelType}
+                    label="Select Model Architecture"
+                    onChange={(e) => setModelType(e.target.value)}
+                    disabled={modelTypesLoading || modelTypes.length === 0}
+                  >
+                    {modelTypes.length > 0 ? (
+                      modelTypes.map((type) => (
+                        <MenuItem key={type.model_type} value={type.model_type}>
+                          {type.model_type}
+                          {type.files && type.files.length > 0 && (
+                            <Typography component="span" variant="caption" sx={{ ml: 1, color: 'text.secondary' }}>
+                              ({type.files.length} file{type.files.length !== 1 ? 's' : ''})
+                            </Typography>
+                          )}
+                        </MenuItem>
+                      ))
+                    ) : (
+                      <MenuItem disabled value="">
+                        {modelTypesLoading ? 'Loading model types...' : 'No model types available'}
+                      </MenuItem>
+                    )}
+                  </Select>
+                </FormControl>
               </Box>
               
               {/* Field Selection */}
@@ -1441,7 +1527,7 @@ export default function ModelPage() {
                 size="large"
                 startIcon={training ? <CircularProgress size={20} color="inherit" /> : <PsychologyRoundedIcon />}
                 onClick={handleTrain}
-                disabled={training || !modelName.trim() || (!selectedViewDataset.trim() && !datasetName.trim())}
+                disabled={training || !modelName.trim() || !modelType || (!selectedViewDataset.trim() && !datasetName.trim())}
                 sx={{
                   alignSelf: 'flex-start',
                   mt: 1,

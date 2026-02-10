@@ -19,23 +19,29 @@ from typing import List, Dict, Any, Optional
 import requests
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, IsolationForest
+from sklearn.neural_network import MLPRegressor
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
     confusion_matrix,
     precision_score,
     recall_score,
-    f1_score
+    f1_score,
+    roc_auc_score,
+    average_precision_score
 )
 import joblib
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import warnings
 import sqlite3
 warnings.filterwarnings('ignore')
+# Suppress sklearn parallel warning about delayed/Parallel usage
+warnings.filterwarnings('ignore', category=UserWarning, module='sklearn.utils.parallel')
 
 app = FastAPI(title="Campus IoT Anomaly Detection Model API", version="1.0.0")
 
@@ -67,6 +73,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 MODEL_DIR = "models"
+MODEL_TYPES_DIR = "Model_types"
 MODEL_FILENAME = "random_forest_model.pkl"
 METADATA_FILENAME = "model_metadata.json"
 
@@ -78,6 +85,9 @@ class TrainRequest(BaseModel):
     database_name: Optional[str] = None
     include_fields: Optional[List[str]] = None
     exclude_fields: Optional[List[str]] = None
+    model_type: Optional[str] = None  # e.g., "RFv1", "IFv1", "AEv1"
+    contamination: Optional[float] = 0.1  # For Isolation Forest
+    hidden_layers: Optional[str] = "64,32,32,64"  # For Autoencoder (comma-separated)
 
 class PredictRequest(BaseModel):
     data: List[Dict[str, Any]]
@@ -232,11 +242,11 @@ def extract_features_and_labels(data_records: List[Dict], include_fields: Option
     
     return X, y, feature_cols
 
-def train_model(X_train: pd.DataFrame, y_train: np.ndarray, 
-                n_estimators: int = 100, max_depth: Optional[int] = None, 
-                random_state: int = 42) -> RandomForestClassifier:
-    """Train a Random Forest classifier."""
-    logger.info(f"Training model with n_estimators={n_estimators}, max_depth={max_depth}")
+def train_rf_model(X_train: pd.DataFrame, y_train: np.ndarray, 
+                   n_estimators: int = 100, max_depth: Optional[int] = None, 
+                   random_state: int = 42) -> RandomForestClassifier:
+    """Train a Random Forest classifier (RFv1)."""
+    logger.info(f"Training Random Forest model with n_estimators={n_estimators}, max_depth={max_depth}")
     
     model = RandomForestClassifier(
         n_estimators=n_estimators,
@@ -247,12 +257,63 @@ def train_model(X_train: pd.DataFrame, y_train: np.ndarray,
     )
     
     model.fit(X_train, y_train)
-    logger.info("Model training completed")
+    logger.info("Random Forest model training completed")
     return model
 
-def evaluate_model(model: RandomForestClassifier, X_test: pd.DataFrame, 
-                   y_test: np.ndarray) -> Dict[str, Any]:
-    """Evaluate the model and return metrics."""
+def train_if_model(X_train: pd.DataFrame, y_train: np.ndarray,
+                   n_estimators: int = 100, contamination: float = 0.1,
+                   random_state: int = 42) -> IsolationForest:
+    """Train an Isolation Forest model (IFv1)."""
+    logger.info(f"Training Isolation Forest model with n_estimators={n_estimators}, contamination={contamination}")
+    
+    model = IsolationForest(
+        n_estimators=n_estimators,
+        contamination=contamination,
+        random_state=random_state,
+        n_jobs=-1,
+        verbose=1
+    )
+    
+    # Isolation Forest is unsupervised, so we only use X_train
+    model.fit(X_train)
+    logger.info("Isolation Forest model training completed")
+    return model
+
+def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
+                   hidden_layers: str = "64,32,32,64", random_state: int = 42) -> tuple:
+    """Train an Autoencoder model (AEv1). Returns (model, scaler)."""
+    logger.info(f"Training Autoencoder model with hidden_layers={hidden_layers}")
+    
+    # Scale data for neural network
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    
+    # Parse hidden layers
+    hidden_layer_sizes = tuple(map(int, hidden_layers.split(',')))
+    
+    # MLPRegressor as autoencoder (input = output)
+    model = MLPRegressor(
+        hidden_layer_sizes=hidden_layer_sizes,
+        activation='relu',
+        solver='adam',
+        alpha=0.0001,
+        batch_size='auto',
+        learning_rate='constant',
+        learning_rate_init=0.001,
+        max_iter=200,
+        shuffle=True,
+        random_state=random_state,
+        verbose=True
+    )
+    
+    # Train autoencoder: X -> X (reconstruction)
+    model.fit(X_train_scaled, X_train_scaled)
+    logger.info("Autoencoder model training completed")
+    return model, scaler
+
+def evaluate_rf_model(model: RandomForestClassifier, X_test: pd.DataFrame, 
+                     y_test: np.ndarray) -> Dict[str, Any]:
+    """Evaluate Random Forest model and return metrics."""
     y_pred = model.predict(X_test)
     y_pred_proba = model.predict_proba(X_test)[:, 1]
     
@@ -281,10 +342,136 @@ def evaluate_model(model: RandomForestClassifier, X_test: pd.DataFrame,
     
     return metrics
 
-def save_model(model: RandomForestClassifier, feature_names: List[str], 
+def evaluate_if_model(model: IsolationForest, X_test: pd.DataFrame, 
+                     y_test: np.ndarray) -> Dict[str, Any]:
+    """Evaluate Isolation Forest model and return metrics."""
+    # Isolation Forest returns -1 for outliers, 1 for inliers
+    y_pred_raw = model.predict(X_test)
+    # Convert to: 0 for normal (inlier), 1 for anomaly (outlier)
+    y_pred = np.where(y_pred_raw == -1, 1, 0)
+    
+    # Get anomaly scores using decision_function
+    # decision_function: positive for inliers, negative for outliers
+    # We negate it so higher score = more anomalous
+    scores = -model.decision_function(X_test)
+    
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred, zero_division=0)
+    recall = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+    cm = confusion_matrix(y_test, y_pred)
+    
+    # AUC metrics using scores
+    try:
+        roc_auc = roc_auc_score(y_test, scores)
+        pr_auc = average_precision_score(y_test, scores)
+    except ValueError:
+        roc_auc = 0.0
+        pr_auc = 0.0
+    
+    metrics = {
+        'accuracy': float(accuracy),
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1_score': float(f1),
+        'confusion_matrix': cm.tolist(),
+        'roc_auc': float(roc_auc),
+        'pr_auc': float(pr_auc),
+        'feature_importance': []  # Isolation Forest doesn't have feature importance
+    }
+    
+    return metrics
+
+def evaluate_ae_model(model: MLPRegressor, scaler: StandardScaler, X_test: pd.DataFrame, 
+                     y_test: np.ndarray, threshold_percentile: float = 95.0) -> Dict[str, Any]:
+    """Evaluate Autoencoder model and return metrics."""
+    # Scale test data
+    X_test_scaled = scaler.transform(X_test)
+    X_pred = model.predict(X_test_scaled)
+    
+    # Mean Squared Error per sample (reconstruction error)
+    mse = np.mean(np.power(X_test_scaled - X_pred, 2), axis=1)
+    
+    # Determine threshold based on percentile
+    threshold = np.percentile(mse, threshold_percentile)
+    logger.info(f"Reconstruction Error Threshold ({threshold_percentile}th percentile): {threshold:.4f}")
+    
+    # Predict anomalies based on reconstruction error
+    y_pred = (mse > threshold).astype(int)
+    
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred, zero_division=0)
+    recall = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+    cm = confusion_matrix(y_test, y_pred)
+    
+    # AUC metrics using MSE scores
+    try:
+        roc_auc = roc_auc_score(y_test, mse)
+        pr_auc = average_precision_score(y_test, mse)
+    except ValueError:
+        roc_auc = 0.0
+        pr_auc = 0.0
+    
+    metrics = {
+        'accuracy': float(accuracy),
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1_score': float(f1),
+        'confusion_matrix': cm.tolist(),
+        'roc_auc': float(roc_auc),
+        'pr_auc': float(pr_auc),
+        'threshold': float(threshold),
+        'feature_importance': []  # Autoencoder doesn't have feature importance
+    }
+    
+    return metrics
+
+def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: np.ndarray, 
+                  model_type: Optional[str] = None, scaler: Optional[Any] = None) -> Dict[str, Any]:
+    """Evaluate model based on its type. Routes to appropriate evaluation function."""
+    # Determine model type from model class or parameter
+    if model_type:
+        model_type_str = model_type
+    elif isinstance(model, RandomForestClassifier):
+        model_type_str = "RFv1"
+    elif isinstance(model, IsolationForest):
+        model_type_str = "IFv1"
+    elif isinstance(model, MLPRegressor):
+        model_type_str = "AEv1"
+    else:
+        # Try to infer from model class name
+        model_class_name = type(model).__name__
+        if "RandomForest" in model_class_name:
+            model_type_str = "RFv1"
+        elif "IsolationForest" in model_class_name:
+            model_type_str = "IFv1"
+        elif "MLPRegressor" in model_class_name:
+            model_type_str = "AEv1"
+        else:
+            # Default to RF evaluation (will fail if not compatible)
+            logger.warning(f"Unknown model type: {model_class_name}, attempting Random Forest evaluation")
+            model_type_str = "RFv1"
+    
+    logger.info(f"Evaluating model type: {model_type_str}")
+    
+    if model_type_str == "RFv1":
+        return evaluate_rf_model(model, X_test, y_test)
+    elif model_type_str == "IFv1":
+        return evaluate_if_model(model, X_test, y_test)
+    elif model_type_str == "AEv1":
+        if scaler is None:
+            raise ValueError("Scaler is required for Autoencoder model evaluation")
+        return evaluate_ae_model(model, scaler, X_test, y_test)
+    else:
+        # Fallback: try Random Forest evaluation
+        logger.warning(f"Unknown model type {model_type_str}, attempting Random Forest evaluation")
+        return evaluate_rf_model(model, X_test, y_test)
+
+def save_model(model: Any, feature_names: List[str], 
                metrics: Dict[str, Any], training_params: Dict[str, Any],
-               model_name: str = "random_forest_model"):
-    """Save the trained model and metadata."""
+               model_name: str = "model", scaler: Optional[Any] = None):
+    """Save the trained model and metadata. Supports different model types."""
     if "label" in feature_names:
         logger.error("CRITICAL ERROR: Attempting to save model with 'label' in feature_names!")
         raise ValueError("CRITICAL: 'label' must not be included in feature_names. This would cause data leakage!")
@@ -299,21 +486,35 @@ def save_model(model: RandomForestClassifier, feature_names: List[str],
     joblib.dump(model, model_path)
     logger.info(f"Model saved to: {model_path}")
     
+    # Save scaler if provided (for autoencoder)
+    if scaler is not None:
+        scaler_filename = f"{sanitized_model_name}_scaler.pkl"
+        scaler_path = os.path.join(MODEL_DIR, scaler_filename)
+        joblib.dump(scaler, scaler_path)
+        logger.info(f"Scaler saved to: {scaler_path}")
+    
     logger.info(f"VALIDATION: Saving model with {len(feature_names)} features (label correctly excluded)")
     
+    # Get model type from training_params or infer from model class
+    model_type_str = training_params.get('model_type', type(model).__name__)
+    
     metadata = {
-        'model_type': 'RandomForestClassifier',
+        'model_type': model_type_str,
         'model_name': model_name,
         'feature_names': feature_names,
         'n_features': len(feature_names),
-        'training_date': datetime.now().isoformat(),
+        'training_date': datetime.now(timezone.utc).isoformat(),
         'training_params': training_params,
         'metrics': metrics,
-        'label_mapping': {
+        'has_scaler': scaler is not None
+    }
+    
+    # Add label mapping for supervised models
+    if model_type_str in ['RandomForestClassifier']:
+        metadata['label_mapping'] = {
             '0': 'safe',
             '1': 'unsafe'
         }
-    }
     
     metadata_path = os.path.join(MODEL_DIR, metadata_filename)
     with open(metadata_path, 'w') as f:
@@ -321,33 +522,45 @@ def save_model(model: RandomForestClassifier, feature_names: List[str],
     logger.info(f"Metadata saved to: {metadata_path}")
 
 def load_model(model_name: str) -> tuple:
+    """Load model, metadata, and scaler (if exists). Returns (model, metadata, scaler)."""
     sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
     model_filename = f"{sanitized_model_name}.pkl"
     metadata_filename = f"{sanitized_model_name}_metadata.json"
+    scaler_filename = f"{sanitized_model_name}_scaler.pkl"
     model_path = os.path.join(MODEL_DIR, model_filename)
     metadata_path = os.path.join(MODEL_DIR, metadata_filename)
+    scaler_path = os.path.join(MODEL_DIR, scaler_filename)
     
     if not os.path.exists(model_path):
-        return None, None
+        return None, None, None
     
     try:
         model = joblib.load(model_path)
     except Exception as e:
         logger.error(f"Error loading model file: {e}")
-        return None, None
+        return None, None, None
     
     if not os.path.exists(metadata_path):
         logger.warning(f"Metadata file not found: {metadata_path}")
-        return None, None
+        return None, None, None
     
     try:
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
     except Exception as e:
         logger.error(f"Error loading metadata file: {e}")
-        return None, None
+        return None, None, None
     
-    return model, metadata
+    # Load scaler if it exists (for autoencoder models)
+    scaler = None
+    if os.path.exists(scaler_path):
+        try:
+            scaler = joblib.load(scaler_path)
+            logger.info(f"Loaded scaler from: {scaler_path}")
+        except Exception as e:
+            logger.warning(f"Error loading scaler file: {e}")
+    
+    return model, metadata, scaler
 
 @app.get("/health")
 async def health_check():
@@ -356,7 +569,7 @@ async def health_check():
         content={
             "status": "healthy",
             "service": "Campus IoT Anomaly Detection Model API",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         },
         status_code=200
     )
@@ -402,7 +615,7 @@ async def list_models():
                 "status": "success",
                 "total_models": len(model_files),
                 "models": model_files,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             },
             status_code=200
         )
@@ -410,6 +623,64 @@ async def list_models():
     except Exception as e:
         logger.error(f"Error listing models: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error listing models: {str(e)}")
+
+@app.get("/model-types")
+async def list_model_types():
+    """
+    List all model types available in the Model_types folder.
+    Returns information about each model type directory and its contents.
+    """
+    MODEL_TYPES_DIR = "Model_types"
+    
+    try:
+        model_types = []
+        
+        if os.path.exists(MODEL_TYPES_DIR):
+            for item in os.listdir(MODEL_TYPES_DIR):
+                item_path = os.path.join(MODEL_TYPES_DIR, item)
+                
+                # Only process directories
+                if os.path.isdir(item_path):
+                    model_type_info = {
+                        "model_type": item,
+                        "path": item_path,
+                        "files": []
+                    }
+                    
+                    # List files in the model type directory
+                    try:
+                        for file in os.listdir(item_path):
+                            file_path = os.path.join(item_path, file)
+                            if os.path.isfile(file_path):
+                                file_info = {
+                                    "name": file,
+                                    "size": os.path.getsize(file_path),
+                                    "modified": datetime.fromtimestamp(os.path.getmtime(file_path)).isoformat()
+                                }
+                                model_type_info["files"].append(file_info)
+                    except Exception as e:
+                        logger.warning(f"Error reading files in {item_path}: {e}")
+                        model_type_info["error"] = str(e)
+                    
+                    model_types.append(model_type_info)
+        
+        model_types.sort(key=lambda x: x["model_type"])
+        
+        logger.info(f"Retrieved {len(model_types)} model types")
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "total_model_types": len(model_types),
+                "model_types": model_types,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            },
+            status_code=200
+        )
+    
+    except Exception as e:
+        logger.error(f"Error listing model types: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error listing model types: {str(e)}")
 
 def get_database_name(
     dataset_name: str = Header(..., alias="dataset_name"),
@@ -435,6 +706,18 @@ async def train(
     
     if train_request is None:
         train_request = TrainRequest()
+    
+    # Determine model type (default to RFv1 if not specified)
+    model_type = train_request.model_type or "RFv1"
+    logger.info(f"Using model architecture: {model_type}")
+    
+    # Validate model type exists
+    model_type_path = os.path.join(MODEL_TYPES_DIR, model_type)
+    if not os.path.exists(model_type_path) or not os.path.isdir(model_type_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model type '{model_type}' not found. Available types can be listed via GET /model-types"
+        )
     
     headers = {}
     headers["dataset_name"] = dataset_name
@@ -504,25 +787,66 @@ async def train(
         logger.error(f"Error processing training data: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing training data: {str(e)}")
     
-    # Train model
+    # Train model based on model_type
+    model = None
+    scaler = None
+    training_params = {}
+    
     try:
-        model = train_model(
-            X_train, y_train,
-            n_estimators=train_request.n_estimators,
-            max_depth=train_request.max_depth,
-            random_state=train_request.random_state
-        )
+        if model_type == "RFv1":
+            # Random Forest
+            model = train_rf_model(
+                X_train, y_train,
+                n_estimators=train_request.n_estimators,
+                max_depth=train_request.max_depth,
+                random_state=train_request.random_state
+            )
+            training_params = {
+                'model_type': 'RandomForestClassifier',
+                'n_estimators': train_request.n_estimators,
+                'max_depth': train_request.max_depth,
+                'random_state': train_request.random_state
+            }
+        elif model_type == "IFv1":
+            # Isolation Forest
+            contamination = train_request.contamination if train_request.contamination is not None else 0.1
+            model = train_if_model(
+                X_train, y_train,
+                n_estimators=train_request.n_estimators,
+                contamination=contamination,
+                random_state=train_request.random_state
+            )
+            training_params = {
+                'model_type': 'IsolationForest',
+                'n_estimators': train_request.n_estimators,
+                'contamination': contamination,
+                'random_state': train_request.random_state
+            }
+        elif model_type == "AEv1":
+            # Autoencoder
+            hidden_layers = train_request.hidden_layers if train_request.hidden_layers else "64,32,32,64"
+            model, scaler = train_ae_model(
+                X_train, y_train,
+                hidden_layers=hidden_layers,
+                random_state=train_request.random_state
+            )
+            training_params = {
+                'model_type': 'Autoencoder',
+                'hidden_layers': hidden_layers,
+                'random_state': train_request.random_state
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported model type: {model_type}. Supported types: RFv1, IFv1, AEv1"
+            )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error training model: {e}")
+        logger.error(f"Error training model: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error training model: {str(e)}")
     
     # Save model
-    training_params = {
-        'n_estimators': train_request.n_estimators,
-        'max_depth': train_request.max_depth,
-        'random_state': train_request.random_state
-    }
-    
     # Create placeholder metrics (will be updated after testing)
     metrics = {
         'accuracy': 0.0,
@@ -533,18 +857,19 @@ async def train(
         'feature_importance': []
     }
     
-    save_model(model, feature_names, metrics, training_params, model_name)
+    save_model(model, feature_names, metrics, training_params, model_name, scaler=scaler)
     
     response_content = {
         "status": "success",
         "message": "Model trained successfully",
         "dataset_name": dataset_name,
         "model_name": model_name,
+        "model_type": model_type,
         "training_samples": len(X_train),
         "n_features": len(feature_names),
         "feature_names": feature_names,
         "training_params": training_params,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
     
     if train_request.include_fields is not None:
@@ -583,7 +908,7 @@ async def test(
     logger.info("Testing request received")
     logger.info(f"Using model: {model_name}")
     
-    model, metadata = load_model(model_name)
+    model, metadata, scaler = load_model(model_name)
     if model is None or metadata is None:
         raise HTTPException(
             status_code=404,
@@ -677,14 +1002,25 @@ async def test(
     
     # Evaluate model
     try:
-        metrics = evaluate_model(model, X_test, y_test)
+        # Get model_type from metadata or infer from model class
+        model_type = metadata.get('model_type')
+        if model_type and model_type not in ['RFv1', 'IFv1', 'AEv1']:
+            # Convert class name to model type string
+            if 'RandomForest' in model_type:
+                model_type = 'RFv1'
+            elif 'IsolationForest' in model_type:
+                model_type = 'IFv1'
+            elif 'MLPRegressor' in model_type:
+                model_type = 'AEv1'
+        
+        metrics = evaluate_model(model, X_test, y_test, model_type=model_type, scaler=scaler)
     except Exception as e:
         logger.error(f"Error evaluating model: {e}")
         raise HTTPException(status_code=500, detail=f"Error evaluating model: {str(e)}")
     
     # Update and save metadata with new metrics
     metadata['metrics'] = metrics
-    metadata['last_test_date'] = datetime.utcnow().isoformat()
+    metadata['last_test_date'] = datetime.now(timezone.utc).isoformat()
     
     sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
     metadata_filename = f"{sanitized_model_name}_metadata.json"
@@ -700,7 +1036,7 @@ async def test(
             "message": "Model tested successfully",
             "testing_samples": len(X_test),
             "metrics": metrics,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         },
         status_code=200
     )
@@ -719,7 +1055,7 @@ async def predict(
     logger.info(f"Using model: {model_name}")
     
     # Load model
-    model, metadata = load_model(model_name)
+    model, metadata, scaler = load_model(model_name)
     if model is None or metadata is None:
         raise HTTPException(
             status_code=404,
@@ -772,22 +1108,119 @@ async def predict(
         logger.error(f"Error preparing features: {e}")
         raise HTTPException(status_code=400, detail=f"Error preparing features: {str(e)}")
     
-    # Make predictions
+    # Make predictions based on model type
     try:
-        predictions = model.predict(X)
-        probabilities = model.predict_proba(X)
+        # Get model_type from metadata or infer from model class
+        model_type = metadata.get('model_type')
+        if model_type and model_type not in ['RFv1', 'IFv1', 'AEv1']:
+            # Convert class name to model type string
+            if 'RandomForest' in model_type:
+                model_type = 'RFv1'
+            elif 'IsolationForest' in model_type:
+                model_type = 'IFv1'
+            elif 'MLPRegressor' in model_type:
+                model_type = 'AEv1'
         
-        label_mapping = metadata['label_mapping']
+        # Infer from model class if not in metadata
+        if not model_type:
+            if isinstance(model, RandomForestClassifier):
+                model_type = 'RFv1'
+            elif isinstance(model, IsolationForest):
+                model_type = 'IFv1'
+            elif isinstance(model, MLPRegressor):
+                model_type = 'AEv1'
+        
+        logger.info(f"Making predictions with model type: {model_type}")
+        
         results = []
         
-        for i in range(len(predictions)):
-            results.append({
-                'prediction': int(predictions[i]),
-                'label': label_mapping[str(int(predictions[i]))],
-                'probability_safe': float(probabilities[i][0]),
-                'probability_unsafe': float(probabilities[i][1]),
-                'confidence': float(max(probabilities[i]))
-            })
+        if model_type == 'RFv1':
+            # Random Forest: supervised model with predict_proba
+            predictions = model.predict(X)
+            probabilities = model.predict_proba(X)
+            label_mapping = metadata.get('label_mapping', {'0': 'safe', '1': 'unsafe'})
+            
+            for i in range(len(predictions)):
+                pred = int(predictions[i])
+                results.append({
+                    'prediction': pred,
+                    'label': label_mapping.get(str(pred), 'unknown'),
+                    'probability_safe': float(probabilities[i][0]),
+                    'probability_unsafe': float(probabilities[i][1]),
+                    'confidence': float(max(probabilities[i]))
+                })
+        
+        elif model_type == 'IFv1':
+            # Isolation Forest: unsupervised model
+            predictions_raw = model.predict(X)  # Returns -1 (outlier) or 1 (inlier)
+            scores = -model.decision_function(X)  # Negative for outliers, positive for inliers
+            
+            # Convert to 0 (safe/inlier) or 1 (unsafe/outlier)
+            predictions = np.where(predictions_raw == -1, 1, 0)
+            
+            # Normalize scores to probabilities (0-1 range)
+            # Higher score = more anomalous
+            min_score = scores.min()
+            max_score = scores.max()
+            if max_score > min_score:
+                normalized_scores = (scores - min_score) / (max_score - min_score)
+            else:
+                normalized_scores = np.zeros_like(scores)
+            
+            for i in range(len(predictions)):
+                pred = int(predictions[i])
+                prob_unsafe = float(normalized_scores[i])
+                prob_safe = 1.0 - prob_unsafe
+                results.append({
+                    'prediction': pred,
+                    'label': 'unsafe' if pred == 1 else 'safe',
+                    'probability_safe': prob_safe,
+                    'probability_unsafe': prob_unsafe,
+                    'confidence': max(prob_safe, prob_unsafe)
+                })
+        
+        elif model_type == 'AEv1':
+            # Autoencoder: unsupervised model using reconstruction error
+            if scaler is None:
+                raise ValueError("Scaler is required for Autoencoder model predictions")
+            
+            # Scale the input
+            X_scaled = scaler.transform(X)
+            X_pred = model.predict(X_scaled)
+            
+            # Calculate reconstruction error (MSE) per sample
+            mse = np.mean(np.power(X_scaled - X_pred, 2), axis=1)
+            
+            # Use threshold from metadata if available, otherwise use 95th percentile
+            threshold = metadata.get('metrics', {}).get('threshold')
+            if threshold is None:
+                threshold = np.percentile(mse, 95.0)
+            
+            # Predict: 1 if error > threshold (anomaly), 0 otherwise
+            predictions = (mse > threshold).astype(int)
+            
+            # Normalize MSE to probabilities (0-1 range)
+            # Higher error = more anomalous
+            max_error = mse.max()
+            if max_error > 0:
+                normalized_errors = np.clip(mse / max_error, 0, 1)
+            else:
+                normalized_errors = np.zeros_like(mse)
+            
+            for i in range(len(predictions)):
+                pred = int(predictions[i])
+                prob_unsafe = float(normalized_errors[i])
+                prob_safe = 1.0 - prob_unsafe
+                results.append({
+                    'prediction': pred,
+                    'label': 'unsafe' if pred == 1 else 'safe',
+                    'probability_safe': prob_safe,
+                    'probability_unsafe': prob_unsafe,
+                    'confidence': max(prob_safe, prob_unsafe)
+                })
+        
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
         
     except Exception as e:
         logger.error(f"Error making predictions: {e}")
@@ -797,7 +1230,7 @@ async def predict(
         content={
             "status": "success",
             "predictions": results,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         },
         status_code=200
     )
@@ -806,14 +1239,14 @@ async def predict(
 async def get_model_status(model_name: str = Depends(get_model_name)):
     """Get the current status of the model."""
     logger.info(f"Getting status for model: {model_name}")
-    model, metadata = load_model(model_name)
+    model, metadata, scaler = load_model(model_name)
     
     if model is None or metadata is None:
         return JSONResponse(
             content={
                 "status": "not_trained",
                 "message": "Model has not been trained yet",
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             },
             status_code=200
         )
@@ -826,7 +1259,7 @@ async def get_model_status(model_name: str = Depends(get_model_name)):
             "training_date": metadata.get('training_date', 'Unknown'),
             "n_features": metadata.get('n_features', 0),
             "last_test_date": metadata.get('last_test_date', 'Not tested yet'),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         },
         status_code=200
     )
@@ -835,7 +1268,7 @@ async def get_model_status(model_name: str = Depends(get_model_name)):
 async def get_model_metrics(model_name: str = Depends(get_model_name)):
     """Get the evaluation metrics of the trained model."""
     logger.info(f"Getting metrics for model: {model_name}")
-    model, metadata = load_model(model_name)
+    model, metadata, scaler = load_model(model_name)
     
     if model is None or metadata is None:
         raise HTTPException(
@@ -852,7 +1285,7 @@ async def get_model_metrics(model_name: str = Depends(get_model_name)):
             "metrics": metrics,
             "training_date": metadata.get('training_date', 'Unknown'),
             "last_test_date": metadata.get('last_test_date', 'Not tested yet'),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         },
         status_code=200
     )

@@ -9,12 +9,17 @@ import Chip from '@mui/material/Chip';
 import CircularProgress from '@mui/material/CircularProgress';
 import Snackbar from '@mui/material/Snackbar';
 import Alert from '@mui/material/Alert';
+import Select from '@mui/material/Select';
+import MenuItem from '@mui/material/MenuItem';
+import FormControl from '@mui/material/FormControl';
+import InputLabel from '@mui/material/InputLabel';
 import { DataGrid, GridColDef, GridRenderCellParams } from '@mui/x-data-grid';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import WifiIcon from '@mui/icons-material/Wifi';
 import WifiOffIcon from '@mui/icons-material/WifiOff';
 
 const USER_SERVICE_BASE = 'http://127.0.0.1:8002'; // User Service
+const MODEL_API_BASE = 'http://127.0.0.1:8001'; // Model Service
 const WS_BASE = 'ws://127.0.0.1:8002'; // WebSocket base URL
 
 interface HistoryRecord {
@@ -32,10 +37,18 @@ interface HistoryRecord {
   } | null;
   data: Record<string, unknown> | null;
   prediction_results: {
-    prediction?: number;
-    probability?: number;
-    is_anomaly?: boolean;
+    status?: string;
+    predictions?: Array<{
+      prediction?: number;
+      label?: string;
+      probability_safe?: number;
+      probability_unsafe?: number;
+      confidence?: number;
+    }>;
+    timestamp?: string;
   } | null;
+  session_active_time: string | null;
+  is_active: boolean;
 }
 
 export default function AnalyticsPage() {
@@ -52,6 +65,9 @@ export default function AnalyticsPage() {
     message: '',
     severity: 'success',
   });
+  const [availableModels, setAvailableModels] = React.useState<Array<{ model_name: string; training_date?: string; n_features?: number; accuracy?: number }>>([]);
+  const [selectedModel, setSelectedModel] = React.useState<string>('');
+  const [modelsLoading, setModelsLoading] = React.useState(false);
 
   const fetchHistory = React.useCallback(async (limit: number = 100, offset: number = 0) => {
     setLoading(true);
@@ -89,10 +105,15 @@ export default function AnalyticsPage() {
     }
   }, []);
 
-  // Connect to WebSocket
+  // Connect to WebSocket - single persistent connection
   const connectWebSocket = React.useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return; // Already connected
+    // Don't create a new connection if one already exists and is open or connecting
+    if (wsRef.current) {
+      if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+        return; // Already connected or connecting
+      }
+      // Clean up old connection if it's in a closing/closed state
+      wsRef.current = null;
     }
 
     try {
@@ -122,19 +143,24 @@ export default function AnalyticsPage() {
         setWsConnected(false);
       };
 
-      ws.onclose = () => {
-        console.log('WebSocket disconnected');
+      ws.onclose = (event) => {
+        console.log('WebSocket disconnected', event.code, event.reason);
         setWsConnected(false);
         wsRef.current = null;
 
-        // Attempt to reconnect after a delay (exponential backoff, max 30 seconds)
-        const delay = Math.min(1000 * Math.pow(2, wsReconnectAttemptsRef.current), 30000);
-        wsReconnectAttemptsRef.current += 1;
-        
-        reconnectTimeoutRef.current = setTimeout(() => {
-          console.log(`Attempting to reconnect WebSocket (attempt ${wsReconnectAttemptsRef.current})...`);
-          connectWebSocket();
-        }, delay);
+        // Only attempt to reconnect if it was an unexpected close (not a normal closure)
+        // Normal closure codes: 1000 (normal), 1001 (going away)
+        // Don't reconnect if it was a normal close or if we're unmounting
+        if (event.code !== 1000 && event.code !== 1001) {
+          // Only reconnect once, with a longer delay
+          if (wsReconnectAttemptsRef.current === 0) {
+            wsReconnectAttemptsRef.current = 1;
+            reconnectTimeoutRef.current = setTimeout(() => {
+              console.log('Attempting to reconnect WebSocket...');
+              connectWebSocket();
+            }, 5000); // 5 second delay
+          }
+        }
       };
     } catch (err) {
       console.error('Failed to create WebSocket connection:', err);
@@ -142,32 +168,74 @@ export default function AnalyticsPage() {
     }
   }, [fetchHistory]);
 
-  // Initialize: fetch history, connect WebSocket, and start polling
+  // Fetch available models
+  const fetchModels = React.useCallback(async () => {
+    setModelsLoading(true);
+    try {
+      const res = await fetch(`${MODEL_API_BASE}/models`);
+      const json = await res.json() as { 
+        status?: string; 
+        models?: Array<{ model_name: string; training_date?: string; n_features?: number; accuracy?: number }>; 
+        total_models?: number;
+        detail?: string;
+      };
+      
+      if (res.ok && json.status === 'success') {
+        if (json.models && Array.isArray(json.models) && json.models.length > 0) {
+          setAvailableModels(json.models);
+          // Set first model as default if none selected
+          if (!selectedModel && json.models.length > 0) {
+            setSelectedModel(json.models[0].model_name);
+          }
+        } else {
+          setAvailableModels([]);
+        }
+      } else {
+        setAvailableModels([]);
+        if (json.detail) {
+          console.warn('Failed to fetch models:', json.detail);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch models:', err);
+      setAvailableModels([]);
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [selectedModel]);
+
+  // Initialize: fetch history and connect WebSocket (single persistent connection)
   React.useEffect(() => {
     fetchHistory(100, 0);
+    fetchModels();
     connectWebSocket();
 
-    // Poll for updated predictions every 30 seconds
+    // Poll for updated predictions every 120 seconds (as backup if websocket fails)
     pollingIntervalRef.current = setInterval(() => {
-      console.log('Polling for updated history/predictions...');
-      fetchHistory(100, 0);
-    }, 30000); // 30 seconds
+      // Only poll if websocket is not connected
+      if (!wsConnected) {
+        console.log('Polling for updated history/predictions (websocket disconnected)...');
+        fetchHistory(100, 0);
+      }
+    }, 120000); // 120 seconds (2 minutes)
 
     // Cleanup on unmount
     return () => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
       }
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
       }
       if (wsRef.current) {
-        wsRef.current.close();
+        // Close with normal closure code to prevent reconnection
+        wsRef.current.close(1000, 'Component unmounting');
         wsRef.current = null;
       }
     };
-  }, [fetchHistory, connectWebSocket]); // Include dependencies
+  }, [fetchHistory, connectWebSocket, wsConnected, fetchModels]); // Include dependencies
 
   const columns: GridColDef[] = [
     { field: 'id', headerName: 'ID', width: 70 },
@@ -176,8 +244,8 @@ export default function AnalyticsPage() {
       field: 'timestamp', 
       headerName: 'Timestamp', 
       width: 180,
-      valueFormatter: (params: { value: string | null | undefined }) => {
-        if (!params.value) return '';
+      valueFormatter: (params: { value: string | null | undefined } | null | undefined) => {
+        if (!params || !params.value) return '';
         try {
           return new Date(params.value).toLocaleString();
         } catch {
@@ -192,8 +260,8 @@ export default function AnalyticsPage() {
       field: 'location',
       headerName: 'Location',
       width: 200,
-      valueFormatter: (params: { value: { city?: string; country?: string } | null | undefined }) => {
-        if (!params.value) return 'N/A';
+      valueFormatter: (params: { value: { city?: string; country?: string } | null | undefined } | null | undefined) => {
+        if (!params || !params.value) return 'N/A';
         const loc = params.value;
         if (loc.city && loc.country) {
           return `${loc.city}, ${loc.country}`;
@@ -204,29 +272,108 @@ export default function AnalyticsPage() {
     {
       field: 'prediction_results',
       headerName: 'Prediction',
-      width: 150,
+      width: 280,
       renderCell: (params: GridRenderCellParams<HistoryRecord>) => {
         if (!params.value) {
           return <Chip label="Pending" color="default" size="small" />;
         }
-        const pred = params.value as { is_anomaly?: boolean; prediction?: number; probability?: number };
-        if (pred.is_anomaly) {
-          return <Chip label="Anomaly" color="error" size="small" />;
-        } else if (pred.is_anomaly === false) {
-          return <Chip label="Normal" color="success" size="small" />;
+        const predResults = params.value as {
+          status?: string;
+          predictions?: Array<{
+            prediction?: number;
+            label?: string;
+            probability_safe?: number;
+            probability_unsafe?: number;
+            confidence?: number;
+          }>;
+          timestamp?: string;
+        };
+        
+        // Extract the first prediction from the predictions array
+        const prediction = predResults.predictions && predResults.predictions.length > 0 
+          ? predResults.predictions[0] 
+          : null;
+        
+        if (!prediction) {
+          return <Chip label="Unknown" color="default" size="small" />;
         }
-        return <Chip label="Unknown" color="default" size="small" />;
+        
+        // prediction: 0 = safe, 1 = unsafe/anomaly
+        const isAnomaly = prediction.prediction === 1;
+        const label = prediction.label || (isAnomaly ? 'Anomaly' : 'Safe');
+        const confidence = prediction.confidence !== undefined 
+          ? (prediction.confidence * 100).toFixed(1) + '%' 
+          : null;
+        const probUnsafe = prediction.probability_unsafe !== undefined
+          ? (prediction.probability_unsafe * 100).toFixed(1) + '%'
+          : null;
+        
+        // Color code probability_unsafe: red if high (>50%), green if low (<=50%)
+        const probUnsafeColor = prediction.probability_unsafe !== undefined
+          ? (prediction.probability_unsafe > 0.5 ? 'error.main' : 'success.main')
+          : 'text.secondary';
+        
+        return (
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+            <Chip 
+              label={label} 
+              color={isAnomaly ? 'error' : 'success'} 
+              size="small" 
+            />
+            {confidence && (
+              <Typography variant="caption" color="text.secondary">
+                ({confidence})
+              </Typography>
+            )}
+            {probUnsafe && (
+              <Typography variant="caption" sx={{ color: probUnsafeColor, fontWeight: 'medium' }}>
+                Unsafe: {probUnsafe}
+              </Typography>
+            )}
+          </Stack>
+        );
       }
     },
     {
       field: 'data',
       headerName: 'Data Preview',
       width: 200,
-      valueFormatter: (params: { value: Record<string, unknown> | null | undefined }) => {
-        if (!params.value) return 'N/A';
+      valueFormatter: (params: { value: Record<string, unknown> | null | undefined } | null | undefined) => {
+        if (!params || !params.value) return 'N/A';
         const data = params.value;
         const keys = Object.keys(data);
         return keys.length > 0 ? `${keys.length} fields` : 'Empty';
+      }
+    },
+    {
+      field: 'session_active_time',
+      headerName: 'Session Start',
+      width: 180,
+      valueFormatter: (params: { value: string | null | undefined } | null | undefined) => {
+        if (!params || !params.value) return 'N/A';
+        try {
+          return new Date(params.value).toLocaleString();
+        } catch {
+          return params.value;
+        }
+      }
+    },
+    {
+      field: 'is_active',
+      headerName: 'Session Status',
+      width: 140,
+      renderCell: (params: GridRenderCellParams<HistoryRecord>) => {
+        if (!params || params.value === null || params.value === undefined) {
+          return <Chip label="Unknown" color="default" size="small" />;
+        }
+        const isActive = params.value as boolean;
+        return (
+          <Chip
+            label={isActive ? 'Active' : 'Inactive'}
+            color={isActive ? 'success' : 'default'}
+            size="small"
+          />
+        );
       }
     },
   ];
@@ -242,7 +389,25 @@ export default function AnalyticsPage() {
             Real-time network logs and anomaly detection results.
           </Typography>
         </Stack>
-        <Stack direction="row" spacing={1} alignItems="center">
+        <Stack direction="row" spacing={2} alignItems="center">
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <InputLabel id="model-select-label">Model</InputLabel>
+            <Select
+              labelId="model-select-label"
+              id="model-select"
+              value={selectedModel}
+              label="Model"
+              onChange={(e) => setSelectedModel(e.target.value)}
+              disabled={modelsLoading || availableModels.length === 0}
+            >
+              {availableModels.map((model) => (
+                <MenuItem key={model.model_name} value={model.model_name}>
+                  {model.model_name}
+                  {model.accuracy !== undefined && ` (${(model.accuracy * 100).toFixed(1)}%)`}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
           <Chip
             icon={wsConnected ? <WifiIcon /> : <WifiOffIcon />}
             label={wsConnected ? 'Connected' : 'Disconnected'}
