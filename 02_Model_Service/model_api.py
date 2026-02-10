@@ -2,6 +2,8 @@
 FastAPI Application for Random Forest Model
 
 Endpoints:
+- GET /health - Health check endpoint
+- GET /models - List all available models
 - POST /train - Train the model using data from the backend API
 - POST /test - Test the model and return evaluation metrics
 - POST /predict - Make predictions on new data
@@ -9,7 +11,7 @@ Endpoints:
 - GET /model/metrics - Get model evaluation metrics
 """
 
-from fastapi import FastAPI, HTTPException, Header, Depends, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Header, Depends, Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -32,8 +34,6 @@ from datetime import datetime
 import logging
 import warnings
 import sqlite3
-import asyncio
-import random
 warnings.filterwarnings('ignore')
 
 app = FastAPI(title="Campus IoT Anomaly Detection Model API", version="1.0.0")
@@ -46,11 +46,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 MODEL_DIR = "models"
 MODEL_FILENAME = "random_forest_model.pkl"
 METADATA_FILENAME = "model_metadata.json"
-WEBSOCKET_DB = "websocket_data.db"
 
 # Pydantic models for request/response
 class TrainRequest(BaseModel):
@@ -58,6 +57,8 @@ class TrainRequest(BaseModel):
     max_depth: Optional[int] = None
     random_state: Optional[int] = 42
     database_name: Optional[str] = None
+    include_fields: Optional[List[str]] = None
+    exclude_fields: Optional[List[str]] = None
 
 class PredictRequest(BaseModel):
     data: List[Dict[str, Any]]
@@ -141,7 +142,7 @@ def fetch_all_data(endpoint: str, label_type: str = "all", database_name: Option
     logger.info(f"Total {label_type} records fetched: {len(all_data)}")
     return all_data
 
-def extract_features_and_labels(data_records: List[Dict]) -> tuple:
+def extract_features_and_labels(data_records: List[Dict], include_fields: Optional[List[str]] = None, exclude_fields: Optional[List[str]] = None) -> tuple:
     """Extract features and labels from API response data."""
     rows = []
     for record in data_records:
@@ -158,11 +159,37 @@ def extract_features_and_labels(data_records: List[Dict]) -> tuple:
     if "label" not in df.columns:
         raise ValueError("'label' column not found in data.")
     
-    exclude_cols = ["label", "id", "attack_cat"]
-    feature_cols = [col for col in df.columns if col not in exclude_cols]
+    default_exclude_cols = ["label", "id", "attack_cat"]
+    
+    if include_fields is not None:
+        include_fields = [f.lower() for f in include_fields]
+        available_cols = [col for col in df.columns if col.lower() in include_fields]
+        if not available_cols:
+            raise ValueError(f"None of the specified include_fields {include_fields} were found in the data.")
+        feature_cols = [col for col in available_cols if col not in default_exclude_cols]
+        logger.info(f"Using include_fields: {include_fields}, resulting in {len(feature_cols)} features")
+    else:
+        exclude_cols = set(default_exclude_cols)
+        if exclude_fields is not None:
+            exclude_fields_lower = [f.lower() for f in exclude_fields]
+            for col in df.columns:
+                if col.lower() in exclude_fields_lower:
+                    exclude_cols.add(col)
+        feature_cols = [col for col in df.columns if col not in exclude_cols]
+        if exclude_fields:
+            logger.info(f"Using exclude_fields: {exclude_fields}, resulting in {len(feature_cols)} features")
+    
+    if "label" in feature_cols:
+        raise ValueError("CRITICAL: 'label' was found in feature columns. This should never happen!")
+    
+    if not feature_cols:
+        raise ValueError("No features available after filtering. Please check your include/exclude field settings.")
     
     X = df[feature_cols].copy()
     y = df["label"].copy()
+    
+    if "label" in X.columns:
+        raise ValueError("CRITICAL: 'label' column found in feature matrix X. Removing it would cause data leakage!")
     
     y = pd.to_numeric(y, errors='coerce')
     valid_mask = ~y.isna()
@@ -170,13 +197,19 @@ def extract_features_and_labels(data_records: List[Dict]) -> tuple:
     y = y[valid_mask]
     
     for col in X.columns:
+        if col == "label":
+            raise ValueError(f"CRITICAL: Found 'label' in feature column '{col}'. This must be excluded!")
         X[col] = pd.to_numeric(X[col], errors='coerce')
     
     X = X.fillna(0)
     y = y.astype(int)
     
+    if "label" in feature_cols:
+        raise ValueError("CRITICAL: 'label' found in feature_cols list. This must be excluded!")
+    
     logger.info(f"Extracted {len(X)} samples with {len(feature_cols)} features")
     logger.info(f"Label distribution: Safe (0) = {(y == 0).sum()}, Unsafe (1) = {(y == 1).sum()}")
+    logger.info(f"VERIFIED: 'label' is NOT in feature columns. Features: {len(feature_cols)}, Label used only as target variable.")
     
     return X, y, feature_cols
 
@@ -230,16 +263,28 @@ def evaluate_model(model: RandomForestClassifier, X_test: pd.DataFrame,
     return metrics
 
 def save_model(model: RandomForestClassifier, feature_names: List[str], 
-               metrics: Dict[str, Any], training_params: Dict[str, Any]):
+               metrics: Dict[str, Any], training_params: Dict[str, Any],
+               model_name: str = "random_forest_model"):
     """Save the trained model and metadata."""
+    if "label" in feature_names:
+        logger.error("CRITICAL ERROR: Attempting to save model with 'label' in feature_names!")
+        raise ValueError("CRITICAL: 'label' must not be included in feature_names. This would cause data leakage!")
+    
     os.makedirs(MODEL_DIR, exist_ok=True)
     
-    model_path = os.path.join(MODEL_DIR, MODEL_FILENAME)
+    sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
+    model_filename = f"{sanitized_model_name}.pkl"
+    metadata_filename = f"{sanitized_model_name}_metadata.json"
+    
+    model_path = os.path.join(MODEL_DIR, model_filename)
     joblib.dump(model, model_path)
     logger.info(f"Model saved to: {model_path}")
     
+    logger.info(f"VALIDATION: Saving model with {len(feature_names)} features (label correctly excluded)")
+    
     metadata = {
         'model_type': 'RandomForestClassifier',
+        'model_name': model_name,
         'feature_names': feature_names,
         'n_features': len(feature_names),
         'training_date': datetime.now().isoformat(),
@@ -251,14 +296,17 @@ def save_model(model: RandomForestClassifier, feature_names: List[str],
         }
     }
     
-    metadata_path = os.path.join(MODEL_DIR, METADATA_FILENAME)
+    metadata_path = os.path.join(MODEL_DIR, metadata_filename)
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
     logger.info(f"Metadata saved to: {metadata_path}")
 
-def load_model() -> tuple:
-    model_path = os.path.join(MODEL_DIR, MODEL_FILENAME)
-    metadata_path = os.path.join(MODEL_DIR, METADATA_FILENAME)
+def load_model(model_name: str) -> tuple:
+    sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
+    model_filename = f"{sanitized_model_name}.pkl"
+    metadata_filename = f"{sanitized_model_name}_metadata.json"
+    model_path = os.path.join(MODEL_DIR, model_filename)
+    metadata_path = os.path.join(MODEL_DIR, metadata_filename)
     
     if not os.path.exists(model_path):
         return None, None
@@ -285,36 +333,92 @@ def load_model() -> tuple:
 @app.get("/health")
 async def health_check():
     os.makedirs(MODEL_DIR, exist_ok=True)
-    model_exists = os.path.exists(os.path.join(MODEL_DIR, MODEL_FILENAME))
     return JSONResponse(
         content={
             "status": "healthy",
             "service": "Campus IoT Anomaly Detection Model API",
-            "timestamp": datetime.utcnow().isoformat(),
-            "model_trained": model_exists
+            "timestamp": datetime.utcnow().isoformat()
         },
         status_code=200
     )
 
+@app.get("/models")
+async def list_models():
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    
+    try:
+        model_files = []
+        if os.path.exists(MODEL_DIR):
+            for filename in os.listdir(MODEL_DIR):
+                if filename.endswith('.pkl'):
+                    model_name = filename[:-4]
+                    metadata_filename = f"{model_name}_metadata.json"
+                    metadata_path = os.path.join(MODEL_DIR, metadata_filename)
+                    
+                    model_info = {
+                        "model_name": model_name,
+                        "model_file": filename,
+                        "has_metadata": os.path.exists(metadata_path)
+                    }
+                    
+                    if os.path.exists(metadata_path):
+                        try:
+                            with open(metadata_path, 'r') as f:
+                                metadata = json.load(f)
+                                model_info["training_date"] = metadata.get("training_date")
+                                model_info["n_features"] = metadata.get("n_features")
+                                if "metrics" in metadata and metadata["metrics"]:
+                                    model_info["accuracy"] = metadata["metrics"].get("accuracy")
+                        except Exception as e:
+                            logger.warning(f"Error reading metadata for {model_name}: {e}")
+                    
+                    model_files.append(model_info)
+        
+        model_files.sort(key=lambda x: x["model_name"])
+        
+        logger.info(f"Retrieved {len(model_files)} models")
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "total_models": len(model_files),
+                "models": model_files,
+                "timestamp": datetime.utcnow().isoformat()
+            },
+            status_code=200
+        )
+    
+    except Exception as e:
+        logger.error(f"Error listing models: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error listing models: {str(e)}")
+
 def get_database_name(
-    dataset_name: Optional[str] = Header(None, alias="dataset_name"),
+    dataset_name: str = Header(..., alias="dataset_name"),
     train_request: TrainRequest = TrainRequest()
-) -> Optional[str]:
+) -> str:
     if dataset_name:
         return dataset_name
-    return train_request.database_name
+    return train_request.database_name or "default"
+
+def get_model_name(
+    model_name: str = Header(..., alias="model_name")
+) -> str:
+    return model_name
 
 @app.post("/train")
 async def train(
-    train_request: TrainRequest = TrainRequest(),
-    database_name: Optional[str] = Depends(get_database_name)
+    train_request: Optional[TrainRequest] = Body(default=None),
+    dataset_name: str = Depends(get_database_name),
+    model_name: str = Depends(get_model_name)
 ):
     logger.info("Training request received")
+    logger.info(f"Using dataset: {dataset_name}, model_name: {model_name}")
+    
+    if train_request is None:
+        train_request = TrainRequest()
     
     headers = {}
-    if database_name:
-        headers["dataset_name"] = database_name
-        logger.info(f"Using database: {database_name}")
+    headers["dataset_name"] = dataset_name
     
     try:
         health_url = f"{API_BASE_URL}/health"
@@ -335,7 +439,7 @@ async def train(
         )
     
     try:
-        training_data = fetch_all_data("/training", "training", database_name)
+        training_data = fetch_all_data("/training", "training", dataset_name)
         if not training_data:
             raise HTTPException(
                 status_code=400,
@@ -349,12 +453,34 @@ async def train(
     
     # Extract features and labels
     try:
-        X_train, y_train, feature_names = extract_features_and_labels(training_data)
+        X_train, y_train, feature_names = extract_features_and_labels(
+            training_data,
+            include_fields=train_request.include_fields,
+            exclude_fields=train_request.exclude_fields
+        )
         if len(X_train) == 0:
             raise HTTPException(
                 status_code=400,
                 detail="No valid training samples found."
             )
+        
+        if "label" in feature_names:
+            logger.error("CRITICAL ERROR: 'label' found in feature_names list!")
+            raise HTTPException(
+                status_code=500,
+                detail="CRITICAL: 'label' must not be included in features. This would cause data leakage!"
+            )
+        
+        if "label" in X_train.columns:
+            logger.error("CRITICAL ERROR: 'label' found in training feature matrix!")
+            raise HTTPException(
+                status_code=500,
+                detail="CRITICAL: 'label' column found in training features. This must be excluded!"
+            )
+        
+        logger.info(f"VALIDATION PASSED: 'label' is correctly excluded from {len(feature_names)} features")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing training data: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing training data: {str(e)}")
@@ -388,17 +514,28 @@ async def train(
         'feature_importance': []
     }
     
-    save_model(model, feature_names, metrics, training_params)
+    save_model(model, feature_names, metrics, training_params, model_name)
+    
+    response_content = {
+        "status": "success",
+        "message": "Model trained successfully",
+        "dataset_name": dataset_name,
+        "model_name": model_name,
+        "training_samples": len(X_train),
+        "n_features": len(feature_names),
+        "feature_names": feature_names,
+        "training_params": training_params,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    if train_request.include_fields is not None:
+        response_content["include_fields"] = train_request.include_fields
+    
+    if train_request.exclude_fields is not None:
+        response_content["exclude_fields"] = train_request.exclude_fields
     
     return JSONResponse(
-        content={
-            "status": "success",
-            "message": "Model trained successfully",
-            "training_samples": len(X_train),
-            "n_features": len(feature_names),
-            "training_params": training_params,
-            "timestamp": datetime.utcnow().isoformat()
-        },
+        content=response_content,
         status_code=200
     )
 
@@ -413,14 +550,21 @@ def get_test_database_name(
         return dataset_name
     return test_request.database_name
 
+def get_test_model_name(
+    model_name: str = Header(..., alias="model_name")
+) -> str:
+    return model_name
+
 @app.post("/test")
 async def test(
     test_request: TestRequest = TestRequest(),
-    database_name: Optional[str] = Depends(get_test_database_name)
+    database_name: Optional[str] = Depends(get_test_database_name),
+    model_name: str = Depends(get_test_model_name)
 ):
     logger.info("Testing request received")
+    logger.info(f"Using model: {model_name}")
     
-    model, metadata = load_model()
+    model, metadata = load_model(model_name)
     if model is None or metadata is None:
         raise HTTPException(
             status_code=404,
@@ -471,6 +615,17 @@ async def test(
                 status_code=400,
                 detail="No valid testing samples found."
             )
+        
+        if "label" in X_test.columns:
+            logger.error("CRITICAL ERROR: 'label' found in test feature matrix!")
+            raise HTTPException(
+                status_code=500,
+                detail="CRITICAL: 'label' column found in test features. This must be excluded!"
+            )
+        
+        logger.info(f"VALIDATION PASSED: 'label' is correctly excluded from test features")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing testing data: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing testing data: {str(e)}")
@@ -511,9 +666,14 @@ async def test(
     # Update and save metadata with new metrics
     metadata['metrics'] = metrics
     metadata['last_test_date'] = datetime.utcnow().isoformat()
-    metadata_path = os.path.join(MODEL_DIR, METADATA_FILENAME)
+    
+    sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
+    metadata_filename = f"{sanitized_model_name}_metadata.json"
+    metadata_path = os.path.join(MODEL_DIR, metadata_filename)
+    
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
+    logger.info(f"Updated metrics saved to: {metadata_path}")
     
     return JSONResponse(
         content={
@@ -527,16 +687,20 @@ async def test(
     )
 
 @app.post("/predict", response_model=PredictResponse)
-async def predict(predict_request: PredictRequest):
+async def predict(
+    predict_request: PredictRequest,
+    model_name: str = Depends(get_model_name)
+):
     """
     Make predictions on new data.
     
     Request body should contain a list of data records with feature values.
     """
     logger.info(f"Prediction request received for {len(predict_request.data)} samples")
+    logger.info(f"Using model: {model_name}")
     
     # Load model
-    model, metadata = load_model()
+    model, metadata = load_model(model_name)
     if model is None or metadata is None:
         raise HTTPException(
             status_code=404,
@@ -545,9 +709,20 @@ async def predict(predict_request: PredictRequest):
     
     feature_names = metadata['feature_names']
     
+    if "label" in feature_names:
+        logger.error("CRITICAL ERROR: 'label' found in model feature_names!")
+        raise HTTPException(
+            status_code=500,
+            detail="CRITICAL: Model metadata contains 'label' in features. This model is corrupted!"
+        )
+    
     # Prepare features
     try:
         df = pd.DataFrame(predict_request.data)
+        
+        if "label" in df.columns:
+            logger.warning("'label' field found in prediction request. It will be ignored as it's not a feature.")
+            df = df.drop(columns=["label"], errors='ignore')
         
         # Ensure all required features are present
         missing_features = set(feature_names) - set(df.columns)
@@ -558,6 +733,12 @@ async def predict(predict_request: PredictRequest):
         
         # Select only the features used in training
         df = df[feature_names]
+        
+        if "label" in df.columns:
+            raise HTTPException(
+                status_code=400,
+                detail="CRITICAL: 'label' must not be included in prediction features!"
+            )
         
         # Convert to numeric
         for col in df.columns:
@@ -603,9 +784,10 @@ async def predict(predict_request: PredictRequest):
     )
 
 @app.get("/model/status")
-async def get_model_status():
+async def get_model_status(model_name: str = Depends(get_model_name)):
     """Get the current status of the model."""
-    model, metadata = load_model()
+    logger.info(f"Getting status for model: {model_name}")
+    model, metadata = load_model(model_name)
     
     if model is None or metadata is None:
         return JSONResponse(
@@ -620,6 +802,7 @@ async def get_model_status():
     return JSONResponse(
         content={
             "status": "trained",
+            "model_name": model_name,
             "model_type": metadata.get('model_type', 'Unknown'),
             "training_date": metadata.get('training_date', 'Unknown'),
             "n_features": metadata.get('n_features', 0),
@@ -630,9 +813,10 @@ async def get_model_status():
     )
 
 @app.get("/model/metrics")
-async def get_model_metrics():
+async def get_model_metrics(model_name: str = Depends(get_model_name)):
     """Get the evaluation metrics of the trained model."""
-    model, metadata = load_model()
+    logger.info(f"Getting metrics for model: {model_name}")
+    model, metadata = load_model(model_name)
     
     if model is None or metadata is None:
         raise HTTPException(
@@ -645,6 +829,7 @@ async def get_model_metrics():
     return JSONResponse(
         content={
             "status": "success",
+            "model_name": model_name,
             "metrics": metrics,
             "training_date": metadata.get('training_date', 'Unknown'),
             "last_test_date": metadata.get('last_test_date', 'Not tested yet'),
@@ -652,127 +837,6 @@ async def get_model_metrics():
         },
         status_code=200
     )
-
-def init_websocket_db():
-    conn = sqlite3.connect(WEBSOCKET_DB)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS websocket_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            data TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-    conn.close()
-    logger.info(f"Initialized WebSocket database: {WEBSOCKET_DB}")
-
-def load_feature_names() -> List[str]:
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    feature_names_path = os.path.join(base_dir, "..", "..", "A-DataIngestion", "Processed", "feature_names.json")
-    feature_names_path = os.path.normpath(feature_names_path)
-    
-    if os.path.exists(feature_names_path):
-        try:
-            with open(feature_names_path, 'r') as f:
-                features = json.load(f)
-                logger.info(f"Loaded {len(features)} features from {feature_names_path}")
-                return features
-        except Exception as e:
-            logger.error(f"Error loading feature names: {e}")
-    else:
-        logger.warning(f"Feature names file not found at {feature_names_path}")
-    
-    logger.info("Using default feature set")
-    return [
-        "dur", "proto", "service", "state", "spkts", "dpkts", "sbytes", "dbytes",
-        "rate", "sttl", "dttl", "sload", "dload", "sloss", "dloss", "sinpkt", "dinpkt",
-        "sjit", "djit", "swin", "stcpb", "dtcpb", "dwin", "tcprtt", "synack", "ackdat",
-        "smean", "dmean", "trans_depth", "response_body_len", "ct_srv_src", "ct_state_ttl",
-        "ct_dst_ltm", "ct_src_dport_ltm", "ct_dst_sport_ltm", "ct_dst_src_ltm",
-        "is_ftp_login", "ct_ftp_cmd", "ct_flw_http_mthd", "ct_src_ltm", "ct_srv_dst", "is_sm_ips_ports"
-    ]
-
-def generate_random_data(feature_names: List[str]) -> Dict[str, Any]:
-    data = {}
-    
-    proto_features = [f for f in feature_names if f.startswith("proto_")]
-    state_features = [f for f in feature_names if f.startswith("state_")]
-    service_features = [f for f in feature_names if f.startswith("service_")]
-    
-    for feature in feature_names:
-        if feature == "dur":
-            data[feature] = round(random.uniform(0.0, 1000.0), 6)
-        elif feature.startswith("proto_"):
-            data[feature] = 1 if random.random() < 0.1 else 0
-        elif feature.startswith("state_"):
-            data[feature] = 1 if random.random() < 0.2 else 0
-        elif feature.startswith("service_"):
-            data[feature] = 1 if random.random() < 0.15 else 0
-        elif feature in ["Spkts", "Dpkts", "sbytes", "dbytes", "sttl", "dttl", 
-                         "sloss", "dloss", "swin", "stcpb", "dtcpb", "dwin",
-                         "tcprtt", "synack", "ackdat", "trans_depth", "res_bdy_len",
-                         "ct_srv_src", "ct_state_ttl", "ct_dst_ltm", "ct_src_dport_ltm",
-                         "ct_dst_sport_ltm", "ct_dst_src_ltm", "ct_ftp_cmd", "ct_flw_http_mthd",
-                         "ct_src_ltm", "ct_srv_dst"]:
-            data[feature] = random.randint(0, 10000)
-        elif feature in ["rate", "Sload", "Dload", "Sintpkt", "Dintpkt", "Sjit", "Djit", "smeansz", "dmeansz"]:
-            data[feature] = round(random.uniform(0.0, 1000000.0), 2)
-        elif feature in ["is_ftp_login", "is_sm_ips_ports"]:
-            data[feature] = random.randint(0, 1)
-        elif feature in ["byte_ratio", "pkt_ratio", "flow_rate", "pkt_rate"]:
-            data[feature] = round(random.uniform(0.0, 10.0), 4)
-        else:
-            data[feature] = random.randint(0, 1000)
-    
-    return data
-
-@app.websocket("/ws/data-stream")
-async def websocket_data_stream(websocket: WebSocket):
-    await websocket.accept()
-    logger.info("WebSocket connection established")
-    
-    init_websocket_db()
-    feature_names = load_feature_names()
-    logger.info(f"Loaded {len(feature_names)} features for data generation")
-    
-    try:
-        while True:
-            random_data = generate_random_data(feature_names)
-            timestamp = datetime.utcnow().isoformat()
-            
-            conn = sqlite3.connect(WEBSOCKET_DB)
-            cursor = conn.cursor()
-            data_json = json.dumps(random_data)
-            cursor.execute(
-                "INSERT INTO websocket_data (timestamp, data) VALUES (?, ?)",
-                (timestamp, data_json)
-            )
-            inserted_id = cursor.lastrowid
-            conn.commit()
-            conn.close()
-            
-            response = {
-                "id": inserted_id,
-                "timestamp": timestamp,
-                "data": random_data
-            }
-            
-            await websocket.send_json(response)
-            logger.info(f"Sent data record {inserted_id} via WebSocket")
-            
-            wait_time = random.uniform(20, 60)
-            logger.info(f"Waiting {wait_time:.2f} seconds before next data generation")
-            await asyncio.sleep(wait_time)
-            
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
-    except Exception as e:
-        logger.error(f"Error in WebSocket: {e}", exc_info=True)
-        try:
-            await websocket.close()
-        except:
-            pass
 
 if __name__ == "__main__":
     import uvicorn
