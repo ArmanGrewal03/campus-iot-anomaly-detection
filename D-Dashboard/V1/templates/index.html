@@ -664,7 +664,7 @@
 
         async function checkHealth() {
             try {
-                const response = await fetch('/api/health');
+                const response = await fetch('/health');
                 const data = await response.json();
                 updateStatus(response.ok);
                 showResult('healthResult', data, !response.ok);
@@ -708,7 +708,7 @@
             const limit = document.getElementById('viewLimit').value;
             const offset = document.getElementById('viewOffset').value;
             try {
-                const response = await fetch(`/api/view?limit=${limit}&offset=${offset}`);
+                const response = await fetch(`/view?limit=${limit}&offset=${offset}`);
                 const data = await response.json();
                 showResult('viewResult', data, !response.ok);
                 refreshKPIs();

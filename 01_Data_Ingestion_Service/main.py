@@ -137,14 +137,13 @@ async def startup_event():
 
 
 @app.get("/health")
-async def health_check(dataset_name: str = Depends(get_dataset_name)):
+async def health_check():
     return JSONResponse(
         content={
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
             "service": "Campus IoT Anomaly Detection API",
-            "database": DEFAULT_DB_NAME,
-            "dataset": dataset_name
+            "database": DEFAULT_DB_NAME
         },
         status_code=200
     )
@@ -183,6 +182,69 @@ async def get_tables():
         logger.error(f"Error retrieving tables: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error retrieving tables: {str(e)}")
 
+@app.get("/fields")
+async def get_fields(dataset_name: str = Depends(get_dataset_name)):
+    try:
+        init_db(dataset_name)
+        
+        csv_table = get_table_name("csv_data", dataset_name)
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{csv_table}'")
+        table_exists = cursor.fetchone()
+        
+        if not table_exists:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Table '{csv_table}' does not exist for dataset '{dataset_name}'"
+            )
+        
+        cursor.execute(f"SELECT row_data FROM {csv_table} LIMIT 1")
+        row = cursor.fetchone()
+        
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No data found in table '{csv_table}' for dataset '{dataset_name}'"
+            )
+        
+        try:
+            row_data = json.loads(row['row_data'])
+            if not isinstance(row_data, dict):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Row data is not a valid JSON object for dataset '{dataset_name}'"
+                )
+            
+            field_names = list(row_data.keys())
+            conn.close()
+            
+            logger.info(f"Retrieved {len(field_names)} fields from dataset: {dataset_name}")
+            
+            return JSONResponse(
+                content={
+                    "status": "success",
+                    "dataset": dataset_name,
+                    "table": csv_table,
+                    "total_fields": len(field_names),
+                    "fields": field_names
+                },
+                status_code=200
+            )
+        except json.JSONDecodeError as e:
+            conn.close()
+            logger.error(f"Error parsing row_data JSON for dataset {dataset_name}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error parsing row data JSON: {str(e)}"
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving fields for dataset {dataset_name}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error retrieving fields: {str(e)}")
 
 @app.post("/new")
 async def upload_csv(

@@ -12,6 +12,7 @@ Endpoints:
 """
 
 from fastapi import FastAPI, HTTPException, Header, Depends, Body
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -37,6 +38,24 @@ import sqlite3
 warnings.filterwarnings('ignore')
 
 app = FastAPI(title="Campus IoT Anomaly Detection Model API", version="1.0.0")
+
+# Add CORS middleware to allow React frontend connections
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",  # Vite dev server (default)
+        "http://localhost:5174",  # Vite dev server (this project)
+        "http://localhost:3000",  # Alternative React dev server
+        "http://localhost:8080",  # Vue CLI dev server
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8080",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Configure logging
 logging.basicConfig(
