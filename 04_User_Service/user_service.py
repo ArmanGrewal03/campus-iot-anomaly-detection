@@ -62,6 +62,7 @@ DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL_NAME", "A")
 # Singleton WebSocket connection tracking
 active_websocket: Optional[WebSocket] = None
 websocket_lock = asyncio.Lock()
+websocket_session_start_time: Optional[str] = None
 
 def get_bool_env(key: str, default: bool = True) -> bool:
     value = os.getenv(key, str(default)).lower()
@@ -182,6 +183,8 @@ async def process_missing_predictions(batch_size: int = 10):
                     "model_name": DEFAULT_MODEL_NAME
                 }
                 
+                logger.info(f"Calling prediction API for network_id: {network_id}, data: {json.dumps(data)}")
+                
                 status_code, result = await asyncio.to_thread(_make_http_request, url, payload, headers)
                 
                 if status_code == 200:
@@ -231,7 +234,7 @@ async def get_history(limit: int = 100, offset: int = 0):
         total = cursor.fetchone()["total"]
         
         cursor.execute("""
-            SELECT id, network_id, timestamp, data, user_id, location, os, browser, prediction_results 
+            SELECT id, network_id, timestamp, data, user_id, location, os, browser, prediction_results, session_active_time, is_active 
             FROM websocket_data 
             ORDER BY id DESC 
             LIMIT ? OFFSET ?
@@ -255,6 +258,17 @@ async def get_history(limit: int = 100, offset: int = 0):
                 "os": row["os"],
                 "browser": row["browser"]
             }
+            
+            # Add session tracking fields
+            try:
+                record["session_active_time"] = row["session_active_time"]
+            except (KeyError, IndexError):
+                record["session_active_time"] = None
+            
+            try:
+                record["is_active"] = bool(row["is_active"]) if row["is_active"] is not None else False
+            except (KeyError, IndexError):
+                record["is_active"] = False
             
             if row["location"]:
                 try:
@@ -322,6 +336,256 @@ async def get_history(limit: int = 100, offset: int = 0):
         raise HTTPException(
             status_code=500,
             detail=f"Error retrieving history: {str(e)}"
+        )
+
+@app.get("/network-logs")
+async def get_network_logs(
+    limit: int = 100,
+    offset: int = 0,
+    network_id: Optional[str] = None,
+    user_id: Optional[int] = None,
+    has_prediction: Optional[bool] = None,
+    is_active: Optional[bool] = None
+):
+    """
+    Get network logs from the database with optional filtering.
+    
+    Query parameters:
+    - limit: Maximum number of records to return (default: 100)
+    - offset: Number of records to skip (default: 0)
+    - network_id: Filter by specific network ID
+    - user_id: Filter by user ID
+    - has_prediction: Filter by whether prediction results exist (true/false)
+    - is_active: Filter by session active status (true/false)
+    """
+    try:
+        init_websocket_db()
+        conn = sqlite3.connect(NETWORK_LOGS_DB)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Build query with filters
+        query = "SELECT id, network_id, timestamp, data, user_id, location, os, browser, prediction_results, session_active_time, is_active FROM websocket_data WHERE 1=1"
+        params = []
+        
+        if network_id:
+            query += " AND network_id = ?"
+            params.append(network_id)
+        
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        
+        if has_prediction is not None:
+            if has_prediction:
+                query += " AND prediction_results IS NOT NULL AND prediction_results != ''"
+            else:
+                query += " AND (prediction_results IS NULL OR prediction_results = '')"
+        
+        if is_active is not None:
+            query += " AND is_active = ?"
+            params.append(1 if is_active else 0)
+        
+        # Get total count
+        count_query = query.replace("SELECT id, network_id, timestamp, data, user_id, location, os, browser, prediction_results, session_active_time, is_active", "SELECT COUNT(*) as total")
+        cursor.execute(count_query, params)
+        total = cursor.fetchone()["total"]
+        
+        # Add ordering and pagination
+        query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        logs = []
+        for row in rows:
+            try:
+                network_id_val = row["network_id"] if row["network_id"] else f"NET-{row['id']:06d}"
+            except (KeyError, IndexError):
+                network_id_val = f"NET-{row['id']:06d}"
+            
+            log_entry = {
+                "id": row["id"],
+                "network_id": network_id_val,
+                "timestamp": row["timestamp"],
+                "user_id": row["user_id"],
+                "os": row["os"],
+                "browser": row["browser"],
+                "session_active_time": row.get("session_active_time"),
+                "is_active": bool(row["is_active"]) if row["is_active"] is not None else False
+            }
+            
+            # Parse location
+            if row["location"]:
+                try:
+                    log_entry["location"] = json.loads(row["location"])
+                except:
+                    log_entry["location"] = row["location"]
+            else:
+                log_entry["location"] = None
+            
+            # Parse data
+            if row["data"]:
+                try:
+                    log_entry["data"] = json.loads(row["data"])
+                except:
+                    log_entry["data"] = row["data"]
+            else:
+                log_entry["data"] = None
+            
+            # Parse prediction results
+            if row["prediction_results"]:
+                try:
+                    log_entry["prediction_results"] = json.loads(row["prediction_results"])
+                except:
+                    log_entry["prediction_results"] = row["prediction_results"]
+            else:
+                log_entry["prediction_results"] = None
+            
+            # Add user info if available
+            if row["user_id"]:
+                user_conn = sqlite3.connect(USERS_DB)
+                user_conn.row_factory = sqlite3.Row
+                user_cursor = user_conn.cursor()
+                user_cursor.execute("SELECT first_name, last_name FROM users WHERE id = ?", (row["user_id"],))
+                user_row = user_cursor.fetchone()
+                user_conn.close()
+                
+                if user_row:
+                    log_entry["user"] = {
+                        "id": row["user_id"],
+                        "first_name": user_row["first_name"],
+                        "last_name": user_row["last_name"]
+                    }
+                else:
+                    log_entry["user"] = None
+            else:
+                log_entry["user"] = None
+            
+            logs.append(log_entry)
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "total_records": total,
+                "returned_records": len(logs),
+                "limit": limit,
+                "offset": offset,
+                "has_more": (offset + len(logs)) < total,
+                "filters": {
+                    "network_id": network_id,
+                    "user_id": user_id,
+                    "has_prediction": has_prediction,
+                    "is_active": is_active
+                },
+                "logs": logs
+            },
+            status_code=200
+        )
+    except Exception as e:
+        logger.error(f"Error in /network-logs endpoint: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving network logs: {str(e)}"
+        )
+
+@app.get("/network-logs/{network_id}")
+async def get_network_log_by_id(network_id: str = Path(..., description="Network ID to retrieve")):
+    """
+    Get a specific network log entry by network_id.
+    """
+    try:
+        init_websocket_db()
+        conn = sqlite3.connect(NETWORK_LOGS_DB)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, network_id, timestamp, data, user_id, location, os, browser, prediction_results, session_active_time, is_active 
+            FROM websocket_data 
+            WHERE network_id = ?
+        """, (network_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Network log with network_id {network_id} not found")
+        
+        log_entry = {
+            "id": row["id"],
+            "network_id": row["network_id"],
+            "timestamp": row["timestamp"],
+            "user_id": row["user_id"],
+            "os": row["os"],
+            "browser": row["browser"],
+            "session_active_time": row.get("session_active_time"),
+            "is_active": bool(row["is_active"]) if row["is_active"] is not None else False
+        }
+        
+        # Parse location
+        if row["location"]:
+            try:
+                log_entry["location"] = json.loads(row["location"])
+            except:
+                log_entry["location"] = row["location"]
+        else:
+            log_entry["location"] = None
+        
+        # Parse data
+        if row["data"]:
+            try:
+                log_entry["data"] = json.loads(row["data"])
+            except:
+                log_entry["data"] = row["data"]
+        else:
+            log_entry["data"] = None
+        
+        # Parse prediction results
+        if row["prediction_results"]:
+            try:
+                log_entry["prediction_results"] = json.loads(row["prediction_results"])
+            except:
+                log_entry["prediction_results"] = row["prediction_results"]
+        else:
+            log_entry["prediction_results"] = None
+        
+        # Add user info if available
+        if row["user_id"]:
+            user_conn = sqlite3.connect(USERS_DB)
+            user_conn.row_factory = sqlite3.Row
+            user_cursor = user_conn.cursor()
+            user_cursor.execute("SELECT first_name, last_name FROM users WHERE id = ?", (row["user_id"],))
+            user_row = user_cursor.fetchone()
+            user_conn.close()
+            
+            if user_row:
+                log_entry["user"] = {
+                    "id": row["user_id"],
+                    "first_name": user_row["first_name"],
+                    "last_name": user_row["last_name"]
+                }
+            else:
+                log_entry["user"] = None
+        else:
+            log_entry["user"] = None
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "log": log_entry
+            },
+            status_code=200
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /network-logs/{network_id} endpoint: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving network log: {str(e)}"
         )
 
 @app.post("/users/{user_id}/block")
@@ -491,6 +755,16 @@ def init_websocket_db():
         logger.info("Added prediction_results column to websocket_data table")
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute("ALTER TABLE websocket_data ADD COLUMN session_active_time TEXT")
+        logger.info("Added session_active_time column to websocket_data table")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE websocket_data ADD COLUMN is_active INTEGER DEFAULT 0")
+        logger.info("Added is_active column to websocket_data table")
+    except sqlite3.OperationalError:
+        pass
     
     cursor.execute("SELECT id FROM websocket_data WHERE network_id IS NULL")
     rows_without_network_id = cursor.fetchall()
@@ -547,6 +821,8 @@ async def process_predict_request(message_id: int, network_id: str, data: dict):
             "Content-Type": "application/json",
             "model_name": DEFAULT_MODEL_NAME
         }
+        
+        logger.info(f"Calling prediction API for network_id: {network_id}, data: {json.dumps(data)}")
         
         status_code, result = await asyncio.to_thread(_make_http_request, url, payload, headers)
         
@@ -639,6 +915,11 @@ async def process_message_queue():
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
+    # Get queue size
+    cursor.execute("SELECT COUNT(*) as count FROM message_queue WHERE status = 'pending'")
+    queue_size = cursor.fetchone()["count"]
+    logger.info(f"Message queue check: {queue_size} items in queue")
+    
     cursor.execute("""
         SELECT id, network_id, data 
         FROM message_queue 
@@ -685,6 +966,15 @@ async def missing_predictions_worker():
     while True:
         try:
             if MESSAGE_QUEUE_ENABLED:
+                # Get queue size before processing
+                init_message_queue_db()
+                conn = sqlite3.connect(MESSAGE_QUEUE_DB)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) as count FROM message_queue WHERE status = 'pending'")
+                queue_size = cursor.fetchone()[0]
+                conn.close()
+                logger.info(f"Missing predictions worker check: {queue_size} items in queue")
+                
                 await process_missing_predictions(batch_size=5)  # Process 5 at a time
         except Exception as e:
             logger.error(f"Error in missing predictions worker: {e}", exc_info=True)
@@ -947,40 +1237,78 @@ def load_feature_names() -> list:
 def generate_random_data(feature_names: list) -> dict:
     data = {}
     
+    # Occasionally generate anomalous patterns (5% chance)
+    is_anomaly_pattern = random.random() < 0.05
+    
     proto_features = [f for f in feature_names if f.startswith("proto_")]
     state_features = [f for f in feature_names if f.startswith("state_")]
     service_features = [f for f in feature_names if f.startswith("service_")]
     
     for feature in feature_names:
         if feature == "dur":
-            data[feature] = round(random.uniform(0.0, 1000.0), 6)
+            # Duration: vary from 0 to 10000, with occasional very long durations
+            if is_anomaly_pattern and random.random() < 0.3:
+                data[feature] = round(random.uniform(5000.0, 50000.0), 6)
+            else:
+                data[feature] = round(random.uniform(0.0, 5000.0), 6)
         elif feature.startswith("proto_"):
-            data[feature] = 1 if random.random() < 0.1 else 0
+            # Protocol features: vary probability based on pattern
+            prob = 0.3 if is_anomaly_pattern else random.uniform(0.05, 0.25)
+            data[feature] = 1 if random.random() < prob else 0
         elif feature.startswith("state_"):
-            data[feature] = 1 if random.random() < 0.2 else 0
+            # State features: vary probability
+            prob = 0.5 if is_anomaly_pattern else random.uniform(0.1, 0.4)
+            data[feature] = 1 if random.random() < prob else 0
         elif feature.startswith("service_"):
-            data[feature] = 1 if random.random() < 0.15 else 0
+            # Service features: vary probability
+            prob = 0.4 if is_anomaly_pattern else random.uniform(0.05, 0.3)
+            data[feature] = 1 if random.random() < prob else 0
         elif feature in ["Spkts", "Dpkts", "sbytes", "dbytes", "sttl", "dttl", 
                          "sloss", "dloss", "swin", "stcpb", "dtcpb", "dwin",
                          "tcprtt", "synack", "ackdat", "trans_depth", "res_bdy_len",
                          "ct_srv_src", "ct_state_ttl", "ct_dst_ltm", "ct_src_dport_ltm",
                          "ct_dst_sport_ltm", "ct_dst_src_ltm", "ct_ftp_cmd", "ct_flw_http_mthd",
                          "ct_src_ltm", "ct_srv_dst"]:
-            data[feature] = random.randint(0, 10000)
+            # Packet/connection features: wide range with occasional extremes
+            if is_anomaly_pattern and random.random() < 0.4:
+                # Anomaly: very high values
+                data[feature] = random.randint(50000, 1000000)
+            else:
+                # Normal: varied range
+                max_val = random.choice([1000, 5000, 10000, 50000])
+                data[feature] = random.randint(0, max_val)
         elif feature in ["rate", "Sload", "Dload", "Sintpkt", "Dintpkt", "Sjit", "Djit", "smeansz", "dmeansz"]:
-            data[feature] = round(random.uniform(0.0, 1000000.0), 2)
+            # Rate/load features: vary ranges significantly
+            if is_anomaly_pattern and random.random() < 0.3:
+                # Anomaly: extreme values
+                data[feature] = round(random.uniform(1000000.0, 10000000.0), 2)
+            else:
+                # Normal: varied ranges
+                max_val = random.choice([1000.0, 10000.0, 100000.0, 1000000.0])
+                data[feature] = round(random.uniform(0.0, max_val), 2)
         elif feature in ["is_ftp_login", "is_sm_ips_ports"]:
-            data[feature] = random.randint(0, 1)
+            # Boolean features: vary probability
+            prob = 0.8 if is_anomaly_pattern else random.uniform(0.0, 0.3)
+            data[feature] = 1 if random.random() < prob else 0
         elif feature in ["byte_ratio", "pkt_ratio", "flow_rate", "pkt_rate"]:
-            data[feature] = round(random.uniform(0.0, 10.0), 4)
+            # Ratio features: vary ranges
+            if is_anomaly_pattern:
+                # Anomaly: extreme ratios
+                data[feature] = round(random.uniform(10.0, 100.0), 4)
+            else:
+                # Normal: varied ratios
+                max_ratio = random.choice([1.0, 5.0, 10.0, 20.0])
+                data[feature] = round(random.uniform(0.0, max_ratio), 4)
         else:
-            data[feature] = random.randint(0, 1000)
+            # Default: vary the range
+            max_val = random.choice([100, 500, 1000, 5000, 10000])
+            data[feature] = random.randint(0, max_val)
     
     return data
 
 @app.websocket("/ws/data-stream")
 async def websocket_data_stream(websocket: WebSocket):
-    global active_websocket
+    global active_websocket, websocket_session_start_time
     
     if not WEBSOCKET_ENABLED:
         await websocket.close(code=1008, reason="WebSocket is disabled in configuration")
@@ -997,7 +1325,8 @@ async def websocket_data_stream(websocket: WebSocket):
         # Accept the new connection and mark it as active
         await websocket.accept()
         active_websocket = websocket
-        logger.info("WebSocket connection established (singleton)")
+        websocket_session_start_time = datetime.utcnow().isoformat()
+        logger.info(f"WebSocket connection established (singleton) - session started at {websocket_session_start_time}")
     
     init_websocket_db()
     feature_names = load_feature_names()
@@ -1019,8 +1348,8 @@ async def websocket_data_stream(websocket: WebSocket):
             location_json = json.dumps(location)
             user_id = random_user["id"] if random_user else None
             cursor.execute(
-                "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (network_id, timestamp, data_json, user_id, location_json, os, browser)
+                "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser, session_active_time, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (network_id, timestamp, data_json, user_id, location_json, os, browser, websocket_session_start_time, 1)
             )
             inserted_id = cursor.lastrowid
             conn.commit()
@@ -1069,13 +1398,45 @@ async def websocket_data_stream(websocket: WebSocket):
         logger.info("WebSocket client disconnected")
         async with websocket_lock:
             if active_websocket == websocket:
+                # Update all records from this session to mark them as inactive
+                if websocket_session_start_time:
+                    try:
+                        conn = sqlite3.connect(NETWORK_LOGS_DB)
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "UPDATE websocket_data SET is_active = 0 WHERE session_active_time = ? AND is_active = 1",
+                            (websocket_session_start_time,)
+                        )
+                        updated_count = cursor.rowcount
+                        conn.commit()
+                        conn.close()
+                        logger.info(f"Marked {updated_count} records as inactive for session started at {websocket_session_start_time}")
+                    except Exception as e:
+                        logger.error(f"Error updating session status: {e}")
                 active_websocket = None
+                websocket_session_start_time = None
                 logger.info("WebSocket singleton released")
     except Exception as e:
         logger.error(f"Error in WebSocket: {e}", exc_info=True)
         async with websocket_lock:
             if active_websocket == websocket:
+                # Update all records from this session to mark them as inactive
+                if websocket_session_start_time:
+                    try:
+                        conn = sqlite3.connect(NETWORK_LOGS_DB)
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "UPDATE websocket_data SET is_active = 0 WHERE session_active_time = ? AND is_active = 1",
+                            (websocket_session_start_time,)
+                        )
+                        updated_count = cursor.rowcount
+                        conn.commit()
+                        conn.close()
+                        logger.info(f"Marked {updated_count} records as inactive for session started at {websocket_session_start_time} due to error")
+                    except Exception as e2:
+                        logger.error(f"Error updating session status: {e2}")
                 active_websocket = None
+                websocket_session_start_time = None
                 logger.info("WebSocket singleton released due to error")
         try:
             await websocket.close()
