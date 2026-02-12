@@ -64,6 +64,9 @@ active_websocket: Optional[WebSocket] = None
 websocket_lock = asyncio.Lock()
 websocket_session_start_time: Optional[str] = None
 
+# Selected model name (can be changed via API)
+selected_model_name: str = DEFAULT_MODEL_NAME
+
 def get_bool_env(key: str, default: bool = True) -> bool:
     value = os.getenv(key, str(default)).lower()
     return value in ("true", "1", "yes", "on")
@@ -79,6 +82,9 @@ class BlockRequest(BaseModel):
 class PublishRequest(BaseModel):
     network_id: str
     data: dict
+
+class SetModelRequest(BaseModel):
+    model_name: str
 
 @app.get("/health")
 async def health_check():
@@ -180,7 +186,7 @@ async def process_missing_predictions(batch_size: int = 10):
                 payload = {"data": [data]}
                 headers = {
                     "Content-Type": "application/json",
-                    "model_name": DEFAULT_MODEL_NAME
+                    "model_name": selected_model_name
                 }
                 
                 logger.info(f"Calling prediction API for network_id: {network_id}, data: {json.dumps(data)}")
@@ -675,6 +681,33 @@ async def publish_to_queue(publish_request: PublishRequest):
         status_code=200
     )
 
+@app.post("/set-model")
+async def set_model(request: SetModelRequest):
+    """Set the model name to use for predictions"""
+    global selected_model_name
+    selected_model_name = request.model_name
+    logger.info(f"Model selection updated to: {selected_model_name}")
+    return JSONResponse(
+        content={
+            "status": "success",
+            "message": f"Model set to {selected_model_name}",
+            "model_name": selected_model_name
+        },
+        status_code=200
+    )
+
+@app.get("/get-model")
+async def get_model():
+    """Get the currently selected model name"""
+    global selected_model_name
+    return JSONResponse(
+        content={
+            "status": "success",
+            "model_name": selected_model_name
+        },
+        status_code=200
+    )
+
 @app.post("/users/{user_id}/unblock")
 async def unblock_user(user_id: int = Path(..., description="User ID to unblock")):
     init_users_db()
@@ -819,7 +852,7 @@ async def process_predict_request(message_id: int, network_id: str, data: dict):
         payload = {"data": [data]}
         headers = {
             "Content-Type": "application/json",
-            "model_name": DEFAULT_MODEL_NAME
+            "model_name": selected_model_name
         }
         
         logger.info(f"Calling prediction API for network_id: {network_id}, data: {json.dumps(data)}")
