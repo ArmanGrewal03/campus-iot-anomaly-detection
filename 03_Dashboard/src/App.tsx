@@ -1,6 +1,8 @@
-import { Suspense, lazy } from 'react';
+import React, { Suspense, lazy } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Box from '@mui/material/Box';
+import Typography from '@mui/material/Typography';
+import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
 import Dashboard from './dashboard/Dashboard';
 
@@ -23,19 +25,62 @@ function PageLoader() {
   );
 }
 
+// Error boundary to catch render crashes and prevent white screens
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode; fallbackMessage?: string },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode; fallbackMessage?: string }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('ErrorBoundary caught an error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 200, gap: 2, p: 3 }}>
+          <Typography variant="h6" color="error">
+            Something went wrong
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', maxWidth: 500 }}>
+            {this.props.fallbackMessage || 'An unexpected error occurred while loading this page. Please try again.'}
+          </Typography>
+          <Button
+            variant="outlined"
+            onClick={() => this.setState({ hasError: false, error: null })}
+          >
+            Try Again
+          </Button>
+        </Box>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export { ErrorBoundary };
+
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Dashboard />}>
         <Route index element={<Navigate to="/home" replace />} />
-        <Route path="home" element={<Suspense fallback={<PageLoader />}><TestPage /></Suspense>} />
-        <Route path="test_2026_feb5" element={<Suspense fallback={<PageLoader />}><HomeBackupFeb5 /></Suspense>} />
-        <Route path="model" element={<Suspense fallback={<PageLoader />}><ModelPage /></Suspense>} />
-        <Route path="analytics" element={<Suspense fallback={<PageLoader />}><AnalyticsPage /></Suspense>} />
-        <Route path="clients" element={<Suspense fallback={<PageLoader />}><ClientsPage /></Suspense>} />
-        <Route path="tasks" element={<Suspense fallback={<PageLoader />}><TasksPage /></Suspense>} />
-        <Route path="settings" element={<Suspense fallback={<PageLoader />}><SettingsPage /></Suspense>} />
-        <Route path="about" element={<Suspense fallback={<PageLoader />}><AboutPage /></Suspense>} />
+        <Route path="home" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><TestPage /></Suspense></ErrorBoundary>} />
+        <Route path="test_2026_feb5" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><HomeBackupFeb5 /></Suspense></ErrorBoundary>} />
+        <Route path="model" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><ModelPage /></Suspense></ErrorBoundary>} />
+        <Route path="analytics" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><AnalyticsPage /></Suspense></ErrorBoundary>} />
+        <Route path="clients" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><ClientsPage /></Suspense></ErrorBoundary>} />
+        <Route path="tasks" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><TasksPage /></Suspense></ErrorBoundary>} />
+        <Route path="settings" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><SettingsPage /></Suspense></ErrorBoundary>} />
+        <Route path="about" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><AboutPage /></Suspense></ErrorBoundary>} />
       </Route>
       <Route path="*" element={<Navigate to="/home" replace />} />
     </Routes>

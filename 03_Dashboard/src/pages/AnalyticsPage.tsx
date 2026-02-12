@@ -20,6 +20,7 @@ import WifiOffIcon from '@mui/icons-material/WifiOff';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Html, Sphere, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
+import { ErrorBoundary } from '../App';
 
 const USER_SERVICE_BASE = 'http://127.0.0.1:8002'; // User Service
 const MODEL_API_BASE = 'http://127.0.0.1:8001'; // Model Service
@@ -521,22 +522,15 @@ export default function AnalyticsPage() {
       },
       renderCell: (params: GridRenderCellParams<HistoryRecord>) => {
         // Always read the full prediction object from the row to avoid conflicts with valueGetter
-        const predResults = (params.row as HistoryRecord).prediction_results as {
-          status?: string;
-          predictions?: Array<{
-            prediction?: number;
-            label?: string;
-            probability_safe?: number;
-            probability_unsafe?: number;
-            confidence?: number;
-          }>;
-          timestamp?: string;
-        };
+        const predResults = (params.row as HistoryRecord).prediction_results;
         
+        // Null-safe: prediction_results can be null for new/pending records
+        if (!predResults || !predResults.predictions || predResults.predictions.length === 0) {
+          return <Chip label="Pending" color="default" size="small" />;
+        }
+
         // Extract the first prediction from the predictions array
-        const prediction = predResults.predictions && predResults.predictions.length > 0 
-          ? predResults.predictions[0] 
-          : null;
+        const prediction = predResults.predictions[0];
         
         if (!prediction) {
           // If there is no prediction yet, show Pending instead of Unknown
@@ -871,17 +865,19 @@ export default function AnalyticsPage() {
 
               if (mapView === '3d') {
                 return (
-                  <Canvas camera={{ position: [0, 0, 3], fov: 50 }}>
-                    <Globe3D locations={locationsWithCoords} />
-                    <OrbitControls
-                      enableZoom={true}
-                      enablePan={false}
-                      minDistance={2}
-                      maxDistance={5}
-                      autoRotate={false}
-                      rotateSpeed={0.5}
-                    />
-                  </Canvas>
+                  <ErrorBoundary fallbackMessage="Failed to load the 3D globe. Your browser may not support WebGL, or the texture failed to load. Try switching to 2D Map view.">
+                    <Canvas camera={{ position: [0, 0, 3], fov: 50 }}>
+                      <Globe3D locations={locationsWithCoords} />
+                      <OrbitControls
+                        enableZoom={true}
+                        enablePan={false}
+                        minDistance={2}
+                        maxDistance={5}
+                        autoRotate={false}
+                        rotateSpeed={0.5}
+                      />
+                    </Canvas>
+                  </ErrorBoundary>
                 );
               } else {
                 // 2D map fallback (simplified)
