@@ -94,6 +94,10 @@ export default function ModelPage() {
   const [selectedViewDataset, setSelectedViewDataset] = React.useState<string>('');
   const [datasetsLoading, setDatasetsLoading] = React.useState(false);
   const [selectedValidateDataset, setSelectedValidateDataset] = React.useState<string>('');
+  const [label0Percent, setLabel0Percent] = React.useState<string>('');
+  const [label1Percent, setLabel1Percent] = React.useState<string>('');
+  const [trainingPercent, setTrainingPercent] = React.useState<string>('80');
+  const [testingPercent, setTestingPercent] = React.useState<string>('20');
   const [selectedStatsDataset, setSelectedStatsDataset] = React.useState<string>('');
   const [availableFields, setAvailableFields] = React.useState<string[]>([]);
   const [fieldsLoading, setFieldsLoading] = React.useState(false);
@@ -647,6 +651,21 @@ export default function ModelPage() {
       const headers: Record<string, string> = {
         'dataset_name': validateDataset,
       };
+      
+      // Add optional percentage headers if provided
+      if (label0Percent.trim()) {
+        headers['X-Label-0-Percent'] = label0Percent.trim();
+      }
+      if (label1Percent.trim()) {
+        headers['X-Label-1-Percent'] = label1Percent.trim();
+      }
+      if (trainingPercent.trim()) {
+        headers['X-Training-Percent'] = trainingPercent.trim();
+      }
+      if (testingPercent.trim()) {
+        headers['X-Testing-Percent'] = testingPercent.trim();
+      }
+      
       const res = await fetch(`${API_BASE}/validate`, { method: 'PUT', headers });
       const text = await res.text();
       if (!res.ok) {
@@ -671,13 +690,21 @@ export default function ModelPage() {
           testing_rows?: number;
           training_percentage?: number;
           testing_percentage?: number;
+          label_0_rows?: number;
+          label_1_rows?: number;
+          label_0_percentage?: number;
+          label_1_percentage?: number;
         };
         if (json.message) message = json.message;
         if (
           typeof json.training_rows === 'number' &&
           typeof json.testing_rows === 'number'
         ) {
-          message = `Validation: ✅ ${json.training_rows} training (${json.training_percentage ?? '—'}%), ${json.testing_rows} testing (${json.testing_percentage ?? '—'}%)`;
+          let labelInfo = '';
+          if (typeof json.label_0_rows === 'number' && typeof json.label_1_rows === 'number') {
+            labelInfo = ` | Labels: ${json.label_0_rows} (${json.label_0_percentage ?? '—'}%) = 0, ${json.label_1_rows} (${json.label_1_percentage ?? '—'}%) = 1`;
+          }
+          message = `Validation: ✅ ${json.training_rows} training (${json.training_percentage ?? '—'}%), ${json.testing_rows} testing (${json.testing_percentage ?? '—'}%)${labelInfo}`;
         } else if (json.total_rows === 0) {
           message = 'No rows to validate.';
         }
@@ -1266,6 +1293,117 @@ export default function ModelPage() {
                     {validating ? 'Validating…' : 'Revalidate'}
                   </Button>
                 </Stack>
+                
+                {/* Label Distribution Controls */}
+                <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 500, display: 'block', mt: 2, mb: 1 }}>
+                  Label Distribution (Optional)
+                </Typography>
+                <Grid container spacing={1} sx={{ mb: 1.5 }}>
+                  <Grid item xs={6} sm={3}>
+                    <TextField
+                      size="small"
+                      label="Label 0 (%)"
+                      type="number"
+                      value={label0Percent}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                          setLabel0Percent(val);
+                          // Auto-calculate label 1 if both are being set
+                          if (val && label1Percent) {
+                            const remaining = 100 - parseFloat(val);
+                            if (remaining >= 0 && remaining <= 100) {
+                              setLabel1Percent(remaining.toFixed(1));
+                            }
+                          }
+                        }
+                      }}
+                      inputProps={{ min: 0, max: 100, step: 0.1 }}
+                      helperText="% labeled as 0"
+                      fullWidth
+                    />
+                  </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <TextField
+                      size="small"
+                      label="Label 1 (%)"
+                      type="number"
+                      value={label1Percent}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                          setLabel1Percent(val);
+                          // Auto-calculate label 0 if both are being set
+                          if (val && label0Percent) {
+                            const remaining = 100 - parseFloat(val);
+                            if (remaining >= 0 && remaining <= 100) {
+                              setLabel0Percent(remaining.toFixed(1));
+                            }
+                          }
+                        }
+                      }}
+                      inputProps={{ min: 0, max: 100, step: 0.1 }}
+                      helperText="% labeled as 1"
+                      fullWidth
+                    />
+                  </Grid>
+                </Grid>
+                
+                {/* Training/Testing Split Controls */}
+                <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 500, display: 'block', mt: 1, mb: 1 }}>
+                  Training/Testing Split
+                </Typography>
+                <Grid container spacing={1} sx={{ mb: 1.5 }}>
+                  <Grid item xs={6} sm={3}>
+                    <TextField
+                      size="small"
+                      label="Training (%)"
+                      type="number"
+                      value={trainingPercent}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                          setTrainingPercent(val);
+                          // Auto-calculate testing if both are being set
+                          if (val && testingPercent) {
+                            const remaining = 100 - parseFloat(val);
+                            if (remaining >= 0 && remaining <= 100) {
+                              setTestingPercent(remaining.toFixed(1));
+                            }
+                          }
+                        }
+                      }}
+                      inputProps={{ min: 0, max: 100, step: 0.1 }}
+                      helperText="% for training"
+                      fullWidth
+                    />
+                  </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <TextField
+                      size="small"
+                      label="Testing (%)"
+                      type="number"
+                      value={testingPercent}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                          setTestingPercent(val);
+                          // Auto-calculate training if both are being set
+                          if (val && trainingPercent) {
+                            const remaining = 100 - parseFloat(val);
+                            if (remaining >= 0 && remaining <= 100) {
+                              setTrainingPercent(remaining.toFixed(1));
+                            }
+                          }
+                        }
+                      }}
+                      inputProps={{ min: 0, max: 100, step: 0.1 }}
+                      helperText="% for testing"
+                      fullWidth
+                    />
+                  </Grid>
+                </Grid>
+                
                 {validationResult && (
                   <Alert
                     severity={validationResult.severity}

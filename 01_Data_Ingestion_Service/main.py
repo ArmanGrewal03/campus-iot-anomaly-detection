@@ -691,8 +691,34 @@ async def get_testing_data(
 
 
 @app.put("/validate")
-async def validate_data(dataset_name: str = Depends(get_dataset_name)):
+async def validate_data(
+    dataset_name: str = Depends(get_dataset_name),
+    label_0_percent: Optional[float] = Header(None, alias="X-Label-0-Percent"),
+    label_1_percent: Optional[float] = Header(None, alias="X-Label-1-Percent"),
+    training_percent: Optional[float] = Header(None, alias="X-Training-Percent"),
+    testing_percent: Optional[float] = Header(None, alias="X-Testing-Percent")
+):
+    """
+    Validate and assign labels and training/testing split.
+    
+    Headers:
+    - X-Label-0-Percent: Percentage of data to label as 0 (0-100). If not provided, labels are not modified.
+    - X-Label-1-Percent: Percentage of data to label as 1 (0-100). If not provided, labels are not modified.
+    - X-Training-Percent: Percentage of data to mark as training (0-100). Default: 80.
+    - X-Testing-Percent: Percentage of data to mark as testing (0-100). Default: 20.
+    """
     logger.info(f"Starting data validation and assignment for dataset: {dataset_name}")
+    logger.info(f"Headers - Label 0%: {label_0_percent}, Label 1%: {label_1_percent}, Training%: {training_percent}, Testing%: {testing_percent}")
+    
+    # Validate header values are in valid range (0-100)
+    if label_0_percent is not None and (label_0_percent < 0 or label_0_percent > 100):
+        raise HTTPException(status_code=400, detail=f"X-Label-0-Percent must be between 0 and 100. Got: {label_0_percent}")
+    if label_1_percent is not None and (label_1_percent < 0 or label_1_percent > 100):
+        raise HTTPException(status_code=400, detail=f"X-Label-1-Percent must be between 0 and 100. Got: {label_1_percent}")
+    if training_percent is not None and (training_percent < 0 or training_percent > 100):
+        raise HTTPException(status_code=400, detail=f"X-Training-Percent must be between 0 and 100. Got: {training_percent}")
+    if testing_percent is not None and (testing_percent < 0 or testing_percent > 100):
+        raise HTTPException(status_code=400, detail=f"X-Testing-Percent must be between 0 and 100. Got: {testing_percent}")
     
     try:
         init_db(dataset_name)
@@ -701,6 +727,7 @@ async def validate_data(dataset_name: str = Depends(get_dataset_name)):
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        # Add T column if it doesn't exist
         try:
             cursor.execute(f"ALTER TABLE {csv_table} ADD COLUMN T TEXT")
             logger.info(f"Added T column to {csv_table} table")
@@ -711,7 +738,8 @@ async def validate_data(dataset_name: str = Depends(get_dataset_name)):
             else:
                 raise
         
-        cursor.execute(f"SELECT id FROM {csv_table}")
+        # Fetch all rows with their data
+        cursor.execute(f"SELECT id, row_data FROM {csv_table}")
         all_rows = cursor.fetchall()
         total_rows = len(all_rows)
         
@@ -729,21 +757,93 @@ async def validate_data(dataset_name: str = Depends(get_dataset_name)):
                 status_code=200
             )
         
-        training_count = int(total_rows * 0.8)
+        # Validate and set training/testing percentages
+        if training_percent is not None and testing_percent is not None:
+            if abs(training_percent + testing_percent - 100.0) > 0.01:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Training and testing percentages must sum to 100. Got training={training_percent}%, testing={testing_percent}%"
+                )
+            train_pct = training_percent / 100.0
+            test_pct = testing_percent / 100.0
+        elif training_percent is not None:
+            train_pct = training_percent / 100.0
+            test_pct = 1.0 - train_pct
+        elif testing_percent is not None:
+            test_pct = testing_percent / 100.0
+            train_pct = 1.0 - test_pct
+        else:
+            # Default: 80% training, 20% testing
+            train_pct = 0.8
+            test_pct = 0.2
+        
+        # Validate label percentages if provided
+        if label_0_percent is not None and label_1_percent is not None:
+            if abs(label_0_percent + label_1_percent - 100.0) > 0.01:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Label 0 and label 1 percentages must sum to 100. Got label_0={label_0_percent}%, label_1={label_1_percent}%"
+                )
+            label_0_pct = label_0_percent / 100.0
+            label_1_pct = label_1_percent / 100.0
+            assign_labels = True
+        elif label_0_percent is not None:
+            label_0_pct = label_0_percent / 100.0
+            label_1_pct = 1.0 - label_0_pct
+            assign_labels = True
+        elif label_1_percent is not None:
+            label_1_pct = label_1_percent / 100.0
+            label_0_pct = 1.0 - label_1_pct
+            assign_labels = True
+        else:
+            assign_labels = False
+        
+        # Calculate counts
+        training_count = int(total_rows * train_pct)
         testing_count = total_rows - training_count
         
-        logger.info(f"Total rows: {total_rows}, Training: {training_count}, Testing: {testing_count}")
+        if assign_labels:
+            label_0_count = int(total_rows * label_0_pct)
+            label_1_count = total_rows - label_0_count
+            logger.info(f"Total rows: {total_rows}, Label 0: {label_0_count}, Label 1: {label_1_count}, Training: {training_count}, Testing: {testing_count}")
+        else:
+            logger.info(f"Total rows: {total_rows}, Training: {training_count}, Testing: {testing_count} (labels not modified)")
         
-        row_ids = [row['id'] for row in all_rows]
-        random.shuffle(row_ids)
+        # Shuffle rows for random assignment
+        row_data_list = [(row['id'], row['row_data']) for row in all_rows]
+        random.shuffle(row_data_list)
         
-        training_ids = set(row_ids[:training_count])
-        testing_ids = set(row_ids[training_count:])
+        # Assign labels if requested
+        if assign_labels:
+            label_0_rows = row_data_list[:label_0_count]
+            label_1_rows = row_data_list[label_0_count:]
+            
+            for row_id, row_data_json in label_0_rows:
+                try:
+                    row_data = json.loads(row_data_json)
+                    row_data['label'] = 0
+                    updated_json = json.dumps(row_data)
+                    cursor.execute(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", (updated_json, row_id))
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.warning(f"Failed to update label for row {row_id}: {e}")
+            
+            for row_id, row_data_json in label_1_rows:
+                try:
+                    row_data = json.loads(row_data_json)
+                    row_data['label'] = 1
+                    updated_json = json.dumps(row_data)
+                    cursor.execute(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", (updated_json, row_id))
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.warning(f"Failed to update label for row {row_id}: {e}")
+        
+        # Assign training/testing split
+        training_ids = set([row_id for row_id, _ in row_data_list[:training_count]])
+        testing_ids = set([row_id for row_id, _ in row_data_list[training_count:]])
         
         updated_training = 0
         updated_testing = 0
         
-        for row_id in row_ids:
+        for row_id, _ in row_data_list:
             if row_id in training_ids:
                 cursor.execute(f"UPDATE {csv_table} SET T = ? WHERE id = ?", ("training", row_id))
                 updated_training += 1
@@ -754,21 +854,33 @@ async def validate_data(dataset_name: str = Depends(get_dataset_name)):
         conn.commit()
         conn.close()
         
+        result = {
+            "status": "success",
+            "message": "Data validation and assignment completed",
+            "total_rows": total_rows,
+            "training_rows": updated_training,
+            "testing_rows": updated_testing,
+            "training_percentage": round((updated_training / total_rows) * 100, 2),
+            "testing_percentage": round((updated_testing / total_rows) * 100, 2)
+        }
+        
+        if assign_labels:
+            result["label_0_rows"] = label_0_count
+            result["label_1_rows"] = label_1_count
+            result["label_0_percentage"] = round((label_0_count / total_rows) * 100, 2)
+            result["label_1_percentage"] = round((label_1_count / total_rows) * 100, 2)
+        
         logger.info(f"Validation complete: {updated_training} training, {updated_testing} testing")
+        if assign_labels:
+            logger.info(f"Labels assigned: {label_0_count} labeled as 0, {label_1_count} labeled as 1")
         
         return JSONResponse(
-            content={
-                "status": "success",
-                "message": "Data validation and assignment completed",
-                "total_rows": total_rows,
-                "training_rows": updated_training,
-                "testing_rows": updated_testing,
-                "training_percentage": round((updated_training / total_rows) * 100, 2),
-                "testing_percentage": round((updated_testing / total_rows) * 100, 2)
-            },
+            content=result,
             status_code=200
         )
     
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error during validation: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error during validation: {str(e)}")
