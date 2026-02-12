@@ -1,6 +1,9 @@
 # PowerShell script to run all services simultaneously
 # This script starts the Data Ingestion Service, Model Service, User Service, and Dashboard in separate windows
 # It also opens the website and provides a way to terminate all services
+#
+# To run each service in a separate terminal TAB inside Cursor: use the built-in task instead:
+#   Ctrl+Shift+P (Command Palette) -> "Tasks: Run Task" -> "Run All Services (Cursor terminals)"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Starting All Services" -ForegroundColor Cyan

@@ -65,7 +65,6 @@ export default function ModelPage() {
   const [datasetNameError, setDatasetNameError] = React.useState('');
   const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
   const [uploading, setUploading] = React.useState(false);
-  const [datasets, setDatasets] = React.useState<{ id: string; name: string }[]>([]);
   const [rows, setRows] = React.useState<Record<string, unknown>[]>([]);
   const [viewLimit, setViewLimit] = React.useState(1000);
   const [viewLoading, setViewLoading] = React.useState(false);
@@ -79,7 +78,8 @@ export default function ModelPage() {
   const [insertLoading, setInsertLoading] = React.useState(false);
   const [modelName, setModelName] = React.useState('');
   const [modelNameError, setModelNameError] = React.useState('');
-  const [selectedDatasetId, setSelectedDatasetId] = React.useState('');
+  /** Single source of truth: selected dataset name (used in View Data, Dataset Actions, Training, Stats, Test) */
+  const [selectedDataset, setSelectedDataset] = React.useState<string>('');
   const [selectedFeatures, setSelectedFeatures] = React.useState<string[]>([]);
   const [modelType, setModelType] = React.useState('');
   const [training, setTraining] = React.useState(false);
@@ -91,15 +91,11 @@ export default function ModelPage() {
   const [typeStats, setTypeStats] = React.useState<any>(null);
   const [statsLoading, setStatsLoading] = React.useState(false);
   const [availableDatasets, setAvailableDatasets] = React.useState<string[]>([]);
-  const [selectedViewDataset, setSelectedViewDataset] = React.useState<string>('');
   const [datasetsLoading, setDatasetsLoading] = React.useState(false);
-  const [selectedValidateDataset, setSelectedValidateDataset] = React.useState<string>('');
-  const [selectedStatsDataset, setSelectedStatsDataset] = React.useState<string>('');
   const [availableFields, setAvailableFields] = React.useState<string[]>([]);
   const [fieldsLoading, setFieldsLoading] = React.useState(false);
   const [availableModels, setAvailableModels] = React.useState<any[]>([]);
   const [modelsLoading, setModelsLoading] = React.useState(false);
-  const [selectedTestDataset, setSelectedTestDataset] = React.useState<string>('');
   const [selectedTestModel, setSelectedTestModel] = React.useState<string>('');
   const [testing, setTesting] = React.useState(false);
   const [testResults, setTestResults] = React.useState<any>(null);
@@ -156,15 +152,20 @@ export default function ModelPage() {
       setSnackbar({ open: true, message: 'Attach a CSV file first.', severity: 'info' });
       return;
     }
+    if (uploading) return; // Prevent double-submit
     setUploading(true);
     setDatasetNameError('');
     try {
       const formData = new FormData();
       formData.append('file', selectedFile);
       const headers: Record<string, string> = {};
-      if (datasetName.trim()) {
-        headers['dataset_name'] = datasetName.trim();
+      const nameToUse = datasetName.trim();
+      if (!nameToUse) {
+        setSnackbar({ open: true, message: 'Enter a dataset name before uploading.', severity: 'warning' });
+        setUploading(false);
+        return;
       }
+      headers['dataset_name'] = nameToUse;
       const res = await fetch(`${API_BASE}/new`, {
         method: 'POST',
         headers,
@@ -194,12 +195,10 @@ export default function ModelPage() {
       }
       setSnackbar({ open: true, message, severity: 'success' });
       setSelectedFile(null);
-      if (datasetName.trim()) {
-        const id = `ds-${Date.now()}`;
-        setDatasets((d) => [...d, { id, name: datasetName.trim() }]);
-        setSelectedDatasetId(id);
-      }
-      fetchViewData(viewLimit, 0);
+      // Refresh dataset list from API (single source of truth) and select the one we just uploaded
+      await fetchTables();
+      setSelectedDataset(nameToUse);
+      // View data will refetch automatically when selectedDataset updates (useEffect)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Network error. Is the backend running at http://localhost:8000?';
       setSnackbar({ open: true, message, severity: 'error' });
@@ -219,26 +218,11 @@ export default function ModelPage() {
           .filter(table => table.startsWith('csv_data_'))
           .map(table => table.replace(/^csv_data_/, ''));
         setAvailableDatasets(datasetNames);
-        // Auto-select first dataset if none selected
-        setSelectedViewDataset((prev) => {
-          if (!prev && datasetNames.length > 0) {
-            return datasetNames[0];
-          }
-          return prev;
-        });
-        // Also auto-select for validation if none selected
-        setSelectedValidateDataset((prev) => {
-          if (!prev && datasetNames.length > 0) {
-            return datasetNames[0];
-          }
-          return prev;
-        });
-        // Also auto-select for stats if none selected
-        setSelectedStatsDataset((prev) => {
-          if (!prev && datasetNames.length > 0) {
-            return datasetNames[0];
-          }
-          return prev;
+        // Keep current selection if it still exists; otherwise select first (one selection for all sections)
+        setSelectedDataset((prev) => {
+          if (datasetNames.length === 0) return '';
+          if (prev && datasetNames.includes(prev)) return prev;
+          return datasetNames[0];
         });
       }
     } catch (err) {
@@ -288,14 +272,12 @@ export default function ModelPage() {
 
   // Fetch fields when dataset changes
   React.useEffect(() => {
-    if (selectedViewDataset) {
-      fetchFields(selectedViewDataset);
-    } else if (datasetName.trim()) {
-      fetchFields(datasetName);
+    if (selectedDataset) {
+      fetchFields(selectedDataset);
     } else {
       setAvailableFields([]);
     }
-  }, [selectedViewDataset, datasetName, fetchFields]);
+  }, [selectedDataset, fetchFields]);
 
   const fetchDatasetStats = React.useCallback(async (datasetName: string) => {
     if (!datasetName.trim()) {
@@ -340,11 +322,11 @@ export default function ModelPage() {
 
   // Fetch stats when dataset changes or when metrics are updated
   React.useEffect(() => {
-    const datasetToUse = metrics?.dataset || selectedStatsDataset || selectedViewDataset || datasetName.trim();
+    const datasetToUse = metrics?.dataset || selectedDataset;
     if (datasetToUse) {
       fetchDatasetStats(datasetToUse);
     }
-  }, [selectedStatsDataset, selectedViewDataset, datasetName, metrics?.dataset, fetchDatasetStats]);
+  }, [selectedDataset, metrics?.dataset, fetchDatasetStats]);
 
   const fetchModels = React.useCallback(async () => {
     setModelsLoading(true);
@@ -490,7 +472,7 @@ export default function ModelPage() {
       return;
     }
 
-    const testDataset = selectedTestDataset.trim() || selectedViewDataset.trim() || datasetName.trim();
+    const testDataset = selectedDataset.trim();
     if (!testDataset) {
       setSnackbar({ open: true, message: 'Please select a dataset to test on.', severity: 'warning' });
       return;
@@ -538,7 +520,7 @@ export default function ModelPage() {
 
   const fetchViewData = React.useCallback(
     async (limit: number, offset: number) => {
-      if (!selectedViewDataset.trim()) {
+      if (!selectedDataset.trim()) {
         setSnackbar({ open: true, message: 'Please select a dataset to view.', severity: 'warning' });
         return;
       }
@@ -547,7 +529,7 @@ export default function ModelPage() {
       try {
         const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
         const headers: Record<string, string> = {};
-        headers['dataset_name'] = selectedViewDataset.trim();
+        headers['dataset_name'] = selectedDataset.trim();
         
         // Determine which endpoint to call based on filterMode
         // Note: These are GET endpoints from Data Ingestion Service, not POST /train from Model Service
@@ -588,14 +570,14 @@ export default function ModelPage() {
         setViewLoading(false);
       }
     },
-    [selectedViewDataset, filterMode]
+    [selectedDataset, filterMode]
   );
 
   React.useEffect(() => {
-    if (selectedViewDataset) {
+    if (selectedDataset) {
       fetchViewData(viewLimit, 0);
     }
-  }, [viewLimit, selectedViewDataset, filterMode, fetchViewData]);
+  }, [viewLimit, selectedDataset, filterMode, fetchViewData]);
 
   const fetchApiHealth = React.useCallback(async (silent = false) => {
     if (!silent) {
@@ -634,9 +616,7 @@ export default function ModelPage() {
   const [validationResult, setValidationResult] = React.useState<{ message: string; severity: 'success' | 'warning' } | null>(null);
 
   const handleRevalidate = async () => {
-    // Use selectedValidateDataset if available, otherwise fall back to datasetName or selectedViewDataset
-    const validateDataset = selectedValidateDataset.trim() || selectedViewDataset.trim() || datasetName.trim();
-    if (!validateDataset) {
+    if (!selectedDataset.trim()) {
       setSnackbar({ open: true, message: 'Please select a dataset to validate.', severity: 'warning' });
       return;
     }
@@ -645,7 +625,7 @@ export default function ModelPage() {
     setValidationResult(null);
     try {
       const headers: Record<string, string> = {
-        'dataset_name': validateDataset,
+        'dataset_name': selectedDataset.trim(),
       };
       const res = await fetch(`${API_BASE}/validate`, { method: 'PUT', headers });
       const text = await res.text();
@@ -705,7 +685,7 @@ export default function ModelPage() {
     setClearLoading(true);
     try {
       const headers: Record<string, string> = {};
-      if (datasetName.trim()) headers['dataset_name'] = datasetName.trim();
+      if (selectedDataset.trim()) headers['dataset_name'] = selectedDataset.trim();
       const res = await fetch(`${API_BASE}/clear`, { method: 'DELETE', headers });
       const text = await res.text();
       if (!res.ok) {
@@ -754,9 +734,7 @@ export default function ModelPage() {
       return;
     }
     
-    // Use selectedViewDataset if available, otherwise fall back to datasetName
-    const trainingDataset = selectedViewDataset.trim() || datasetName.trim();
-    if (!trainingDataset) {
+    if (!selectedDataset.trim()) {
       setSnackbar({ open: true, message: 'Please select a dataset to train on.', severity: 'warning' });
       return;
     }
@@ -782,7 +760,7 @@ export default function ModelPage() {
       // Headers: dataset_name and model_name are required
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'dataset_name': trainingDataset,
+        'dataset_name': selectedDataset.trim(),
         'model_name': modelName.trim(),
       };
 
@@ -804,7 +782,7 @@ export default function ModelPage() {
       const modelTypeDisplay = modelType || data.model_type || 'model';
       setSnackbar({ 
         open: true, 
-        message: `Model "${modelName.trim()}" (${modelTypeDisplay}) trained successfully on dataset "${trainingDataset}"`, 
+        message: `Model "${modelName.trim()}" (${modelTypeDisplay}) trained successfully on dataset "${selectedDataset.trim()}"`, 
         severity: 'success' 
       });
     } catch (err) {
@@ -829,7 +807,7 @@ export default function ModelPage() {
         // Fetch testing data from backend
         const params = new URLSearchParams({ limit: '100', offset: '0' });
         const headers: Record<string, string> = {};
-        if (datasetName.trim()) headers['dataset_name'] = datasetName.trim();
+        if (selectedDataset.trim()) headers['dataset_name'] = selectedDataset.trim();
         const res = await fetch(`${API_BASE}/testing?${params}`, { headers });
         const json = await res.json();
         if (!res.ok) throw new Error(json.detail || 'Failed to fetch testing data');
@@ -908,7 +886,7 @@ export default function ModelPage() {
     return keys.length > 0 ? keys : DEFAULT_FEATURE_COLUMNS;
   }, [rows]);
 
-  const canTrain = modelName.trim() && selectedDatasetId && selectedFeatures.length > 0 && modelType;
+  const canTrain = modelName.trim() && selectedDataset.trim() && selectedFeatures.length > 0 && modelType;
 
   return (
     <Box sx={{ width: '100%', maxWidth: { sm: '100%', md: '1700px' } }}>
@@ -1111,9 +1089,9 @@ export default function ModelPage() {
                   <InputLabel id="dataset-label">Dataset</InputLabel>
                   <Select
                     labelId="dataset-label"
-                    value={selectedViewDataset}
+                    value={selectedDataset}
                     label="Dataset"
-                    onChange={(e) => setSelectedViewDataset(e.target.value)}
+                    onChange={(e) => setSelectedDataset(e.target.value)}
                     disabled={datasetsLoading || availableDatasets.length === 0}
                   >
                     {availableDatasets.map((ds) => (
@@ -1152,7 +1130,7 @@ export default function ModelPage() {
                   variant="outlined"
                   startIcon={viewLoading ? <CircularProgress size={14} color="inherit" /> : <RefreshRoundedIcon />}
                   onClick={() => fetchViewData(viewLimit, 0)}
-                  disabled={viewLoading || !selectedViewDataset}
+                  disabled={viewLoading || !selectedDataset}
                 >
                   Refresh Data
                 </Button>
@@ -1238,9 +1216,9 @@ export default function ModelPage() {
                     <InputLabel id="validate-dataset-label">Dataset to Validate</InputLabel>
                     <Select
                       labelId="validate-dataset-label"
-                      value={selectedValidateDataset}
+                      value={selectedDataset}
                       label="Dataset to Validate"
-                      onChange={(e) => setSelectedValidateDataset(e.target.value)}
+                      onChange={(e) => setSelectedDataset(e.target.value)}
                       disabled={datasetsLoading || availableDatasets.length === 0}
                     >
                       {availableDatasets.map((ds) => (
@@ -1253,7 +1231,7 @@ export default function ModelPage() {
                     color="warning"
                     startIcon={validating ? <CircularProgress size={16} color="inherit" /> : <RefreshRoundedIcon />}
                     onClick={handleRevalidate}
-                    disabled={validating || !selectedValidateDataset}
+                    disabled={validating || !selectedDataset}
                     sx={(theme) => ({
                       color: `${theme.palette.warning.contrastText || '#1a1a1a'} !important`,
                       border: 'none !important',
@@ -1365,16 +1343,9 @@ export default function ModelPage() {
                   <InputLabel id="train-dataset-label">Dataset for Training</InputLabel>
                   <Select
                     labelId="train-dataset-label"
-                    value={selectedViewDataset || datasetName.trim() || ''}
+                    value={selectedDataset || ''}
                     label="Dataset for Training"
-                    onChange={(e) => {
-                      // Update selectedViewDataset if it exists in availableDatasets, otherwise update datasetName
-                      if (availableDatasets.includes(e.target.value)) {
-                        setSelectedViewDataset(e.target.value);
-                      } else {
-                        setDatasetName(e.target.value);
-                      }
-                    }}
+                    onChange={(e) => setSelectedDataset(e.target.value)}
                     disabled={datasetsLoading || availableDatasets.length === 0}
                   >
                     {availableDatasets.map((ds) => (
@@ -1454,7 +1425,7 @@ export default function ModelPage() {
                   </Stack>
                 ) : availableFields.length === 0 ? (
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', py: 1 }}>
-                    {selectedViewDataset || datasetName.trim() 
+                    {selectedDataset 
                       ? 'No fields available. Make sure a dataset is selected and contains data.'
                       : 'Select a dataset to view available fields.'}
                   </Typography>
@@ -1527,7 +1498,7 @@ export default function ModelPage() {
                 size="large"
                 startIcon={training ? <CircularProgress size={20} color="inherit" /> : <PsychologyRoundedIcon />}
                 onClick={handleTrain}
-                disabled={training || !modelName.trim() || !modelType || (!selectedViewDataset.trim() && !datasetName.trim())}
+                disabled={training || !modelName.trim() || !modelType || !selectedDataset.trim()}
                 sx={{
                   alignSelf: 'flex-start',
                   mt: 1,
@@ -1718,9 +1689,9 @@ export default function ModelPage() {
                     <InputLabel id="stats-dataset-label">Select Dataset</InputLabel>
                     <Select
                       labelId="stats-dataset-label"
-                      value={selectedStatsDataset}
+                      value={selectedDataset}
                       label="Select Dataset"
-                      onChange={(e) => setSelectedStatsDataset(e.target.value)}
+                      onChange={(e) => setSelectedDataset(e.target.value)}
                       disabled={datasetsLoading || availableDatasets.length === 0}
                     >
                       {availableDatasets.map((ds) => (
@@ -1730,7 +1701,7 @@ export default function ModelPage() {
                   </FormControl>
                 </Box>
                 {/* Show dataset stats even without model metrics */}
-                {(datasetStats || typeStats) && selectedStatsDataset && (
+                {(datasetStats || typeStats) && selectedDataset && (
                   <Box sx={{ pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
                     <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
                       Dataset Statistics
@@ -1805,7 +1776,7 @@ export default function ModelPage() {
                     )}
                   </Box>
                 )}
-                {!selectedStatsDataset && availableDatasets.length > 0 && (
+                {!selectedDataset && availableDatasets.length > 0 && (
                   <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic', mt: 1 }}>
                     Select a dataset above to view its statistics.
                   </Typography>
@@ -1847,9 +1818,9 @@ export default function ModelPage() {
                   <InputLabel id="test-dataset-label">Dataset for Testing</InputLabel>
                   <Select
                     labelId="test-dataset-label"
-                    value={selectedTestDataset}
+                    value={selectedDataset}
                     label="Dataset for Testing"
-                    onChange={(e) => setSelectedTestDataset(e.target.value)}
+                    onChange={(e) => setSelectedDataset(e.target.value)}
                     disabled={datasetsLoading || availableDatasets.length === 0}
                   >
                     {availableDatasets.map((ds) => (
@@ -1911,7 +1882,7 @@ export default function ModelPage() {
                   size="large"
                   startIcon={testing ? <CircularProgress size={20} color="inherit" /> : <PsychologyRoundedIcon />}
                   onClick={handleTest}
-                  disabled={testing || !selectedTestModel.trim() || (!selectedTestDataset.trim() && !selectedViewDataset.trim() && !datasetName.trim())}
+                  disabled={testing || !selectedTestModel.trim() || !selectedDataset.trim()}
                   sx={{
                     alignSelf: 'flex-start',
                     mt: 1,
