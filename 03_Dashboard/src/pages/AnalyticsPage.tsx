@@ -66,27 +66,30 @@ function latLonToXYZ(lat: number, lon: number, radius: number = 1): [number, num
 
 // 3D Globe Component
 function Globe3D({ locations }: { locations: Array<{ record: HistoryRecord; lat: number; lon: number }> }) {
-  const globeRef = React.useRef<THREE.Mesh>(null);
+  const groupRef = React.useRef<THREE.Group>(null);
   const [hoveredId, setHoveredId] = React.useState<number | null>(null);
   
-  // Load Earth texture map - using a world map texture
-  // Using a reliable texture source from Three.js examples
+  // Load Earth texture map - using a texture with lighter/bluer oceans
+  // Using a texture with better ocean contrast against dark background
   const earthTexture = useTexture('https://raw.githubusercontent.com/mrdoob/three.js/r129/examples/textures/planets/earth_atmos_2048.jpg');
 
   useFrame(() => {
-    if (globeRef.current) {
-      globeRef.current.rotation.y += 0.001;
+    if (groupRef.current) {
+      groupRef.current.rotation.y += 0.001;
     }
   });
 
   return (
-    <>
+    <group ref={groupRef}>
       {/* Globe sphere with Earth texture */}
-      <Sphere ref={globeRef} args={[1, 64, 64]}>
+      <Sphere args={[1, 64, 64]}>
         <meshStandardMaterial
           map={earthTexture}
-          roughness={0.8}
-          metalness={0.2}
+          roughness={0.6}
+          metalness={0.05}
+          color="#e8f4f8"
+          emissive="#002244"
+          emissiveIntensity={0.15}
         />
       </Sphere>
       
@@ -209,7 +212,7 @@ function Globe3D({ locations }: { locations: Array<{ record: HistoryRecord; lat:
       <ambientLight intensity={0.5} />
       <pointLight position={[10, 10, 10]} intensity={1} />
       <pointLight position={[-10, -10, -10]} intensity={0.5} />
-    </>
+    </group>
   );
 }
 
@@ -231,6 +234,8 @@ export default function AnalyticsPage() {
   const [selectedModel, setSelectedModel] = React.useState<string>('');
   const [modelsLoading, setModelsLoading] = React.useState(false);
   const [mapView, setMapView] = React.useState<'2d' | '3d'>('3d');
+  const [filterActive, setFilterActive] = React.useState<boolean | 'all'>('all');
+  const [filterPrediction, setFilterPrediction] = React.useState<'all' | 'safe' | 'anomaly' | 'pending'>('all');
 
   const fetchHistory = React.useCallback(async (limit: number = 100, offset: number = 0) => {
     setLoading(true);
@@ -766,29 +771,99 @@ export default function AnalyticsPage() {
               </Button>
             </Stack>
           </Stack>
+          
+          {/* Filter Controls */}
+          <Stack direction="row" spacing={2} sx={{ mb: 2, flexWrap: 'wrap' }}>
+            <FormControl size="small" sx={{ minWidth: 150 }}>
+              <InputLabel id="filter-active-label">Session Status</InputLabel>
+              <Select
+                labelId="filter-active-label"
+                id="filter-active"
+                value={filterActive}
+                label="Session Status"
+                onChange={(e) => setFilterActive(e.target.value as boolean | 'all')}
+              >
+                <MenuItem value="all">All Sessions</MenuItem>
+                <MenuItem value={true}>Active Only</MenuItem>
+                <MenuItem value={false}>Inactive Only</MenuItem>
+              </Select>
+            </FormControl>
+            
+            <FormControl size="small" sx={{ minWidth: 150 }}>
+              <InputLabel id="filter-prediction-label">Prediction Status</InputLabel>
+              <Select
+                labelId="filter-prediction-label"
+                id="filter-prediction"
+                value={filterPrediction}
+                label="Prediction Status"
+                onChange={(e) => setFilterPrediction(e.target.value as 'all' | 'safe' | 'anomaly' | 'pending')}
+              >
+                <MenuItem value="all">All Predictions</MenuItem>
+                <MenuItem value="safe">Safe Only</MenuItem>
+                <MenuItem value="anomaly">Anomaly Only</MenuItem>
+                <MenuItem value="pending">Pending Only</MenuItem>
+              </Select>
+            </FormControl>
+            
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => {
+                setFilterActive('all');
+                setFilterPrediction('all');
+              }}
+            >
+              Clear Filters
+            </Button>
+          </Stack>
+          
           <Box sx={{ height: 500, width: '100%', position: 'relative', bgcolor: '#000', borderRadius: 1 }}>
             {(() => {
-              // Extract locations with valid coordinates
-              const locationsWithCoords = history
-                .filter(
-                  (record) =>
-                    record.location &&
-                    typeof record.location.latitude === 'number' &&
-                    typeof record.location.longitude === 'number' &&
-                    !isNaN(record.location.latitude) &&
-                    !isNaN(record.location.longitude)
-                )
-                .map((record) => ({
-                  record,
-                  lat: record.location!.latitude!,
-                  lon: record.location!.longitude!,
-                }));
+              // Extract and filter locations with valid coordinates
+              let filteredHistory = history.filter(
+                (record) =>
+                  record.location &&
+                  typeof record.location.latitude === 'number' &&
+                  typeof record.location.longitude === 'number' &&
+                  !isNaN(record.location.latitude) &&
+                  !isNaN(record.location.longitude)
+              );
+              
+              // Apply active/inactive filter
+              if (filterActive !== 'all') {
+                filteredHistory = filteredHistory.filter((record) => record.is_active === filterActive);
+              }
+              
+              // Apply prediction status filter
+              if (filterPrediction !== 'all') {
+                filteredHistory = filteredHistory.filter((record) => {
+                  const predResults = record.prediction_results;
+                  if (!predResults || !predResults.predictions || predResults.predictions.length === 0) {
+                    return filterPrediction === 'pending';
+                  }
+                  const prediction = predResults.predictions[0];
+                  if (filterPrediction === 'safe') {
+                    return prediction.prediction === 0;
+                  } else if (filterPrediction === 'anomaly') {
+                    return prediction.prediction === 1;
+                  }
+                  return false;
+                });
+              }
+              
+              const locationsWithCoords = filteredHistory.map((record) => ({
+                record,
+                lat: record.location!.latitude!,
+                lon: record.location!.longitude!,
+              }));
 
               if (locationsWithCoords.length === 0) {
                 return (
                   <Stack alignItems="center" justifyContent="center" sx={{ height: '100%' }}>
                     <Typography variant="body2" color="text.secondary">
-                      No location data available. Sessions will appear on the globe once they include coordinates.
+                      {history.length === 0
+                        ? 'No location data available. Sessions will appear on the globe once they include coordinates.'
+                        : 'No sessions match the current filters. Try adjusting your filter criteria.'}
                     </Typography>
                   </Stack>
                 );
@@ -810,16 +885,13 @@ export default function AnalyticsPage() {
                 );
               } else {
                 // 2D map fallback (simplified)
-                const avgLat = locationsWithCoords.reduce((sum, l) => sum + l.lat, 0) / locationsWithCoords.length;
-                const avgLon = locationsWithCoords.reduce((sum, l) => sum + l.lon, 0) / locationsWithCoords.length;
-                
                 return (
                   <Box sx={{ height: '100%', width: '100%' }}>
                     <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
                       2D map view - Switch to 3D Globe for interactive visualization
                     </Typography>
                     <Stack spacing={1} sx={{ p: 2 }}>
-                      {locationsWithCoords.slice(0, 10).map(({ record, lat, lon }) => {
+                      {locationsWithCoords.slice(0, 20).map(({ record, lat, lon }) => {
                         const predResults = record.prediction_results;
                         const prediction =
                           predResults?.predictions && predResults.predictions.length > 0
@@ -839,15 +911,21 @@ export default function AnalyticsPage() {
                               color={isAnomaly ? 'error' : status === 'Safe' ? 'success' : 'default'}
                               size="small"
                             />
+                            <Chip
+                              label={record.is_active ? 'Active' : 'Inactive'}
+                              color={record.is_active ? 'success' : 'default'}
+                              size="small"
+                              variant="outlined"
+                            />
                             <Typography variant="body2">
                               {record.location?.city}, {record.location?.country} ({lat.toFixed(2)}, {lon.toFixed(2)})
                             </Typography>
                           </Box>
                         );
                       })}
-                      {locationsWithCoords.length > 10 && (
+                      {locationsWithCoords.length > 20 && (
                         <Typography variant="caption" color="text.secondary">
-                          ... and {locationsWithCoords.length - 10} more locations
+                          ... and {locationsWithCoords.length - 20} more locations
                         </Typography>
                       )}
                     </Stack>
