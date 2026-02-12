@@ -515,10 +515,8 @@ export default function AnalyticsPage() {
         return prediction.label || (prediction.prediction === 1 ? 'Anomaly' : 'Safe');
       },
       renderCell: (params: GridRenderCellParams<HistoryRecord>) => {
-        if (!params.value) {
-          return <Chip label="Pending" color="default" size="small" />;
-        }
-        const predResults = params.value as {
+        // Always read the full prediction object from the row to avoid conflicts with valueGetter
+        const predResults = (params.row as HistoryRecord).prediction_results as {
           status?: string;
           predictions?: Array<{
             prediction?: number;
@@ -536,7 +534,8 @@ export default function AnalyticsPage() {
           : null;
         
         if (!prediction) {
-          return <Chip label="Unknown" color="default" size="small" />;
+          // If there is no prediction yet, show Pending instead of Unknown
+          return <Chip label="Pending" color="default" size="small" />;
         }
         
         // prediction: 0 = safe, 1 = unsafe/anomaly
