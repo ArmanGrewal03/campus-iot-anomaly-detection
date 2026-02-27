@@ -23,11 +23,14 @@ import BlockIcon from '@mui/icons-material/Block';
 import LockOpenIcon from '@mui/icons-material/LockOpen';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 
-const USER_SERVICE_BASE = 'http://127.0.0.1:8002'; // User Service
+const GATEWAY_BASE = 'http://127.0.0.1:8003'; // API Gateway
+const USER_SERVICE_BASE = `${GATEWAY_BASE}`; // User Service via Gateway
 
 export default function ClientsPage() {
   const [users, setUsers] = React.useState<any[]>([]);
   const [loading, setLoading] = React.useState(false);
+  const [totalUsers, setTotalUsers] = React.useState(0);
+  const [paginationModel, setPaginationModel] = React.useState({ page: 0, pageSize: 25 });
   const [blockDialogOpen, setBlockDialogOpen] = React.useState(false);
   const [selectedUserId, setSelectedUserId] = React.useState<number | null>(null);
   const [blockType, setBlockType] = React.useState<string>('temporarily_blocked');
@@ -40,29 +43,33 @@ export default function ClientsPage() {
     severity: 'success',
   });
 
-  const fetchUsers = React.useCallback(async () => {
+  const fetchUsers = React.useCallback(async (limit: number = 25, offset: number = 0) => {
     setLoading(true);
     try {
-      const res = await fetch(`${USER_SERVICE_BASE}/users`);
-      const json = await res.json() as { status?: string; users?: any[]; total_users?: number; detail?: string };
-      
-      console.log('Users API response:', json);
-      console.log('Response status:', res.ok, 'JSON status:', json.status);
-      console.log('Users array:', json.users);
-      console.log('Total users:', json.total_users);
+      const res = await fetch(`${USER_SERVICE_BASE}/users?limit=${limit}&offset=${offset}`);
+      const json = await res.json() as { 
+        status?: string; 
+        users?: any[]; 
+        total_users?: number;
+        returned_users?: number;
+        limit?: number;
+        offset?: number;
+        has_more?: boolean;
+        detail?: string 
+      };
       
       if (res.ok && json.status === 'success') {
         if (json.users && Array.isArray(json.users)) {
-          console.log(`Setting ${json.users.length} users:`, json.users);
           setUsers(json.users);
+          setTotalUsers(json.total_users || json.users.length);
         } else {
-          console.warn('Users array is missing or not an array:', json.users);
           setUsers([]);
+          setTotalUsers(0);
           setSnackbar({ open: true, message: 'No users found in response', severity: 'info' });
         }
       } else {
-        console.warn('Response not OK or status not success:', { resOk: res.ok, status: json.status, detail: json.detail });
         setUsers([]);
+        setTotalUsers(0);
         if (json.detail) {
           setSnackbar({ open: true, message: `Failed to fetch users: ${json.detail}`, severity: 'error' });
         } else {
@@ -72,14 +79,21 @@ export default function ClientsPage() {
     } catch (err) {
       console.error('Failed to fetch users:', err);
       setUsers([]);
+      setTotalUsers(0);
       setSnackbar({ open: true, message: 'Failed to fetch users. Is the User Service running?', severity: 'error' });
     } finally {
       setLoading(false);
     }
   }, []);
 
+  // Fetch users when pagination changes
   React.useEffect(() => {
-    fetchUsers();
+    const offset = paginationModel.page * paginationModel.pageSize;
+    fetchUsers(paginationModel.pageSize, offset);
+  }, [paginationModel, fetchUsers]);
+
+  React.useEffect(() => {
+    // Initial fetch is handled by pagination effect
   }, [fetchUsers]);
 
   const handleBlock = (userId: number) => {
@@ -266,10 +280,13 @@ export default function ClientsPage() {
                 rows={users}
                 columns={columns}
                 getRowId={(row) => row.id}
-                initialState={{ pagination: { paginationModel: { pageSize: 25 } } }}
+                paginationModel={paginationModel}
+                onPaginationModelChange={setPaginationModel}
                 pageSizeOptions={[10, 25, 50, 100]}
                 disableRowSelectionOnClick
                 loading={loading}
+                rowCount={totalUsers}
+                paginationMode="server"
               />
             )}
           </Box>

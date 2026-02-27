@@ -16,6 +16,7 @@ $script01 = Join-Path $scriptDir "run-01-data-ingestion.ps1"
 $script02 = Join-Path $scriptDir "run-02-model-service.ps1"
 $script04 = Join-Path $scriptDir "run-04-user-service.ps1"
 $script03 = Join-Path $scriptDir "run-03-dashboard.ps1"
+$script05 = Join-Path $scriptDir "run-05-gateway.ps1"
 
 # Check if scripts exist
 if (-not (Test-Path $script01)) {
@@ -34,6 +35,9 @@ if (-not (Test-Path $script03)) {
     Write-Host "Error: Script not found: $script03" -ForegroundColor Red
     exit 1
 }
+if (-not (Test-Path $script05)) {
+    Write-Host "Warning: Gateway script not found: $script05 (optional)" -ForegroundColor Yellow
+}
 
 Write-Host "Starting services in separate PowerShell windows..." -ForegroundColor Green
 Write-Host ""
@@ -41,6 +45,7 @@ Write-Host "Service URLs:" -ForegroundColor Cyan
 Write-Host "  - Data Ingestion API: http://127.0.0.1:8000" -ForegroundColor White
 Write-Host "  - Model API:          http://127.0.0.1:8001" -ForegroundColor White
 Write-Host "  - User Service:       http://127.0.0.1:8002 (WebSocket: ws://127.0.0.1:8002/ws/data-stream)" -ForegroundColor White
+Write-Host "  - API Gateway:        http://127.0.0.1:8003 (optional)" -ForegroundColor White
 Write-Host "  - Dashboard:          http://127.0.0.1:5173 (will open automatically)" -ForegroundColor White
 Write-Host ""
 
@@ -66,6 +71,15 @@ Start-Sleep -Seconds 2
 Write-Host "Starting Dashboard..." -ForegroundColor Yellow
 $proc03 = Start-Process powershell -ArgumentList "-NoExit", "-File", "`"$script03`"" -PassThru
 $processIds += $proc03.Id
+Start-Sleep -Seconds 2
+
+# Start Gateway if script exists (optional)
+if (Test-Path $script05) {
+    Write-Host "Starting API Gateway..." -ForegroundColor Yellow
+    $proc05 = Start-Process powershell -ArgumentList "-NoExit", "-File", "`"$script05`"" -PassThru
+    $processIds += $proc05.Id
+    Start-Sleep -Seconds 2
+}
 
 Write-Host ""
 Write-Host "All services are starting..." -ForegroundColor Green
@@ -139,6 +153,7 @@ function Stop-AllServices {
     Stop-ProcessByPort -Port 8000  # Data Ingestion Service
     Stop-ProcessByPort -Port 8001  # Model Service
     Stop-ProcessByPort -Port 8002  # User Service
+    Stop-ProcessByPort -Port 8003  # API Gateway
     Stop-ProcessByPort -Port 5173 # Dashboard
     
     Write-Host ""

@@ -1,6 +1,7 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Path
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import json
@@ -11,9 +12,8 @@ import sqlite3
 import asyncio
 import random
 import uuid
-import urllib.request
-import urllib.parse
-import urllib.error
+import httpx
+import contextvars
 
 def load_env_file():
     env_path = os.path.join(os.path.dirname(__file__), ".env")
@@ -28,6 +28,61 @@ def load_env_file():
 load_env_file()
 
 app = FastAPI(title="Campus IoT User Service", version="1.0.0")
+
+# Environment variable to control error-only logging
+ERROR_ONLY_LOGGING = os.getenv("ERROR_ONLY_LOGGING", "false").lower() == "true"
+
+# Context variable to store response status code
+response_status: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar('response_status', default=None)
+
+# Custom logging filter for error-only mode
+class ErrorOnlyFilter(logging.Filter):
+    """Filter to only show 400 and 500 errors when ERROR_ONLY_LOGGING is enabled"""
+    
+    def filter(self, record):
+        if not ERROR_ONLY_LOGGING:
+            return True  # Show all logs when disabled
+        
+        # Always show ERROR level and above
+        if record.levelno >= logging.ERROR:
+            return True
+        
+        # Check if this is an HTTP status code log
+        status = response_status.get(None)
+        if status is not None:
+            # Only show 400 and 500 errors
+            if status >= 400:
+                return True
+            return False
+        
+        # For non-HTTP logs, only show ERROR and above
+        return record.levelno >= logging.ERROR
+
+# Configure logging with filter
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Add filter to root logger
+if ERROR_ONLY_LOGGING:
+    for handler in logging.root.handlers:
+        handler.addFilter(ErrorOnlyFilter())
+    logger.info("ERROR_ONLY_LOGGING enabled - showing only 400 and 500 errors")
+
+# Middleware to capture response status codes
+class StatusCodeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        status = response.status_code
+        response_status.set(status)
+        
+        # Log 400 and 500 errors even in error-only mode
+        if ERROR_ONLY_LOGGING and status >= 400:
+            logger.error(f"{request.method} {request.url.path} - Status: {status}")
+        
+        return response
 
 # Add CORS middleware to allow frontend connections
 app.add_middleware(
@@ -47,11 +102,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Add status code middleware (after CORS)
+app.add_middleware(StatusCodeMiddleware)
 
 NETWORK_LOGS_DB = "network_logs.db"
 USERS_DB = "users.db"
@@ -59,10 +111,14 @@ MESSAGE_QUEUE_DB = "message_queue.db"
 MODEL_API_URL = os.getenv("MODEL_API_URL", "http://127.0.0.1:8001")
 DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL_NAME", "A")
 
-# Singleton WebSocket connection tracking
-active_websocket: Optional[WebSocket] = None
-websocket_lock = asyncio.Lock()
-websocket_session_start_time: Optional[str] = None
+# Singleton WebSocket connection tracking for data generation
+active_generate_websocket: Optional[WebSocket] = None
+generate_websocket_lock = asyncio.Lock()
+generate_websocket_session_start_time: Optional[str] = None
+
+# Multiple WebSocket connections allowed for viewing data
+view_websockets: set[WebSocket] = set()
+view_websockets_lock = asyncio.Lock()
 
 # Selected model name (can be changed via API)
 selected_model_name: str = DEFAULT_MODEL_NAME
@@ -100,17 +156,38 @@ async def health_check():
     )
 
 @app.get("/users")
-async def get_users():
+async def get_users(limit: int = 100, offset: int = 0):
+    """
+    Get users with pagination support.
+    
+    Query parameters:
+    - limit: Maximum number of users to return (default: 100, max: 1000)
+    - offset: Number of users to skip (default: 0)
+    """
+    # Validate and clamp limit
+    if limit < 1:
+        limit = 100
+    if limit > 1000:
+        limit = 1000
+    if offset < 0:
+        offset = 0
+    
     init_users_db()
     conn = sqlite3.connect(USERS_DB)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
+    # Get total count
+    cursor.execute("SELECT COUNT(*) as total FROM users")
+    total_users = cursor.fetchone()["total"]
+    
+    # Get paginated users
     cursor.execute("""
         SELECT id, first_name, last_name, created_at, block_status, block_type, block_until, block_reason 
         FROM users 
         ORDER BY id
-    """)
+        LIMIT ? OFFSET ?
+    """, (limit, offset))
     rows = cursor.fetchall()
     
     users = []
@@ -141,7 +218,11 @@ async def get_users():
     return JSONResponse(
         content={
             "status": "success",
-            "total_users": len(users),
+            "total_users": total_users,
+            "returned_users": len(users),
+            "limit": limit,
+            "offset": offset,
+            "has_more": (offset + len(users)) < total_users,
             "users": users
         },
         status_code=200
@@ -191,21 +272,27 @@ async def process_missing_predictions(batch_size: int = 10):
                 
                 logger.info(f"Calling prediction API for network_id: {network_id}, data: {json.dumps(data)}")
                 
-                status_code, result = await asyncio.to_thread(_make_http_request, url, payload, headers)
+                status_code, result = await _make_http_request(url, payload, headers)
                 
                 if status_code == 200:
                     prediction_results_json = json.dumps(result)
                     conn = sqlite3.connect(NETWORK_LOGS_DB)
                     cursor = conn.cursor()
-                    cursor.execute("""
-                        UPDATE websocket_data 
-                        SET prediction_results = ?
-                        WHERE network_id = ?
-                    """, (prediction_results_json, network_id))
-                    conn.commit()
-                    conn.close()
-                    processed_count += 1
-                    logger.debug(f"Processed prediction for network_id: {network_id}")
+                    try:
+                        cursor.execute("BEGIN TRANSACTION")
+                        cursor.execute("""
+                            UPDATE websocket_data 
+                            SET prediction_results = ?
+                            WHERE network_id = ?
+                        """, (prediction_results_json, network_id))
+                        conn.commit()
+                        processed_count += 1
+                        logger.debug(f"Processed prediction for network_id: {network_id}")
+                    except Exception as e:
+                        conn.rollback()
+                        logger.error(f"Error updating prediction for network_id {network_id}: {e}")
+                    finally:
+                        conn.close()
                 else:
                     error_msg = result.get('error', f"HTTP {status_code}")[:500] if isinstance(result, dict) else f"HTTP {status_code}"
                     logger.warning(f"Failed to get prediction for network_id: {network_id}, status: {status_code}, error: {error_msg}")
@@ -807,6 +894,16 @@ def init_websocket_db():
     if rows_without_network_id:
         conn.commit()
         logger.info(f"Generated network_id for {len(rows_without_network_id)} existing records")
+    
+    # Create indexes for frequently queried columns
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_websocket_user_id ON websocket_data(user_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_websocket_timestamp ON websocket_data(timestamp)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_websocket_prediction_results ON websocket_data(prediction_results)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_websocket_session_active_time ON websocket_data(session_active_time)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_websocket_is_active ON websocket_data(is_active)")
+    # Composite index for common query pattern: WHERE prediction_results IS NULL ORDER BY id
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_websocket_pred_null_id ON websocket_data(prediction_results, id)")
+    
     conn.commit()
     conn.close()
     logger.info(f"Initialized network logs database: {NETWORK_LOGS_DB}")
@@ -828,23 +925,36 @@ def init_message_queue_db():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON message_queue(status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_network_id ON message_queue(network_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON message_queue(created_at)")
+    # Composite index for common query: WHERE status = 'pending' ORDER BY created_at
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_status_created_at ON message_queue(status, created_at)")
     conn.commit()
     conn.close()
     logger.info(f"Initialized message queue database: {MESSAGE_QUEUE_DB}")
 
-def _make_http_request(url: str, data: dict, headers: dict):
-    req_data = json.dumps(data).encode('utf-8')
-    req = urllib.request.Request(url, data=req_data, headers=headers, method='POST')
+async def _make_http_request(url: str, data: dict, headers: dict):
+    """Make an async HTTP POST request using httpx"""
     try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            status_code = response.getcode()
-            response_data = response.read().decode('utf-8')
-            return status_code, json.loads(response_data)
-    except urllib.error.HTTPError as e:
-        error_data = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
-        return e.code, {"error": error_data}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=data, headers=headers)
+            status_code = response.status_code
+            try:
+                response_data = response.json()
+            except:
+                response_data = {"content": response.text}
+            return status_code, response_data
+    except httpx.HTTPStatusError as e:
+        try:
+            error_data = e.response.json()
+        except:
+            error_data = {"error": e.response.text or str(e)}
+        return e.response.status_code, error_data
+    except httpx.RequestError as e:
+        logger.error(f"HTTP request error: {e}")
+        return 503, {"error": f"Request failed: {str(e)}"}
     except Exception as e:
-        raise e
+        logger.error(f"Unexpected error in HTTP request: {e}")
+        raise
 
 async def process_predict_request(message_id: int, network_id: str, data: dict):
     try:
@@ -857,41 +967,91 @@ async def process_predict_request(message_id: int, network_id: str, data: dict):
         
         logger.info(f"Calling prediction API for network_id: {network_id}, data: {json.dumps(data)}")
         
-        status_code, result = await asyncio.to_thread(_make_http_request, url, payload, headers)
+        status_code, result = await _make_http_request(url, payload, headers)
         
         if status_code == 200:
             processed_at = datetime.utcnow().isoformat()
             
+            # Update message queue status
             conn = sqlite3.connect(MESSAGE_QUEUE_DB)
             cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE message_queue 
-                SET status = 'completed', processed_at = ?
-                WHERE id = ?
-            """, (processed_at, message_id))
-            conn.commit()
-            conn.close()
+            try:
+                cursor.execute("BEGIN TRANSACTION")
+                cursor.execute("""
+                    UPDATE message_queue 
+                    SET status = 'completed', processed_at = ?
+                    WHERE id = ?
+                """, (processed_at, message_id))
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"Error updating message queue for message_id {message_id}: {e}")
+            finally:
+                conn.close()
             
             prediction = result.get('predictions', [{}])[0] if result.get('predictions') else {}
             logger.info(f"Prediction successful for network_id: {network_id}, result: {prediction}")
             
+            # Update websocket_data with prediction results
             prediction_results_json = json.dumps(result)
             conn = sqlite3.connect(NETWORK_LOGS_DB)
             cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE websocket_data 
-                SET prediction_results = ?
-                WHERE network_id = ?
-            """, (prediction_results_json, network_id))
-            conn.commit()
-            conn.close()
-            logger.info(f"Saved prediction results to network_logs for network_id: {network_id}")
+            try:
+                cursor.execute("BEGIN TRANSACTION")
+                cursor.execute("""
+                    UPDATE websocket_data 
+                    SET prediction_results = ?
+                    WHERE network_id = ?
+                """, (prediction_results_json, network_id))
+                conn.commit()
+                logger.info(f"Saved prediction results to network_logs for network_id: {network_id}")
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"Error updating websocket_data for network_id {network_id}: {e}")
+            finally:
+                conn.close()
         else:
             error_msg = result.get('error', f"HTTP {status_code}")[:500] if isinstance(result, dict) else f"HTTP {status_code}"
             logger.error(f"Prediction failed for network_id: {network_id}, status: {status_code}, error: {error_msg}")
             
             conn = sqlite3.connect(MESSAGE_QUEUE_DB)
             cursor = conn.cursor()
+            try:
+                cursor.execute("BEGIN TRANSACTION")
+                cursor.execute("SELECT retry_count FROM message_queue WHERE id = ?", (message_id,))
+                row = cursor.fetchone()
+                retry_count = (row[0] if row else 0) + 1
+                
+                if retry_count < 3:
+                    cursor.execute("""
+                        UPDATE message_queue 
+                        SET status = 'pending', retry_count = ?
+                        WHERE id = ?
+                    """, (retry_count, message_id))
+                    logger.info(f"Retrying message {message_id} (attempt {retry_count})")
+                else:
+                    cursor.execute("""
+                        UPDATE message_queue 
+                        SET status = 'failed', processed_at = ?, error_message = ?
+                        WHERE id = ?
+                    """, (datetime.utcnow().isoformat(), error_msg, message_id))
+                    logger.error(f"Message {message_id} failed after {retry_count} attempts")
+                
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"Error updating message queue status for message_id {message_id}: {e}")
+            finally:
+                conn.close()
+                
+    except Exception as e:
+        error_msg = str(e)[:500]
+        logger.error(f"Error processing predict request for network_id: {network_id}: {error_msg}", exc_info=True)
+        
+        conn = sqlite3.connect(MESSAGE_QUEUE_DB)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("BEGIN TRANSACTION")
             cursor.execute("SELECT retry_count FROM message_queue WHERE id = ?", (message_id,))
             row = cursor.fetchone()
             retry_count = (row[0] if row else 0) + 1
@@ -912,35 +1072,11 @@ async def process_predict_request(message_id: int, network_id: str, data: dict):
                 logger.error(f"Message {message_id} failed after {retry_count} attempts")
             
             conn.commit()
+        except Exception as e2:
+            conn.rollback()
+            logger.error(f"Error updating message queue status for message_id {message_id}: {e2}")
+        finally:
             conn.close()
-                
-    except Exception as e:
-        error_msg = str(e)[:500]
-        logger.error(f"Error processing predict request for network_id: {network_id}: {error_msg}", exc_info=True)
-        
-        conn = sqlite3.connect(MESSAGE_QUEUE_DB)
-        cursor = conn.cursor()
-        cursor.execute("SELECT retry_count FROM message_queue WHERE id = ?", (message_id,))
-        row = cursor.fetchone()
-        retry_count = (row[0] if row else 0) + 1
-        
-        if retry_count < 3:
-            cursor.execute("""
-                UPDATE message_queue 
-                SET status = 'pending', retry_count = ?
-                WHERE id = ?
-            """, (retry_count, message_id))
-            logger.info(f"Retrying message {message_id} (attempt {retry_count})")
-        else:
-            cursor.execute("""
-                UPDATE message_queue 
-                SET status = 'failed', processed_at = ?, error_message = ?
-                WHERE id = ?
-            """, (datetime.utcnow().isoformat(), error_msg, message_id))
-            logger.error(f"Message {message_id} failed after {retry_count} attempts")
-        
-        conn.commit()
-        conn.close()
 
 async def process_message_queue():
     init_message_queue_db()
@@ -968,13 +1104,19 @@ async def process_message_queue():
         network_id = row["network_id"]
         data_json = row["data"]
         
-        cursor.execute("""
-            UPDATE message_queue 
-            SET status = 'processing' 
-            WHERE id = ?
-        """, (message_id,))
-        conn.commit()
-        conn.close()
+        try:
+            cursor.execute("BEGIN TRANSACTION")
+            cursor.execute("""
+                UPDATE message_queue 
+                SET status = 'processing' 
+                WHERE id = ?
+            """, (message_id,))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error updating message queue status to processing for message_id {message_id}: {e}")
+        finally:
+            conn.close()
         
         try:
             data = json.loads(data_json)
@@ -983,13 +1125,19 @@ async def process_message_queue():
             logger.error(f"Error decoding message data: {e}")
             conn = sqlite3.connect(MESSAGE_QUEUE_DB)
             cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE message_queue 
-                SET status = 'failed', error_message = ?
-                WHERE id = ?
-            """, (str(e)[:500], message_id))
-            conn.commit()
-            conn.close()
+            try:
+                cursor.execute("BEGIN TRANSACTION")
+                cursor.execute("""
+                    UPDATE message_queue 
+                    SET status = 'failed', error_message = ?
+                    WHERE id = ?
+                """, (str(e)[:500], message_id))
+                conn.commit()
+            except Exception as e2:
+                conn.rollback()
+                logger.error(f"Error updating message queue status to failed for message_id {message_id}: {e2}")
+            finally:
+                conn.close()
     else:
         conn.close()
 
@@ -1197,6 +1345,10 @@ def init_users_db():
     except sqlite3.OperationalError:
         pass
     
+    # Create indexes for frequently queried columns
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_block_status ON users(block_status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_block_until ON users(block_until)")
+    
     cursor.execute("SELECT COUNT(*) FROM users")
     count = cursor.fetchone()[0]
     
@@ -1339,27 +1491,28 @@ def generate_random_data(feature_names: list) -> dict:
     
     return data
 
-@app.websocket("/ws/data-stream")
-async def websocket_data_stream(websocket: WebSocket):
-    global active_websocket, websocket_session_start_time
+@app.websocket("/ws/generate-data")
+async def websocket_generate_data(websocket: WebSocket):
+    """WebSocket endpoint for generating data (used by API Gateway)"""
+    global active_generate_websocket, generate_websocket_session_start_time
     
     if not WEBSOCKET_ENABLED:
         await websocket.close(code=1008, reason="WebSocket is disabled in configuration")
         logger.warning("WebSocket connection rejected - WebSocket is disabled")
         return
     
-    # Singleton check: only allow one active WebSocket connection
-    async with websocket_lock:
-        if active_websocket is not None:
-            await websocket.close(code=1008, reason="Another WebSocket connection is already active")
-            logger.warning("WebSocket connection rejected - another connection is already active")
+    # Singleton check: only allow one active data generation WebSocket connection
+    async with generate_websocket_lock:
+        if active_generate_websocket is not None:
+            await websocket.close(code=1008, reason="Another data generation WebSocket connection is already active")
+            logger.warning("Data generation WebSocket connection rejected - another connection is already active")
             return
         
         # Accept the new connection and mark it as active
         await websocket.accept()
-        active_websocket = websocket
-        websocket_session_start_time = datetime.utcnow().isoformat()
-        logger.info(f"WebSocket connection established (singleton) - session started at {websocket_session_start_time}")
+        active_generate_websocket = websocket
+        generate_websocket_session_start_time = datetime.utcnow().isoformat()
+        logger.info(f"Data generation WebSocket connection established (singleton) - session started at {generate_websocket_session_start_time}")
     
     init_websocket_db()
     feature_names = load_feature_names()
@@ -1382,7 +1535,7 @@ async def websocket_data_stream(websocket: WebSocket):
             user_id = random_user["id"] if random_user else None
             cursor.execute(
                 "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser, session_active_time, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (network_id, timestamp, data_json, user_id, location_json, os, browser, websocket_session_start_time, 1)
+                (network_id, timestamp, data_json, user_id, location_json, os, browser, generate_websocket_session_start_time, 1)
             )
             inserted_id = cursor.lastrowid
             conn.commit()
@@ -1391,7 +1544,9 @@ async def websocket_data_stream(websocket: WebSocket):
             response = {
                 "id": inserted_id,
                 "network_id": network_id,
-                "timestamp": timestamp,
+                "timestamp": timestamp,  # UTC timestamp
+                "utc_timestamp": timestamp,  # Explicit UTC timestamp
+                "session_start_time": generate_websocket_session_start_time,  # Session start time
                 "user": random_user,
                 "location": location,
                 "os": os,
@@ -1399,9 +1554,25 @@ async def websocket_data_stream(websocket: WebSocket):
                 "data": random_data
             }
             
+            # Send to generation WebSocket (gateway)
             await websocket.send_json(response)
+            
+            # Broadcast to all viewing WebSockets (frontend)
+            async with view_websockets_lock:
+                disconnected = []
+                for view_ws in view_websockets:
+                    try:
+                        await view_ws.send_json(response)
+                    except Exception as e:
+                        logger.debug(f"Error sending to view WebSocket: {e}")
+                        disconnected.append(view_ws)
+                
+                # Remove disconnected WebSockets
+                for ws in disconnected:
+                    view_websockets.discard(ws)
+            
             user_name = f"{random_user['first_name']} {random_user['last_name']}" if random_user else "Unknown"
-            logger.info(f"Sent data record {inserted_id} via WebSocket (user: {user_name}, location: {location['city']}, {location['country']}, OS: {os}, Browser: {browser})")
+            logger.info(f"Generated and sent data record {inserted_id} (user: {user_name}, location: {location['city']}, {location['country']}, OS: {os}, Browser: {browser})")
             
             if MESSAGE_QUEUE_ENABLED:
                 try:
@@ -1412,7 +1583,7 @@ async def websocket_data_stream(websocket: WebSocket):
                     }
                     publish_headers = {"Content-Type": "application/json"}
                     
-                    status_code, _ = await asyncio.to_thread(_make_http_request, publish_url, publish_payload, publish_headers)
+                    status_code, _ = await _make_http_request(publish_url, publish_payload, publish_headers)
                     
                     if status_code == 200:
                         logger.info(f"Published predict request for network_id: {network_id}")
@@ -1428,49 +1599,173 @@ async def websocket_data_stream(websocket: WebSocket):
             await asyncio.sleep(wait_time)
             
     except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
-        async with websocket_lock:
-            if active_websocket == websocket:
+        logger.info("Data generation WebSocket client disconnected")
+        async with generate_websocket_lock:
+            if active_generate_websocket == websocket:
                 # Update all records from this session to mark them as inactive
-                if websocket_session_start_time:
+                if generate_websocket_session_start_time:
                     try:
                         conn = sqlite3.connect(NETWORK_LOGS_DB)
                         cursor = conn.cursor()
-                        cursor.execute(
-                            "UPDATE websocket_data SET is_active = 0 WHERE session_active_time = ? AND is_active = 1",
-                            (websocket_session_start_time,)
-                        )
-                        updated_count = cursor.rowcount
-                        conn.commit()
-                        conn.close()
-                        logger.info(f"Marked {updated_count} records as inactive for session started at {websocket_session_start_time}")
+                        try:
+                            cursor.execute("BEGIN TRANSACTION")
+                            cursor.execute(
+                                "UPDATE websocket_data SET is_active = 0 WHERE session_active_time = ? AND is_active = 1",
+                                (generate_websocket_session_start_time,)
+                            )
+                            updated_count = cursor.rowcount
+                            conn.commit()
+                            logger.info(f"Marked {updated_count} records as inactive for session started at {generate_websocket_session_start_time}")
+                        except Exception as e:
+                            conn.rollback()
+                            logger.error(f"Error updating session status: {e}")
+                        finally:
+                            conn.close()
                     except Exception as e:
-                        logger.error(f"Error updating session status: {e}")
-                active_websocket = None
-                websocket_session_start_time = None
-                logger.info("WebSocket singleton released")
+                        logger.error(f"Error connecting to database for session status update: {e}")
+                active_generate_websocket = None
+                generate_websocket_session_start_time = None
+                logger.info("Data generation WebSocket singleton released")
     except Exception as e:
-        logger.error(f"Error in WebSocket: {e}", exc_info=True)
-        async with websocket_lock:
-            if active_websocket == websocket:
+        logger.error(f"Error in data generation WebSocket: {e}", exc_info=True)
+        async with generate_websocket_lock:
+            if active_generate_websocket == websocket:
                 # Update all records from this session to mark them as inactive
-                if websocket_session_start_time:
+                if generate_websocket_session_start_time:
                     try:
                         conn = sqlite3.connect(NETWORK_LOGS_DB)
                         cursor = conn.cursor()
-                        cursor.execute(
-                            "UPDATE websocket_data SET is_active = 0 WHERE session_active_time = ? AND is_active = 1",
-                            (websocket_session_start_time,)
-                        )
-                        updated_count = cursor.rowcount
-                        conn.commit()
-                        conn.close()
-                        logger.info(f"Marked {updated_count} records as inactive for session started at {websocket_session_start_time} due to error")
+                        try:
+                            cursor.execute("BEGIN TRANSACTION")
+                            cursor.execute(
+                                "UPDATE websocket_data SET is_active = 0 WHERE session_active_time = ? AND is_active = 1",
+                                (generate_websocket_session_start_time,)
+                            )
+                            updated_count = cursor.rowcount
+                            conn.commit()
+                            logger.info(f"Marked {updated_count} records as inactive for session started at {generate_websocket_session_start_time} due to error")
+                        except Exception as e2:
+                            conn.rollback()
+                            logger.error(f"Error updating session status: {e2}")
+                        finally:
+                            conn.close()
                     except Exception as e2:
-                        logger.error(f"Error updating session status: {e2}")
-                active_websocket = None
-                websocket_session_start_time = None
-                logger.info("WebSocket singleton released due to error")
+                        logger.error(f"Error connecting to database for session status update: {e2}")
+                active_generate_websocket = None
+                generate_websocket_session_start_time = None
+                logger.info("Data generation WebSocket singleton released due to error")
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+@app.websocket("/ws/view-data")
+async def websocket_view_data(websocket: WebSocket):
+    """WebSocket endpoint for viewing live data (used by frontend) - streams existing data from database"""
+    
+    if not WEBSOCKET_ENABLED:
+        await websocket.close(code=1008, reason="WebSocket is disabled in configuration")
+        logger.warning("View WebSocket connection rejected - WebSocket is disabled")
+        return
+    
+    # Accept connection and add to view websockets set
+    await websocket.accept()
+    async with view_websockets_lock:
+        view_websockets.add(websocket)
+    logger.info(f"View WebSocket connection established (total viewers: {len(view_websockets)})")
+    
+    init_websocket_db()
+    
+    try:
+        # Send recent records from database on connection
+        conn = sqlite3.connect(NETWORK_LOGS_DB)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Get the last 50 records
+        cursor.execute("""
+            SELECT id, network_id, timestamp, user_id, location, os, browser, data, prediction_results, session_active_time, is_active
+            FROM websocket_data
+            ORDER BY id DESC
+            LIMIT 50
+        """)
+        
+        recent_records = cursor.fetchall()
+        conn.close()
+        
+        # Send recent records in reverse order (oldest first)
+        for record in reversed(recent_records):
+            try:
+                user_id = record["user_id"]
+                user = None
+                if user_id:
+                    conn = sqlite3.connect(USERS_DB)
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id, first_name, last_name, email FROM users WHERE id = ?", (user_id,))
+                    user_row = cursor.fetchone()
+                    conn.close()
+                    if user_row:
+                        user = {
+                            "id": user_row["id"],
+                            "first_name": user_row["first_name"],
+                            "last_name": user_row["last_name"],
+                            "email": user_row["email"]
+                        }
+                
+                location = json.loads(record["location"]) if record["location"] else None
+                data = json.loads(record["data"]) if record["data"] else None
+                prediction_results = json.loads(record["prediction_results"]) if record["prediction_results"] else None
+                
+                response = {
+                    "id": record["id"],
+                    "network_id": record["network_id"],
+                    "timestamp": record["timestamp"],
+                    "user": user,
+                    "location": location,
+                    "os": record["os"],
+                    "browser": record["browser"],
+                    "data": data,
+                    "prediction_results": prediction_results
+                }
+                
+                await websocket.send_json(response)
+            except Exception as e:
+                logger.debug(f"Error sending historical record: {e}")
+        
+        logger.info(f"Sent {len(recent_records)} historical records to view WebSocket")
+        
+        # Keep connection alive and wait for new data (which will be broadcast by generate endpoint)
+        while True:
+            # Just keep the connection alive - new data will be sent by the generate endpoint
+            try:
+                # Wait for a ping or timeout
+                try:
+                    message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                    # Ignore ping messages from client
+                    if message == "ping" or message == '{"type":"ping"}':
+                        continue
+                except asyncio.TimeoutError:
+                    # Send a ping to keep connection alive
+                    try:
+                        await websocket.send_json({"type": "ping"})
+                    except:
+                        break
+            except WebSocketDisconnect:
+                break
+            except:
+                break
+                
+    except WebSocketDisconnect:
+        logger.info("View WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"Error in view WebSocket: {e}", exc_info=True)
+    finally:
+        # Remove from view websockets set
+        async with view_websockets_lock:
+            view_websockets.discard(websocket)
+        logger.info(f"View WebSocket disconnected (remaining viewers: {len(view_websockets)})")
         try:
             await websocket.close()
         except:

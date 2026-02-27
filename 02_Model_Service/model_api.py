@@ -11,12 +11,15 @@ Endpoints:
 - GET /model/metrics - Get model evaluation metrics
 """
 
-from fastapi import FastAPI, HTTPException, Header, Depends, Body
+from fastapi import FastAPI, HTTPException, Header, Depends, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import requests
+import httpx
+import asyncio
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier, IsolationForest
@@ -39,11 +42,68 @@ from datetime import datetime, timezone
 import logging
 import warnings
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import contextvars
 warnings.filterwarnings('ignore')
 # Suppress sklearn parallel warning about delayed/Parallel usage
 warnings.filterwarnings('ignore', category=UserWarning, module='sklearn.utils.parallel')
 
 app = FastAPI(title="Campus IoT Anomaly Detection Model API", version="1.0.0")
+
+# Environment variable to control error-only logging
+ERROR_ONLY_LOGGING = os.getenv("ERROR_ONLY_LOGGING", "false").lower() == "true"
+
+# Context variable to store response status code
+response_status: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar('response_status', default=None)
+
+# Custom logging filter for error-only mode
+class ErrorOnlyFilter(logging.Filter):
+    """Filter to only show 400 and 500 errors when ERROR_ONLY_LOGGING is enabled"""
+    
+    def filter(self, record):
+        if not ERROR_ONLY_LOGGING:
+            return True  # Show all logs when disabled
+        
+        # Always show ERROR level and above
+        if record.levelno >= logging.ERROR:
+            return True
+        
+        # Check if this is an HTTP status code log
+        status = response_status.get(None)
+        if status is not None:
+            # Only show 400 and 500 errors
+            if status >= 400:
+                return True
+            return False
+        
+        # For non-HTTP logs, only show ERROR and above
+        return record.levelno >= logging.ERROR
+
+# Configure logging with filter
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Add filter to root logger
+if ERROR_ONLY_LOGGING:
+    for handler in logging.root.handlers:
+        handler.addFilter(ErrorOnlyFilter())
+    logger.info("ERROR_ONLY_LOGGING enabled - showing only 400 and 500 errors")
+
+# Middleware to capture response status codes
+class StatusCodeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        status = response.status_code
+        response_status.set(status)
+        
+        # Log 400 and 500 errors even in error-only mode
+        if ERROR_ONLY_LOGGING and status >= 400:
+            logger.error(f"{request.method} {request.url.path} - Status: {status}")
+        
+        return response
 
 # Add CORS middleware to allow React frontend connections
 app.add_middleware(
@@ -63,12 +123,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Add status code middleware (after CORS)
+app.add_middleware(StatusCodeMiddleware)
 
 # Configuration
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
@@ -95,81 +151,150 @@ class PredictRequest(BaseModel):
 class PredictResponse(BaseModel):
     predictions: List[Dict[str, Any]]
 
-def fetch_all_data(endpoint: str, label_type: str = "all", database_name: Optional[str] = None) -> List[Dict]:
+async def fetch_all_data(endpoint: str, label_type: str = "all", database_name: Optional[str] = None) -> List[Dict]:
     logger.info(f"Fetching {label_type} data from {endpoint}...")
-    all_data = []
     limit = 1000
-    offset = 0
     
     headers = {}
     if database_name:
         headers["dataset_name"] = database_name
     
-    while True:
-        try:
-            url = f"{API_BASE_URL}{endpoint}"
-            logger.info(f"Requesting {url} with params: limit={limit}, offset={offset}, headers={headers}")
-            response = requests.get(
-                url,
-                params={"limit": limit, "offset": offset},
-                headers=headers,
-                timeout=30
-            )
-            logger.info(f"Backend API response: {response.status_code} {response.reason} for {endpoint}")
-            
-            if response.status_code >= 400:
-                error_detail = f"{response.status_code}"
-                try:
-                    error_json = response.json()
-                    error_detail = error_json.get("detail", error_json.get("message", f"{response.status_code}"))
-                except:
-                    error_detail = response.text or f"{response.status_code}"
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=error_detail
-                )
-            
-            result = response.json()
-            if result.get("status") != "success":
-                error_msg = result.get("message", result.get("detail", "Unknown error"))
-                logger.error(f"Error: {error_msg}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=error_msg
-                )
-            
-            if offset == 0:
-                total_rows = result.get("total_rows", 0)
-                if total_rows == 0:
-                    error_msg = result.get("message", f"No {label_type} data found. Please ensure data has been uploaded and validated.")
-                    raise HTTPException(
-                        status_code=400,
-                        detail=error_msg
-                    )
-            
-            data = result.get("data", [])
-            if not data:
-                break
-            
-            all_data.extend(data)
-            logger.info(f"  Fetched {len(data)} rows (total: {len(all_data)})")
-            
-            if not result.get("has_more", False):
-                break
-            
-            offset += limit
-            
-        except HTTPException:
-            raise
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching data: {e}")
-            raise HTTPException(
-                status_code=503,
-                detail=f"Error connecting to backend API: {str(e)}"
-            )
+    url = f"{API_BASE_URL}{endpoint}"
     
-    logger.info(f"Total {label_type} records fetched: {len(all_data)}")
-    return all_data
+    async def fetch_page(page_num: int) -> tuple[int, List[Dict]]:
+        """Fetch a single page and return (page_num, data)"""
+        page_offset = page_num * limit
+        try:
+            logger.info(f"Fetching page {page_num + 1} (offset={page_offset})")
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    params={"limit": limit, "offset": page_offset},
+                    headers=headers
+                )
+                
+                if response.status_code >= 400:
+                    error_detail = f"{response.status_code}"
+                    try:
+                        error_json = response.json()
+                        error_detail = error_json.get("detail", error_json.get("message", f"{response.status_code}"))
+                    except:
+                        error_detail = response.text or f"{response.status_code}"
+                    raise Exception(f"HTTP {response.status_code}: {error_detail}")
+                
+                result = response.json()
+                if result.get("status") != "success":
+                    error_msg = result.get("message", result.get("detail", "Unknown error"))
+                    raise Exception(f"API error: {error_msg}")
+                
+                data = result.get("data", [])
+                logger.info(f"  Fetched page {page_num + 1}: {len(data)} rows")
+                return (page_num, data)
+        except Exception as e:
+            logger.error(f"Error fetching page {page_num + 1}: {e}")
+            raise
+    
+    try:
+        # Fetch first page to get total_rows
+        logger.info(f"Requesting {url} with params: limit={limit}, offset=0, headers={headers}")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            first_response = await client.get(
+                url,
+                params={"limit": limit, "offset": 0},
+                headers=headers
+            )
+        
+        logger.info(f"Backend API response: {first_response.status_code} for {endpoint}")
+        
+        if first_response.status_code >= 400:
+            error_detail = f"{first_response.status_code}"
+            try:
+                error_json = first_response.json()
+                error_detail = error_json.get("detail", error_json.get("message", f"{first_response.status_code}"))
+            except:
+                error_detail = first_response.text or f"{first_response.status_code}"
+            raise HTTPException(
+                status_code=first_response.status_code,
+                detail=error_detail
+            )
+        
+        first_result = first_response.json()
+        if first_result.get("status") != "success":
+            error_msg = first_result.get("message", first_result.get("detail", "Unknown error"))
+            logger.error(f"Error: {error_msg}")
+            raise HTTPException(
+                status_code=400,
+                detail=error_msg
+            )
+        
+        total_rows = first_result.get("total_rows", 0)
+        if total_rows == 0:
+            error_msg = first_result.get("message", f"No {label_type} data found. Please ensure data has been uploaded and validated.")
+            raise HTTPException(
+                status_code=400,
+                detail=error_msg
+            )
+        
+        first_data = first_result.get("data", [])
+        if not first_data:
+            logger.info(f"Total {label_type} records fetched: 0")
+            return []
+        
+        # Calculate how many pages we need
+        num_pages = (total_rows + limit - 1) // limit  # Ceiling division
+        logger.info(f"Total rows: {total_rows}, limit: {limit}, will fetch {num_pages} pages in parallel")
+        
+        # If only one page, return early
+        if num_pages == 1:
+            logger.info(f"Total {label_type} records fetched: {len(first_data)}")
+            return first_data
+        
+        # Fetch remaining pages (1 to num_pages-1) in parallel using asyncio.gather
+        # Page 0 is already fetched, so we start from page 1
+        all_data = [None] * num_pages  # Pre-allocate list to maintain order
+        all_data[0] = first_data  # First page is already fetched
+        
+        # Create tasks for pages 1 to num_pages-1
+        tasks = [fetch_page(page_num) for page_num in range(1, num_pages)]
+        
+        # Execute all remaining page fetches in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Process results and handle errors
+        for i, result in enumerate(results):
+            page_num = i + 1  # Results correspond to pages 1, 2, 3, ...
+            if isinstance(result, Exception):
+                logger.error(f"Error fetching page {page_num + 1}: {result}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Error fetching page {page_num + 1}: {str(result)}"
+                )
+            result_page_num, data = result
+            all_data[result_page_num] = data
+        
+        # Flatten the list of lists, maintaining order
+        flattened_data = []
+        for page_data in all_data:
+            if page_data:
+                flattened_data.extend(page_data)
+        
+        logger.info(f"Total {label_type} records fetched: {len(flattened_data)}")
+        return flattened_data
+        
+    except HTTPException:
+        raise
+    except httpx.RequestError as e:
+        logger.error(f"Error fetching data: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Error connecting to backend API: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error fetching data: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error fetching data: {str(e)}"
+        )
 
 def extract_features_and_labels(data_records: List[Dict], include_fields: Optional[List[str]] = None, exclude_fields: Optional[List[str]] = None) -> tuple:
     """Extract features and labels from API response data."""
@@ -726,7 +851,7 @@ async def train(
         health_url = f"{API_BASE_URL}/health"
         logger.info(f"Checking backend health at {health_url} with headers: {headers}")
         response = requests.get(health_url, headers=headers, timeout=5)
-        logger.info(f"Backend health check response: {response.status_code} {response.reason}")
+        logger.info(f"Backend health check response: {response.status_code}")
         if response.status_code != 200:
             logger.error(f"Backend API health check failed with status {response.status_code}")
             raise HTTPException(
@@ -741,7 +866,7 @@ async def train(
         )
     
     try:
-        training_data = fetch_all_data("/training", "training", dataset_name)
+        training_data = await fetch_all_data("/training", "training", dataset_name)
         if not training_data:
             raise HTTPException(
                 status_code=400,
@@ -924,7 +1049,7 @@ async def test(
         health_url = f"{API_BASE_URL}/health"
         logger.info(f"Checking backend health at {health_url} with headers: {headers}")
         response = requests.get(health_url, headers=headers, timeout=5)
-        logger.info(f"Backend health check response: {response.status_code} {response.reason}")
+        logger.info(f"Backend health check response: {response.status_code}")
         if response.status_code != 200:
             logger.error(f"Backend API health check failed with status {response.status_code}")
             raise HTTPException(
@@ -939,7 +1064,7 @@ async def test(
         )
     
     try:
-        testing_data = fetch_all_data("/testing", "testing", database_name)
+        testing_data = await fetch_all_data("/testing", "testing", database_name)
         if not testing_data:
             raise HTTPException(
                 status_code=400,

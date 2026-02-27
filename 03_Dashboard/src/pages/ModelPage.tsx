@@ -57,8 +57,9 @@ const createMockRows = (count: number) =>
 
 const MOCK_INITIAL_ROWS = createMockRows(12);
 
-const API_BASE = 'http://127.0.0.1:8000'; // Data Ingestion Service
-const MODEL_API_BASE = 'http://127.0.0.1:8001'; // Model Service
+const GATEWAY_BASE = 'http://127.0.0.1:8003'; // API Gateway
+const API_BASE = `${GATEWAY_BASE}`; // Data Ingestion Service via Gateway
+const MODEL_API_BASE = `${GATEWAY_BASE}`; // Model Service via Gateway
 
 export default function ModelPage() {
   const [datasetName, setDatasetName] = React.useState('');
@@ -67,11 +68,11 @@ export default function ModelPage() {
   const [uploading, setUploading] = React.useState(false);
   const [datasets, setDatasets] = React.useState<{ id: string; name: string }[]>([]);
   const [rows, setRows] = React.useState<Record<string, unknown>[]>([]);
-  const [viewLimit, setViewLimit] = React.useState(1000);
   const [viewLoading, setViewLoading] = React.useState(false);
   const [viewTotalRows, setViewTotalRows] = React.useState<number | null>(null);
   const [filterMode, setFilterMode] = React.useState<'all' | 'training' | 'testing'>('all');
   const [searchQuery, setSearchQuery] = React.useState('');
+  const [paginationModel, setPaginationModel] = React.useState({ page: 0, pageSize: 100 });
   const [validating, setValidating] = React.useState(false);
   const [insertText, setInsertText] = React.useState('');
   const [clearConfirmOpen, setClearConfirmOpen] = React.useState(false);
@@ -123,16 +124,16 @@ export default function ModelPage() {
   const [apiHealth, setApiHealth] = React.useState<'healthy' | 'unhealthy' | 'loading' | null>(null);
   const [apiHealthDetail, setApiHealthDetail] = React.useState<{ service?: string; database?: string; timestamp?: string } | null>(null);
 
+  // Client-side search filtering (backend doesn't support search)
+  // Note: This only searches within the current page of data
   const filteredRows = React.useMemo(() => {
-    let result = rows;
-    if (filterMode === 'training') result = result.slice(0, Math.ceil(result.length * 0.8));
-    else if (filterMode === 'testing') result = result.slice(Math.ceil(result.length * 0.8));
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter((r) => Object.values(r).some((v) => String(v).toLowerCase().includes(q)));
-    }
-    return result;
-  }, [rows, filterMode, searchQuery]);
+    // For server-side pagination, we don't filter client-side
+    // The search should be handled server-side, but for now we'll only filter if there's a search query
+    // and we'll adjust rowCount accordingly
+    if (!searchQuery) return rows;
+    const q = searchQuery.toLowerCase();
+    return rows.filter((r) => Object.values(r).some((v) => String(v).toLowerCase().includes(q)));
+  }, [rows, searchQuery]);
 
   const columns = React.useMemo(() => {
     if (filteredRows.length === 0) return [];
@@ -203,7 +204,7 @@ export default function ModelPage() {
         setDatasets((d) => [...d, { id, name: datasetName.trim() }]);
         setSelectedDatasetId(id);
       }
-      fetchViewData(viewLimit, 0);
+      setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Network error. Is the backend running at http://localhost:8000?';
       setSnackbar({ open: true, message, severity: 'error' });
@@ -547,7 +548,7 @@ export default function ModelPage() {
         return;
       }
       setViewLoading(true);
-      setViewTotalRows(null);
+      // Don't reset total_rows - keep it to maintain pagination state
       try {
         const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
         const headers: Record<string, string> = {};
@@ -595,11 +596,49 @@ export default function ModelPage() {
     [selectedViewDataset, filterMode]
   );
 
+  // Track previous dataset and filter to detect changes (for resetting pagination)
+  const prevDatasetRef = React.useRef<string | null>(null);
+  const prevFilterRef = React.useRef<string | null>(null);
+  
+  // Reset to page 0 ONLY when dataset or filter actually changes (not on pagination changes)
+  React.useEffect(() => {
+    if (!selectedViewDataset) {
+      // Initialize refs on first render when dataset is not selected
+      if (prevDatasetRef.current === null) {
+        prevDatasetRef.current = '';
+        prevFilterRef.current = 'all';
+      }
+      return;
+    }
+    
+    // Initialize refs on first render with dataset
+    if (prevDatasetRef.current === null) {
+      prevDatasetRef.current = selectedViewDataset;
+      prevFilterRef.current = filterMode;
+      return; // Don't reset on initial load
+    }
+    
+    const datasetChanged = prevDatasetRef.current !== selectedViewDataset;
+    const filterChanged = prevFilterRef.current !== filterMode;
+    
+    if (datasetChanged || filterChanged) {
+      prevDatasetRef.current = selectedViewDataset;
+      prevFilterRef.current = filterMode;
+      // Reset to page 0 when dataset or filter changes
+      setPaginationModel(prev => ({ page: 0, pageSize: prev.pageSize }));
+    }
+  }, [selectedViewDataset, filterMode]);
+  
+  // Fetch data when pagination, dataset, or filter changes
   React.useEffect(() => {
     if (selectedViewDataset) {
-      fetchViewData(viewLimit, 0);
+      const offset = paginationModel.page * paginationModel.pageSize;
+      fetchViewData(paginationModel.pageSize, offset);
     }
-  }, [viewLimit, selectedViewDataset, filterMode, fetchViewData]);
+    // fetchViewData is stable (useCallback with selectedViewDataset and filterMode dependencies)
+    // We exclude it from deps to avoid unnecessary re-renders, but it will use latest values
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paginationModel.page, paginationModel.pageSize, selectedViewDataset, filterMode]);
 
   const fetchApiHealth = React.useCallback(async (silent = false) => {
     if (!silent) {
@@ -631,9 +670,7 @@ export default function ModelPage() {
     return () => clearInterval(interval);
   }, [fetchApiHealth]);
 
-  const handleViewLimitChange = (newLimit: number) => {
-    setViewLimit(newLimit);
-  };
+  // Removed handleViewLimitChange - using DataGrid pagination instead
 
   const [validationResult, setValidationResult] = React.useState<{ message: string; severity: 'success' | 'warning' } | null>(null);
 
@@ -713,7 +750,7 @@ export default function ModelPage() {
       }
       setValidationResult({ message, severity: 'success' });
       setSnackbar({ open: true, message, severity: 'success' });
-      fetchViewData(viewLimit, 0);
+      setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to validate dataset.';
       setValidationResult({ message: msg, severity: 'warning' });
@@ -761,7 +798,7 @@ export default function ModelPage() {
       setViewTotalRows(0);
       setClearConfirmOpen(false);
       setSnackbar({ open: true, message, severity: 'success' });
-      fetchViewData(viewLimit, 0);
+      setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to clear database.';
       setSnackbar({ open: true, message: msg, severity: 'error' });
@@ -1148,22 +1185,7 @@ export default function ModelPage() {
                     ))}
                   </Select>
                 </FormControl>
-                <FormControl size="small" sx={{ minWidth: 140 }}>
-                  <InputLabel id="rows-label">Rows to show</InputLabel>
-                  <Select
-                    labelId="rows-label"
-                    value={viewLimit}
-                    label="Rows to show"
-                    onChange={(e) => handleViewLimitChange(Number(e.target.value))}
-                    disabled={viewLoading}
-                  >
-                    <MenuItem value={500}>500</MenuItem>
-                    <MenuItem value={1000}>1000</MenuItem>
-                    <MenuItem value={2000}>2000</MenuItem>
-                    <MenuItem value={5000}>5000</MenuItem>
-                    <MenuItem value={10000}>10,000</MenuItem>
-                  </Select>
-                </FormControl>
+                {/* Removed "Rows to show" dropdown - using DataGrid pagination instead */}
                 <Button
                   size="small"
                   variant="outlined"
@@ -1178,7 +1200,10 @@ export default function ModelPage() {
                   size="small"
                   variant="outlined"
                   startIcon={viewLoading ? <CircularProgress size={14} color="inherit" /> : <RefreshRoundedIcon />}
-                  onClick={() => fetchViewData(viewLimit, 0)}
+                  onClick={() => {
+                    const offset = paginationModel.page * paginationModel.pageSize;
+                    fetchViewData(paginationModel.pageSize, offset);
+                  }}
                   disabled={viewLoading || !selectedViewDataset}
                 >
                   Refresh Data
@@ -1208,7 +1233,7 @@ export default function ModelPage() {
             </Stack>
             {viewTotalRows != null && (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                Showing {rows.length} of {viewTotalRows} rows from backend
+                Showing {rows.length} of {viewTotalRows} rows (Page {paginationModel.page + 1} of {Math.ceil(viewTotalRows / paginationModel.pageSize)})
               </Typography>
             )}
             <Box sx={{ height: 280, width: '100%', borderRadius: 1, overflow: 'hidden', border: '1px solid', borderColor: 'divider' }}>
@@ -1221,10 +1246,16 @@ export default function ModelPage() {
                 <DataGrid
                   rows={filteredRows}
                   columns={columns}
-                  initialState={{ pagination: { paginationModel: { pageSize: 100 } } }}
-                  pageSizeOptions={[25, 50, 100]}
+                  getRowId={(row) => row.id as string}
+                  paginationModel={paginationModel}
+                  onPaginationModelChange={setPaginationModel}
+                  pageSizeOptions={[25, 50, 100, 200, 500, 1000]}
+                  paginationMode="server"
+                  rowCount={viewTotalRows || 0}
                   disableColumnResize
                   density="compact"
+                  loading={viewLoading}
+                  keepNonExistentRowsSelected
                 />
               ) : (
                 <Stack alignItems="center" justifyContent="center" sx={{ height: '100%', color: 'text.secondary' }}>
