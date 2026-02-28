@@ -383,26 +383,53 @@ export default function AnalyticsPage() {
     }
   }, []);
 
-  // Fetch available models
+  // Fetch available models and set a sensible default if none is selected
   const fetchModels = React.useCallback(async () => {
     setModelsLoading(true);
     try {
       const res = await fetch(`${MODEL_API_BASE}/models`);
-      const json = await res.json() as { 
-        status?: string; 
-        models?: Array<{ model_name: string; training_date?: string; n_features?: number; accuracy?: number }>; 
+      const json = (await res.json()) as {
+        status?: string;
+        models?: Array<{
+          model_name: string;
+          training_date?: string;
+          n_features?: number;
+          accuracy?: number;
+        }>;
         total_models?: number;
         detail?: string;
       };
-      
+
       if (res.ok && json.status === 'success') {
         if (json.models && Array.isArray(json.models) && json.models.length > 0) {
           setAvailableModels(json.models);
-          // Set first model as default if none selected
-          if (!selectedModel && json.models.length > 0) {
-            const firstModel = json.models[0].model_name;
-            setSelectedModel(firstModel);
-            await setModelInBackend(firstModel);
+
+          // If no model is selected yet, try to use the backend's current model,
+          // falling back to the first available model.
+          if (!selectedModel) {
+            let initialModel: string | null = null;
+
+            try {
+              const getRes = await fetch(`${USER_SERVICE_BASE}/get-model`);
+              const getJson = (await getRes.json()) as {
+                status?: string;
+                model_name?: string;
+                detail?: string;
+              };
+
+              if (getRes.ok && getJson.status === 'success' && getJson.model_name) {
+                initialModel = getJson.model_name;
+              }
+            } catch (e) {
+              console.warn('Failed to get current model from backend:', e);
+            }
+
+            // If backend didn't return a model or it's missing, use first in list.
+            if (!initialModel) {
+              initialModel = json.models[0].model_name;
+            }
+
+            setSelectedModel(initialModel);
           }
         } else {
           setAvailableModels([]);
@@ -419,7 +446,7 @@ export default function AnalyticsPage() {
     } finally {
       setModelsLoading(false);
     }
-  }, [selectedModel, setModelInBackend]);
+  }, [selectedModel]);
 
   // Sync selected model to backend when it changes
   React.useEffect(() => {
@@ -590,6 +617,7 @@ export default function AnalyticsPage() {
             confidence?: number;
           }>;
           timestamp?: string;
+          model_name?: string;
         } | null;
         
         // Check if predResults exists and has predictions
@@ -609,6 +637,9 @@ export default function AnalyticsPage() {
         const probUnsafe = prediction.probability_unsafe !== undefined
           ? (prediction.probability_unsafe * 100).toFixed(1) + '%'
           : null;
+
+        // Model name used for this prediction (added by backend)
+        const modelName = predResults.model_name;
         
         // Color code probability_unsafe: red if high (>50%), green if low (<=50%)
         const probUnsafeColor = prediction.probability_unsafe !== undefined
@@ -630,6 +661,11 @@ export default function AnalyticsPage() {
             {probUnsafe && (
               <Typography variant="caption" sx={{ color: probUnsafeColor, fontWeight: 'medium' }}>
                 Unsafe: {probUnsafe}
+              </Typography>
+            )}
+            {modelName && (
+              <Typography variant="caption" color="text.secondary">
+                Model: {modelName}
               </Typography>
             )}
           </Stack>

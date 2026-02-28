@@ -275,7 +275,13 @@ async def process_missing_predictions(batch_size: int = 10):
                 status_code, result = await _make_http_request(url, payload, headers)
                 
                 if status_code == 200:
-                    prediction_results_json = json.dumps(result)
+                    # Attach model name so frontend can display which model made the prediction
+                    if isinstance(result, dict):
+                        prediction_payload = dict(result)
+                    else:
+                        prediction_payload = {"result": result}
+                    prediction_payload["model_name"] = selected_model_name
+                    prediction_results_json = json.dumps(prediction_payload)
                     conn = sqlite3.connect(NETWORK_LOGS_DB)
                     cursor = conn.cursor()
                     try:
@@ -431,6 +437,89 @@ async def get_history(limit: int = 100, offset: int = 0):
             detail=f"Error retrieving history: {str(e)}"
         )
 
+
+@app.get("/dashboard-kpis")
+async def get_dashboard_kpis():
+    """
+    Aggregate basic KPIs for the dashboard/home page.
+    Returns total users, total events, total predictions, and anomalies.
+    """
+    try:
+        # Total users
+        init_users_db()
+        conn_users = sqlite3.connect(USERS_DB)
+        conn_users.row_factory = sqlite3.Row
+        cursor_users = conn_users.cursor()
+        cursor_users.execute("SELECT COUNT(*) as total FROM users")
+        total_users = cursor_users.fetchone()["total"]
+        conn_users.close()
+
+        # Events and predictions stats
+        init_websocket_db()
+        conn_logs = sqlite3.connect(NETWORK_LOGS_DB)
+        conn_logs.row_factory = sqlite3.Row
+        cursor_logs = conn_logs.cursor()
+
+        # Total events
+        cursor_logs.execute("SELECT COUNT(*) as total FROM websocket_data")
+        total_events = cursor_logs.fetchone()["total"]
+
+        # Total predictions and anomalies
+        cursor_logs.execute(
+            """
+            SELECT prediction_results
+            FROM websocket_data
+            WHERE prediction_results IS NOT NULL AND prediction_results != ''
+            """
+        )
+        rows = cursor_logs.fetchall()
+        conn_logs.close()
+
+        total_predictions = len(rows)
+        total_anomalies = 0
+
+        for row in rows:
+            try:
+                pr = row["prediction_results"]
+                if isinstance(pr, str):
+                    pr_obj = json.loads(pr)
+                else:
+                    pr_obj = pr
+                preds = pr_obj.get("predictions") or []
+                if preds and isinstance(preds, list):
+                    first = preds[0]
+                    if isinstance(first, dict) and first.get("prediction") == 1:
+                        total_anomalies += 1
+            except Exception:
+                continue
+
+        anomaly_rate = (
+            round((total_anomalies / total_predictions) * 100, 2)
+            if total_predictions > 0
+            else 0.0
+        )
+
+        return JSONResponse(
+            content={
+                "status": "success",
+                "timestamp": datetime.utcnow().isoformat(),
+                "total_users": total_users,
+                "total_events": total_events,
+                "total_predictions": total_predictions,
+                "total_anomalies": total_anomalies,
+                "anomaly_rate": anomaly_rate,
+            },
+            status_code=200,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error computing dashboard KPIs: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error computing dashboard KPIs: {str(e)}",
+        )
+
 @app.get("/network-logs")
 async def get_network_logs(
     limit: int = 100,
@@ -498,6 +587,17 @@ async def get_network_logs(
                 network_id_val = row["network_id"] if row["network_id"] else f"NET-{row['id']:06d}"
             except (KeyError, IndexError):
                 network_id_val = f"NET-{row['id']:06d}"
+
+            # sqlite3.Row does not support .get(), so use safe indexing
+            try:
+                session_active_time = row["session_active_time"]
+            except (KeyError, IndexError):
+                session_active_time = None
+
+            try:
+                is_active_val = bool(row["is_active"]) if row["is_active"] is not None else False
+            except (KeyError, IndexError):
+                is_active_val = False
             
             log_entry = {
                 "id": row["id"],
@@ -506,8 +606,8 @@ async def get_network_logs(
                 "user_id": row["user_id"],
                 "os": row["os"],
                 "browser": row["browser"],
-                "session_active_time": row.get("session_active_time"),
-                "is_active": bool(row["is_active"]) if row["is_active"] is not None else False
+                "session_active_time": session_active_time,
+                "is_active": is_active_val,
             }
             
             # Parse location
@@ -992,8 +1092,13 @@ async def process_predict_request(message_id: int, network_id: str, data: dict):
             prediction = result.get('predictions', [{}])[0] if result.get('predictions') else {}
             logger.info(f"Prediction successful for network_id: {network_id}, result: {prediction}")
             
-            # Update websocket_data with prediction results
-            prediction_results_json = json.dumps(result)
+            # Update websocket_data with prediction results (include model name)
+            if isinstance(result, dict):
+                prediction_payload = dict(result)
+            else:
+                prediction_payload = {"result": result}
+            prediction_payload["model_name"] = selected_model_name
+            prediction_results_json = json.dumps(prediction_payload)
             conn = sqlite3.connect(NETWORK_LOGS_DB)
             cursor = conn.cursor()
             try:
@@ -1736,25 +1841,12 @@ async def websocket_view_data(websocket: WebSocket):
         
         logger.info(f"Sent {len(recent_records)} historical records to view WebSocket")
         
-        # Keep connection alive and wait for new data (which will be broadcast by generate endpoint)
+        # Keep connection alive; new data will be broadcast by the generate-data WebSocket.
+        # We don't require the client to send any messages.
         while True:
-            # Just keep the connection alive - new data will be sent by the generate endpoint
             try:
-                # Wait for a ping or timeout
-                try:
-                    message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
-                    # Ignore ping messages from client
-                    if message == "ping" or message == '{"type":"ping"}':
-                        continue
-                except asyncio.TimeoutError:
-                    # Send a ping to keep connection alive
-                    try:
-                        await websocket.send_json({"type": "ping"})
-                    except:
-                        break
+                await asyncio.sleep(60.0)
             except WebSocketDisconnect:
-                break
-            except:
                 break
                 
     except WebSocketDisconnect:

@@ -330,10 +330,18 @@ def get_target_service(path: str) -> str:
         return MODEL_SERVICE
     
     # User Service routes
-    elif (path_clean.startswith("api/user") or path_clean.startswith("users") or 
-          path_clean.startswith("history") or path_clean.startswith("network-logs") or 
-          path_clean.startswith("ws/") or path_clean.startswith("set-model") or 
-          path_clean.startswith("get-model") or path_clean.startswith("publish")):
+    elif (
+        path_clean.startswith("api/user")
+        or path_clean.startswith("users")
+        or path_clean.startswith("history")
+        or path_clean.startswith("network-logs")
+        or path_clean.startswith("ws/")
+        or path_clean.startswith("set-model")
+        or path_clean.startswith("get-model")
+        or path_clean.startswith("publish")
+        or path_clean.startswith("recompute-predictions")
+        or path_clean.startswith("dashboard-kpis")
+    ):
         return USER_SERVICE
     
     # Default to data ingestion service
