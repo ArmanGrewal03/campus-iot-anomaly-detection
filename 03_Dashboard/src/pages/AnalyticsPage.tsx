@@ -27,6 +27,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Html, Sphere, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
+import { ErrorBoundary } from '../App';
 
 // Direct connections to backend services (bypass gateway for Analytics page)
 const USER_SERVICE_BASE = 'http://127.0.0.1:8002'; // User Service - direct connection
@@ -1249,17 +1250,19 @@ export default function AnalyticsPage() {
 
               if (mapView === '3d') {
                 return (
-                  <Canvas camera={{ position: [0, 0, 3], fov: 50 }}>
-                    <Globe3D locations={locationsWithCoords} />
-                    <OrbitControls
-                      enableZoom={true}
-                      enablePan={false}
-                      minDistance={2}
-                      maxDistance={5}
-                      autoRotate={false}
-                      rotateSpeed={0.5}
-                    />
-                  </Canvas>
+                  <ErrorBoundary fallbackMessage="Failed to load the 3D globe. Your browser may not support WebGL, or the texture failed to load. Try switching to 2D Map view.">
+                    <Canvas camera={{ position: [0, 0, 3], fov: 50 }}>
+                      <Globe3D locations={locationsWithCoords} />
+                      <OrbitControls
+                        enableZoom={true}
+                        enablePan={false}
+                        minDistance={2}
+                        maxDistance={5}
+                        autoRotate={false}
+                        rotateSpeed={0.5}
+                      />
+                    </Canvas>
+                  </ErrorBoundary>
                 );
               } else {
                 // 2D map fallback (simplified)
