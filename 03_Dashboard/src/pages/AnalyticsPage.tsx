@@ -28,10 +28,10 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Html, Sphere, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
 
-const GATEWAY_BASE = 'http://127.0.0.1:8003'; // API Gateway
-const USER_SERVICE_BASE = `${GATEWAY_BASE}`; // User Service via Gateway
-const MODEL_API_BASE = `${GATEWAY_BASE}`; // Model Service via Gateway
-const WS_BASE = 'ws://127.0.0.1:8002'; // WebSocket - direct connection (not proxied through gateway)
+// Direct connections to backend services (bypass gateway for Analytics page)
+const USER_SERVICE_BASE = 'http://127.0.0.1:8002'; // User Service - direct connection
+const MODEL_API_BASE = 'http://127.0.0.1:8001'; // Model Service - direct connection
+const WS_BASE = 'ws://127.0.0.1:8002'; // WebSocket - direct connection
 
 interface HistoryRecord {
   id: number;
@@ -57,8 +57,11 @@ interface HistoryRecord {
       probability_safe?: number;
       probability_unsafe?: number;
       confidence?: number;
+      attack_cat?: string | null;
+      attack_cat_probabilities?: Record<string, number>;
     }>;
     timestamp?: string;
+    model_name?: string;
   } | null;
   session_active_time: string | null;
   is_active: boolean;
@@ -240,6 +243,7 @@ export default function AnalyticsPage() {
   const wsRef = React.useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollingIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastWebSocketFetchRef = React.useRef(0);
   const [snackbar, setSnackbar] = React.useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' | 'warning' }>({
     open: false,
     message: '',
@@ -255,7 +259,35 @@ export default function AnalyticsPage() {
   const fetchHistory = React.useCallback(async (limit: number = 25, offset: number = 0) => {
     setLoading(true);
     try {
-      const res = await fetch(`${USER_SERVICE_BASE}/history?limit=${limit}&offset=${offset}`);
+      // Analytics endpoints are automatically no-cache by the gateway
+      const res = await fetch(`${USER_SERVICE_BASE}/history?limit=${limit}&offset=${offset}`, {
+        method: 'GET',
+      });
+      
+      // Check if response is ok before trying to parse JSON
+      if (!res.ok) {
+        let errorMessage = `HTTP ${res.status}: ${res.statusText}`;
+        try {
+          const errorJson = await res.json() as { detail?: string | { message?: string; error?: string } };
+          if (errorJson.detail) {
+            if (typeof errorJson.detail === 'string') {
+              errorMessage = errorJson.detail;
+            } else if (errorJson.detail.message) {
+              errorMessage = errorJson.detail.message;
+            } else if (errorJson.detail.error) {
+              errorMessage = errorJson.detail.error;
+            }
+          }
+        } catch (parseErr) {
+          // If we can't parse the error, use the status text
+          errorMessage = `HTTP ${res.status}: ${res.statusText}`;
+        }
+        setHistory([]);
+        setTotalRecords(0);
+        setSnackbar({ open: true, message: `Failed to fetch history: ${errorMessage}`, severity: 'error' });
+        return;
+      }
+      
       const json = await res.json() as { 
         status?: string; 
         history?: HistoryRecord[]; 
@@ -283,7 +315,18 @@ export default function AnalyticsPage() {
       console.error('Failed to fetch history:', err);
       setHistory([]);
       setTotalRecords(0);
-      setSnackbar({ open: true, message: 'Failed to fetch history. Is the User Service running?', severity: 'error' });
+      
+      // Provide more specific error messages
+      let errorMessage = 'Failed to fetch history. ';
+      if (err instanceof TypeError && err.message.includes('fetch')) {
+        errorMessage += 'Network error - is the API Gateway running?';
+      } else if (err instanceof Error) {
+        errorMessage += err.message;
+      } else {
+        errorMessage += 'Is the User Service running?';
+      }
+      
+      setSnackbar({ open: true, message: errorMessage, severity: 'error' });
     } finally {
       setLoading(false);
     }
@@ -322,10 +365,16 @@ export default function AnalyticsPage() {
           console.log('WebSocket message received:', data);
           
           // Refresh history when new data arrives (keep current pagination)
-          const currentPagination = paginationModelRef.current;
-          const offset = currentPagination.page * currentPagination.pageSize;
-          if (fetchHistoryRef.current) {
-            fetchHistoryRef.current(currentPagination.pageSize, offset);
+          // But debounce to prevent rapid successive fetches (max once per second)
+          const now = Date.now();
+          const FETCH_DEBOUNCE_MS = 1000;
+          if (now - lastWebSocketFetchRef.current >= FETCH_DEBOUNCE_MS) {
+            lastWebSocketFetchRef.current = now;
+            const currentPagination = paginationModelRef.current;
+            const offset = currentPagination.page * currentPagination.pageSize;
+            if (fetchHistoryRef.current) {
+              fetchHistoryRef.current(currentPagination.pageSize, offset);
+            }
           }
         } catch (err) {
           console.error('Error parsing WebSocket message:', err);
@@ -365,6 +414,7 @@ export default function AnalyticsPage() {
   // Set the selected model in the user service
   const setModelInBackend = React.useCallback(async (modelName: string) => {
     try {
+      // Analytics endpoints are automatically no-cache by the gateway
       const res = await fetch(`${USER_SERVICE_BASE}/set-model`, {
         method: 'POST',
         headers: {
@@ -383,11 +433,23 @@ export default function AnalyticsPage() {
     }
   }, []);
 
+  // Use a ref to track if we've initialized the model to prevent loops
+  const modelInitializedRef = React.useRef(false);
+  const selectedModelRef = React.useRef<string>('');
+
+  // Update ref when selectedModel changes
+  React.useEffect(() => {
+    selectedModelRef.current = selectedModel;
+  }, [selectedModel]);
+
   // Fetch available models and set a sensible default if none is selected
   const fetchModels = React.useCallback(async () => {
     setModelsLoading(true);
     try {
-      const res = await fetch(`${MODEL_API_BASE}/models`);
+      // Analytics endpoints are automatically no-cache by the gateway
+      const res = await fetch(`${MODEL_API_BASE}/models`, {
+        method: 'GET',
+      });
       const json = (await res.json()) as {
         status?: string;
         models?: Array<{
@@ -406,11 +468,15 @@ export default function AnalyticsPage() {
 
           // If no model is selected yet, try to use the backend's current model,
           // falling back to the first available model.
-          if (!selectedModel) {
+          // Only set initial model once to prevent loops
+          if (!selectedModelRef.current && !modelInitializedRef.current) {
             let initialModel: string | null = null;
 
             try {
-              const getRes = await fetch(`${USER_SERVICE_BASE}/get-model`);
+              // Analytics endpoints are automatically no-cache by the gateway
+              const getRes = await fetch(`${USER_SERVICE_BASE}/get-model`, {
+                method: 'GET',
+              });
               const getJson = (await getRes.json()) as {
                 status?: string;
                 model_name?: string;
@@ -429,7 +495,10 @@ export default function AnalyticsPage() {
               initialModel = json.models[0].model_name;
             }
 
-            setSelectedModel(initialModel);
+            if (initialModel) {
+              modelInitializedRef.current = true;
+              setSelectedModel(initialModel);
+            }
           }
         } else {
           setAvailableModels([]);
@@ -446,7 +515,7 @@ export default function AnalyticsPage() {
     } finally {
       setModelsLoading(false);
     }
-  }, [selectedModel]);
+  }, []); // Remove selectedModel dependency to prevent loops
 
   // Sync selected model to backend when it changes
   React.useEffect(() => {
@@ -459,10 +528,6 @@ export default function AnalyticsPage() {
   React.useEffect(() => {
     paginationModelRef.current = paginationModel;
   }, [paginationModel]);
-  
-  React.useEffect(() => {
-    fetchHistoryRef.current = fetchHistory;
-  }, [fetchHistory]);
   
   React.useEffect(() => {
     fetchHistoryRef.current = fetchHistory;
@@ -596,7 +661,7 @@ export default function AnalyticsPage() {
     {
       field: 'prediction_results',
       headerName: 'Prediction',
-      width: 280,
+      width: 200,
       sortable: true,
       filterable: true,
       valueGetter: (value: any, row: HistoryRecord) => {
@@ -615,6 +680,8 @@ export default function AnalyticsPage() {
             probability_safe?: number;
             probability_unsafe?: number;
             confidence?: number;
+            attack_cat?: string | null;
+            attack_cat_probabilities?: Record<string, number>;
           }>;
           timestamp?: string;
           model_name?: string;
@@ -640,6 +707,9 @@ export default function AnalyticsPage() {
 
         // Model name used for this prediction (added by backend)
         const modelName = predResults.model_name;
+        
+        // Attack category (only available for RFv1 models and unsafe predictions)
+        const attackCat = prediction.attack_cat;
         
         // Color code probability_unsafe: red if high (>50%), green if low (<=50%)
         const probUnsafeColor = prediction.probability_unsafe !== undefined
@@ -669,6 +739,41 @@ export default function AnalyticsPage() {
               </Typography>
             )}
           </Stack>
+        );
+      }
+    },
+    {
+      field: 'attack_cat',
+      headerName: 'Attack Category',
+      width: 180,
+      sortable: true,
+      filterable: true,
+      valueGetter: (value: any, row: HistoryRecord) => {
+        const predResults = row.prediction_results;
+        if (!predResults || !predResults.predictions || predResults.predictions.length === 0) return null;
+        const prediction = predResults.predictions[0];
+        return prediction.attack_cat || null;
+      },
+      renderCell: (params: GridRenderCellParams<HistoryRecord>) => {
+        const predResults = (params.row as HistoryRecord).prediction_results;
+        if (!predResults || !predResults.predictions || predResults.predictions.length === 0) {
+          return <Typography variant="body2" color="text.secondary">-</Typography>;
+        }
+        
+        const prediction = predResults.predictions[0];
+        const attackCat = prediction.attack_cat;
+        
+        if (!attackCat || attackCat === 'Normal' || attackCat === null) {
+          return <Typography variant="body2" color="text.secondary">-</Typography>;
+        }
+        
+        return (
+          <Chip
+            label={attackCat}
+            color="error"
+            variant="outlined"
+            size="small"
+          />
         );
       }
     },
@@ -823,16 +928,6 @@ export default function AnalyticsPage() {
                     sortModel: [{ field: 'timestamp', sort: 'desc' }],
                   },
                 }}
-                onRowMouseEnter={(params, event) => {
-                  const row = params.row as HistoryRecord;
-                  if (row && row.data) {
-                    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-                    setHoveredRow({ id: row.id, x: rect.right + 10, y: rect.top });
-                  }
-                }}
-                onRowMouseLeave={() => {
-                  setHoveredRow(null);
-                }}
                 slotProps={{
                   filterPanel: {
                     filterFormProps: {
@@ -912,6 +1007,52 @@ export default function AnalyticsPage() {
                     Session Start: {new Date(selectedRowData.session_start_time).toLocaleString('en-US', { timeZone: 'UTC' })}
                   </Typography>
                 )}
+                {selectedRowData.prediction_results &&
+                  (selectedRowData.prediction_results as any).model_name && (
+                    <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                      Model: {(selectedRowData.prediction_results as any).model_name}
+                    </Typography>
+                  )}
+                {selectedRowData.prediction_results?.predictions &&
+                  selectedRowData.prediction_results.predictions.length > 0 && (
+                    <>
+                      {selectedRowData.prediction_results.predictions[0].attack_cat &&
+                        selectedRowData.prediction_results.predictions[0].attack_cat !== 'Normal' &&
+                        selectedRowData.prediction_results.predictions[0].attack_cat !== null && (
+                          <Box sx={{ mt: 1, mb: 1 }}>
+                            <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                              Attack Category: <strong style={{ color: '#d32f2f' }}>{selectedRowData.prediction_results.predictions[0].attack_cat}</strong>
+                            </Typography>
+                            {selectedRowData.prediction_results.predictions[0].attack_cat_probabilities &&
+                              Object.keys(selectedRowData.prediction_results.predictions[0].attack_cat_probabilities).length > 0 && (
+                                <Box sx={{ mt: 1 }}>
+                                  <Typography variant="caption" color="text.secondary" gutterBottom>
+                                    Category Probabilities:
+                                  </Typography>
+                                  <Stack direction="row" spacing={1} sx={{ mt: 0.5, flexWrap: 'wrap' }}>
+                                    {Object.entries(selectedRowData.prediction_results.predictions[0].attack_cat_probabilities)
+                                      .sort(([, a], [, b]) => (b as number) - (a as number))
+                                      .slice(0, 5)
+                                      .map(([category, prob]) => (
+                                        <Chip
+                                          key={category}
+                                          label={`${category}: ${((prob as number) * 100).toFixed(1)}%`}
+                                          size="small"
+                                          variant="outlined"
+                                          sx={{
+                                            fontSize: '0.65rem',
+                                            height: 20,
+                                            '& .MuiChip-label': { px: 0.75, py: 0.25 },
+                                          }}
+                                        />
+                                      ))}
+                                  </Stack>
+                                </Box>
+                              )}
+                          </Box>
+                        )}
+                    </>
+                  )}
               </Box>
               
               {selectedRowData.data && typeof selectedRowData.data === 'object' ? (

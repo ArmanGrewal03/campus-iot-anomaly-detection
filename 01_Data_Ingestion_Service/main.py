@@ -1,9 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Header, Depends
+from starlette.requests import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -96,6 +97,108 @@ app.add_middleware(
 
 # Add status code middleware (after CORS)
 app.add_middleware(StatusCodeMiddleware)
+
+
+# Input validation middleware
+class InputValidationMiddleware(BaseHTTPMiddleware):
+    """Validate and sanitize input parameters for Data Ingestion Service"""
+    
+    def validate_integer_param(self, value: str, param_name: str, min_val: Optional[int] = None, max_val: Optional[int] = None) -> Tuple[Optional[int], Optional[str]]:
+        """Validate integer parameter"""
+        try:
+            int_value = int(value)
+            if min_val is not None and int_value < min_val:
+                return None, f"{param_name} must be >= {min_val}"
+            if max_val is not None and int_value > max_val:
+                return None, f"{param_name} must be <= {max_val}"
+            return int_value, None
+        except ValueError:
+            return None, f"{param_name} must be a valid integer"
+    
+    def validate_string_param(self, value: str, param_name: str, min_len: int = 1, max_len: Optional[int] = None) -> Tuple[Optional[str], Optional[str]]:
+        """Validate string parameter"""
+        if not value or len(value.strip()) == 0:
+            return None, f"{param_name} cannot be empty"
+        if max_len and len(value) > max_len:
+            return None, f"{param_name} must be <= {max_len} characters"
+        return value.strip(), None
+    
+    async def dispatch(self, request: Request, call_next):
+        # Skip validation for health checks
+        if request.url.path in ["/health", "/"]:
+            return await call_next(request)
+        
+        validation_errors = []
+        path = request.url.path
+        
+        # Validate query parameters
+        # limit and offset validation
+        if "limit" in request.query_params:
+            limit, error = self.validate_integer_param(request.query_params["limit"], "limit", min_val=1, max_val=10000)
+            if error:
+                validation_errors.append(error)
+        
+        if "offset" in request.query_params:
+            offset, error = self.validate_integer_param(request.query_params["offset"], "offset", min_val=0)
+            if error:
+                validation_errors.append(error)
+        
+        # dataset_name validation
+        if "dataset_name" in request.query_params:
+            name, error = self.validate_string_param(request.query_params["dataset_name"], "dataset_name", max_len=255)
+            if error:
+                validation_errors.append(error)
+        
+        # Validate request body for POST/PUT
+        if request.method in ["POST", "PUT"]:
+            content_type = request.headers.get("content-type", "")
+            
+            if "application/json" in content_type:
+                try:
+                    body = await request.body()
+                    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
+                    if len(body) > MAX_BODY_SIZE:
+                        validation_errors.append(f"Request body too large. Maximum size: {MAX_BODY_SIZE / (1024*1024):.1f}MB")
+                    else:
+                        try:
+                            json_data = json.loads(body.decode('utf-8'))
+                            request.state.validated_json = json_data
+                        except json.JSONDecodeError as e:
+                            validation_errors.append(f"Invalid JSON: {str(e)}")
+                except Exception as e:
+                    validation_errors.append(f"Error reading request body: {str(e)}")
+            elif "multipart/form-data" in content_type:
+                # File upload validation - check Content-Length
+                content_length = request.headers.get("content-length")
+                if content_length:
+                    try:
+                        size = int(content_length)
+                        MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB
+                        if size > MAX_UPLOAD_SIZE:
+                            validation_errors.append(f"Upload too large. Maximum size: {MAX_UPLOAD_SIZE / (1024*1024):.1f}MB")
+                    except ValueError:
+                        pass
+        
+        # Path validation
+        if ".." in path or "//" in path or "\x00" in path:
+            validation_errors.append("Invalid path: path traversal or null byte detected")
+        
+        if validation_errors:
+            logger.warning(f"Validation errors for {request.method} {path}: {validation_errors}")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Validation failed",
+                    "errors": validation_errors,
+                    "path": path
+                }
+            )
+        
+        return await call_next(request)
+
+
+# Add input validation middleware
+app.add_middleware(InputValidationMiddleware)
 
 DEFAULT_DB_NAME = "campus_iot_data.db"
 
@@ -477,6 +580,18 @@ async def view_data(
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        # Check if table exists
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name=?
+        """, (csv_table,))
+        if cursor.fetchone() is None:
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail=f"Dataset '{dataset_name}' not found. Please upload data first using POST /new"
+            )
+        
         cursor.execute(f"SELECT COUNT(*) as total FROM {csv_table}")
         total_count = cursor.fetchone()['total']
         
@@ -536,6 +651,9 @@ async def view_data(
             status_code=200
         )
     
+    except sqlite3.Error as e:
+        logger.error(f"Database error retrieving data: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         logger.error(f"Error retrieving data: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error retrieving data: {str(e)}")
@@ -649,6 +767,9 @@ async def get_training_data(
     
     except HTTPException:
         raise
+    except sqlite3.Error as e:
+        logger.error(f"Database error retrieving training data: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         logger.error(f"Error retrieving training data: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error retrieving training data: {str(e)}")
@@ -762,6 +883,9 @@ async def get_testing_data(
     
     except HTTPException:
         raise
+    except sqlite3.Error as e:
+        logger.error(f"Database error retrieving testing data: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         logger.error(f"Error retrieving testing data: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error retrieving testing data: {str(e)}")
@@ -823,15 +947,9 @@ async def validate_data(
         if total_rows == 0:
             logger.warning("No rows found in database")
             conn.close()
-            return JSONResponse(
-                content={
-                    "status": "success",
-                    "message": "No rows to validate",
-                    "total_rows": 0,
-                    "training_rows": 0,
-                    "testing_rows": 0
-                },
-                status_code=200
+            raise HTTPException(
+                status_code=422,
+                detail="No data found in dataset. Cannot perform validation on empty dataset."
             )
         
         # Validate and set training/testing percentages
@@ -969,7 +1087,16 @@ async def validate_data(
     
     except HTTPException:
         raise
+    except sqlite3.Error as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        logger.error(f"Database error during validation: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
         logger.error(f"Error during validation: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error during validation: {str(e)}")
 
@@ -1091,10 +1218,17 @@ async def clear_database(dataset_name: Optional[str] = Depends(get_optional_data
             )
     
     except HTTPException:
-        conn.close()
+        if 'conn' in locals():
+            conn.close()
         raise
+    except sqlite3.Error as e:
+        if 'conn' in locals():
+            conn.close()
+        logger.error(f"Database error clearing data: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
-        conn.close()
+        if 'conn' in locals():
+            conn.close()
         logger.error(f"Error clearing database: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error clearing database: {str(e)}")
 

@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package data_ingestion;
+
+// Data Ingestion Service gRPC definitions
+
+service DataIngestionService {
+  // Fetch training data
+  rpc GetTrainingData(DataRequest) returns (DataResponse);
+  
+  // Fetch testing data
+  rpc GetTestingData(DataRequest) returns (DataResponse);
+  
+  // Fetch all data (view)
+  rpc GetViewData(DataRequest) returns (DataResponse);
+  
+  // Health check
+  rpc HealthCheck(HealthRequest) returns (HealthResponse);
+}
+
+message DataRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  optional string dataset_name = 3;
+}
+
+message DataRecord {
+  map<string, string> fields = 1;  // Flexible field mapping
+}
+
+message DataResponse {
+  string status = 1;
+  repeated DataRecord data = 2;
+  int32 total_rows = 3;
+  optional string message = 4;
+  optional string detail = 5;
+}
+
+message HealthRequest {
+}
+
+message HealthResponse {
+  string status = 1;
+  string message = 2;
+}

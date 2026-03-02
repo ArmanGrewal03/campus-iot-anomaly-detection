@@ -3,7 +3,8 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Tuple
+from starlette.requests import Request
 import json
 import os
 from datetime import datetime, timedelta
@@ -104,6 +105,139 @@ app.add_middleware(
 
 # Add status code middleware (after CORS)
 app.add_middleware(StatusCodeMiddleware)
+
+
+# Input validation middleware
+class InputValidationMiddleware(BaseHTTPMiddleware):
+    """Validate and sanitize input parameters for User Service"""
+    
+    def validate_integer_param(self, value: str, param_name: str, min_val: Optional[int] = None, max_val: Optional[int] = None) -> Tuple[Optional[int], Optional[str]]:
+        """Validate integer parameter"""
+        try:
+            int_value = int(value)
+            if min_val is not None and int_value < min_val:
+                return None, f"{param_name} must be >= {min_val}"
+            if max_val is not None and int_value > max_val:
+                return None, f"{param_name} must be <= {max_val}"
+            return int_value, None
+        except ValueError:
+            return None, f"{param_name} must be a valid integer"
+    
+    def validate_string_param(self, value: str, param_name: str, max_len: Optional[int] = None) -> Tuple[Optional[str], Optional[str]]:
+        """Validate string parameter"""
+        if not value or len(value.strip()) == 0:
+            return None, f"{param_name} cannot be empty"
+        if max_len and len(value) > max_len:
+            return None, f"{param_name} must be <= {max_len} characters"
+        return value.strip(), None
+    
+    def validate_boolean_param(self, value: str, param_name: str) -> Tuple[Optional[bool], Optional[str]]:
+        """Validate boolean parameter"""
+        value_lower = value.lower()
+        if value_lower in ["true", "1", "yes"]:
+            return True, None
+        elif value_lower in ["false", "0", "no", ""]:
+            return False, None
+        return None, f"{param_name} must be 'true' or 'false'"
+    
+    async def dispatch(self, request: Request, call_next):
+        # Skip validation for health checks and WebSocket endpoints
+        if request.url.path in ["/health", "/"] or request.url.path.startswith("/ws/"):
+            return await call_next(request)
+        
+        validation_errors = []
+        path = request.url.path
+        
+        # Validate query parameters
+        if "limit" in request.query_params:
+            limit, error = self.validate_integer_param(request.query_params["limit"], "limit", min_val=1, max_val=10000)
+            if error:
+                validation_errors.append(error)
+        
+        if "offset" in request.query_params:
+            offset, error = self.validate_integer_param(request.query_params["offset"], "offset", min_val=0)
+            if error:
+                validation_errors.append(error)
+        
+        if "user_id" in request.query_params:
+            user_id, error = self.validate_integer_param(request.query_params["user_id"], "user_id", min_val=1)
+            if error:
+                validation_errors.append(error)
+        
+        if "network_id" in request.query_params:
+            network_id, error = self.validate_string_param(request.query_params["network_id"], "network_id", max_len=255)
+            if error:
+                validation_errors.append(error)
+        
+        # Validate boolean parameters
+        for bool_param in ["has_prediction", "is_active"]:
+            if bool_param in request.query_params:
+                _, error = self.validate_boolean_param(request.query_params[bool_param], bool_param)
+                if error:
+                    validation_errors.append(error)
+        
+        # Validate path parameters (user_id in path)
+        if "/users/" in path:
+            parts = path.split("/")
+            for i, part in enumerate(parts):
+                if part == "users" and i + 1 < len(parts):
+                    user_id_str = parts[i + 1]
+                    if user_id_str not in ["block", "unblock"]:  # Skip action endpoints
+                        user_id, error = self.validate_integer_param(user_id_str, "user_id (path)", min_val=1)
+                        if error:
+                            validation_errors.append(error)
+                    break
+        
+        # Validate network_id in path
+        if "/network-logs/" in path:
+            parts = path.split("/")
+            for i, part in enumerate(parts):
+                if part == "network-logs" and i + 1 < len(parts):
+                    network_id = parts[i + 1]
+                    _, error = self.validate_string_param(network_id, "network_id (path)", max_len=255)
+                    if error:
+                        validation_errors.append(error)
+                    break
+        
+        # Validate request body for POST endpoints
+        if request.method == "POST":
+            content_type = request.headers.get("content-type", "")
+            
+            if "application/json" in content_type:
+                try:
+                    body = await request.body()
+                    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
+                    if len(body) > MAX_BODY_SIZE:
+                        validation_errors.append(f"Request body too large. Maximum size: {MAX_BODY_SIZE / (1024*1024):.1f}MB")
+                    else:
+                        try:
+                            json_data = json.loads(body.decode('utf-8'))
+                            request.state.validated_json = json_data
+                        except json.JSONDecodeError as e:
+                            validation_errors.append(f"Invalid JSON: {str(e)}")
+                except Exception as e:
+                    validation_errors.append(f"Error reading request body: {str(e)}")
+        
+        # Path validation
+        if ".." in path or "//" in path or "\x00" in path:
+            validation_errors.append("Invalid path: path traversal or null byte detected")
+        
+        if validation_errors:
+            logger.warning(f"Validation errors for {request.method} {path}: {validation_errors}")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Validation failed",
+                    "errors": validation_errors,
+                    "path": path
+                }
+            )
+        
+        return await call_next(request)
+
+
+# Add input validation middleware
+app.add_middleware(InputValidationMiddleware)
 
 NETWORK_LOGS_DB = "network_logs.db"
 USERS_DB = "users.db"
@@ -428,7 +562,18 @@ async def get_history(limit: int = 100, offset: int = 0):
                 "has_more": (offset + len(history)) < total,
                 "history": history
             },
-            status_code=200
+            status_code=200,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
+    except sqlite3.Error as e:
+        logger.error(f"Database error in /history endpoint: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database error: {str(e)}"
         )
     except Exception as e:
         logger.error(f"Error in /history endpoint: {type(e).__name__}: {e}", exc_info=True)
@@ -513,6 +658,12 @@ async def get_dashboard_kpis():
         )
     except HTTPException:
         raise
+    except sqlite3.Error as e:
+        logger.error(f"Database error computing dashboard KPIs: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database error: {str(e)}",
+        )
     except Exception as e:
         logger.error(f"Error computing dashboard KPIs: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(
@@ -675,7 +826,18 @@ async def get_network_logs(
                 },
                 "logs": logs
             },
-            status_code=200
+            status_code=200,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
+    except sqlite3.Error as e:
+        logger.error(f"Database error in /network-logs endpoint: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database error: {str(e)}"
         )
     except Exception as e:
         logger.error(f"Error in /network-logs endpoint: {type(e).__name__}: {e}", exc_info=True)
@@ -731,7 +893,10 @@ async def get_network_log_by_id(network_id: str = Path(..., description="Network
         if row["data"]:
             try:
                 log_entry["data"] = json.loads(row["data"])
-            except:
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse data JSON for network_id {network_id_val}")
+                log_entry["data"] = row["data"]
+            except Exception:
                 log_entry["data"] = row["data"]
         else:
             log_entry["data"] = None
@@ -740,7 +905,10 @@ async def get_network_log_by_id(network_id: str = Path(..., description="Network
         if row["prediction_results"]:
             try:
                 log_entry["prediction_results"] = json.loads(row["prediction_results"])
-            except:
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse prediction_results JSON for network_id {network_id_val}")
+                log_entry["prediction_results"] = row["prediction_results"]
+            except Exception:
                 log_entry["prediction_results"] = row["prediction_results"]
         else:
             log_entry["prediction_results"] = None
@@ -774,6 +942,12 @@ async def get_network_log_by_id(network_id: str = Path(..., description="Network
         )
     except HTTPException:
         raise
+    except sqlite3.Error as e:
+        logger.error(f"Database error in /network-logs/{network_id} endpoint: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database error: {str(e)}"
+        )
     except Exception as e:
         logger.error(f"Error in /network-logs/{network_id} endpoint: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(
@@ -880,7 +1054,12 @@ async def set_model(request: SetModelRequest):
             "message": f"Model set to {selected_model_name}",
             "model_name": selected_model_name
         },
-        status_code=200
+        status_code=200,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
     )
 
 @app.get("/get-model")
@@ -892,7 +1071,12 @@ async def get_model():
             "status": "success",
             "model_name": selected_model_name
         },
-        status_code=200
+        status_code=200,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
     )
 
 @app.post("/users/{user_id}/unblock")
@@ -1119,35 +1303,35 @@ async def process_predict_request(message_id: int, network_id: str, data: dict):
             error_msg = result.get('error', f"HTTP {status_code}")[:500] if isinstance(result, dict) else f"HTTP {status_code}"
             logger.error(f"Prediction failed for network_id: {network_id}, status: {status_code}, error: {error_msg}")
             
-            conn = sqlite3.connect(MESSAGE_QUEUE_DB)
-            cursor = conn.cursor()
-            try:
-                cursor.execute("BEGIN TRANSACTION")
-                cursor.execute("SELECT retry_count FROM message_queue WHERE id = ?", (message_id,))
-                row = cursor.fetchone()
-                retry_count = (row[0] if row else 0) + 1
-                
-                if retry_count < 3:
-                    cursor.execute("""
-                        UPDATE message_queue 
-                        SET status = 'pending', retry_count = ?
-                        WHERE id = ?
-                    """, (retry_count, message_id))
-                    logger.info(f"Retrying message {message_id} (attempt {retry_count})")
-                else:
-                    cursor.execute("""
-                        UPDATE message_queue 
-                        SET status = 'failed', processed_at = ?, error_message = ?
-                        WHERE id = ?
-                    """, (datetime.utcnow().isoformat(), error_msg, message_id))
-                    logger.error(f"Message {message_id} failed after {retry_count} attempts")
-                
-                conn.commit()
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Error updating message queue status for message_id {message_id}: {e}")
-            finally:
-                conn.close()
+        conn = sqlite3.connect(MESSAGE_QUEUE_DB)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("BEGIN TRANSACTION")
+            cursor.execute("SELECT retry_count FROM message_queue WHERE id = ?", (message_id,))
+            row = cursor.fetchone()
+            retry_count = (row[0] if row else 0) + 1
+            
+            if retry_count < 3:
+                cursor.execute("""
+                    UPDATE message_queue 
+                    SET status = 'pending', retry_count = ?
+                    WHERE id = ?
+                """, (retry_count, message_id))
+                logger.info(f"Retrying message {message_id} (attempt {retry_count})")
+            else:
+                cursor.execute("""
+                    UPDATE message_queue 
+                    SET status = 'failed', processed_at = ?, error_message = ?
+                    WHERE id = ?
+                """, (datetime.utcnow().isoformat(), error_msg, message_id))
+                logger.error(f"Message {message_id} failed after {retry_count} attempts")
+            
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error updating message queue status for message_id {message_id}: {e}")
+        finally:
+            conn.close()
                 
     except Exception as e:
         error_msg = str(e)[:500]

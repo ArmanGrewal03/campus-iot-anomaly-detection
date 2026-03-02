@@ -16,7 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
+from starlette.requests import Request
 import requests
 import httpx
 import asyncio
@@ -24,7 +25,7 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -47,6 +48,10 @@ import contextvars
 warnings.filterwarnings('ignore')
 # Suppress sklearn parallel warning about delayed/Parallel usage
 warnings.filterwarnings('ignore', category=UserWarning, module='sklearn.utils.parallel')
+# Suppress all UserWarnings from sklearn
+warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+# Suppress joblib warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='joblib')
 
 app = FastAPI(title="Campus IoT Anomaly Detection Model API", version="1.0.0")
 
@@ -126,6 +131,106 @@ app.add_middleware(
 # Add status code middleware (after CORS)
 app.add_middleware(StatusCodeMiddleware)
 
+
+# Input validation middleware
+class InputValidationMiddleware(BaseHTTPMiddleware):
+    """Validate and sanitize input parameters for Model Service"""
+    
+    def validate_integer_param(self, value: str, param_name: str, min_val: Optional[int] = None, max_val: Optional[int] = None) -> Tuple[Optional[int], Optional[str]]:
+        """Validate integer parameter"""
+        try:
+            int_value = int(value)
+            if min_val is not None and int_value < min_val:
+                return None, f"{param_name} must be >= {min_val}"
+            if max_val is not None and int_value > max_val:
+                return None, f"{param_name} must be <= {max_val}"
+            return int_value, None
+        except ValueError:
+            return None, f"{param_name} must be a valid integer"
+    
+    def validate_string_param(self, value: str, param_name: str, max_len: Optional[int] = None) -> Tuple[Optional[str], Optional[str]]:
+        """Validate string parameter"""
+        if not value or len(value.strip()) == 0:
+            return None, f"{param_name} cannot be empty"
+        if max_len and len(value) > max_len:
+            return None, f"{param_name} must be <= {max_len} characters"
+        return value.strip(), None
+    
+    async def dispatch(self, request: Request, call_next):
+        # Skip validation for health checks
+        if request.url.path in ["/health", "/"]:
+            return await call_next(request)
+        
+        validation_errors = []
+        path = request.url.path
+        
+        # Validate query parameters
+        if "limit" in request.query_params:
+            limit, error = self.validate_integer_param(request.query_params["limit"], "limit", min_val=1, max_val=10000)
+            if error:
+                validation_errors.append(error)
+        
+        if "offset" in request.query_params:
+            offset, error = self.validate_integer_param(request.query_params["offset"], "offset", min_val=0)
+            if error:
+                validation_errors.append(error)
+        
+        if "database_name" in request.query_params:
+            name, error = self.validate_string_param(request.query_params["database_name"], "database_name", max_len=255)
+            if error:
+                validation_errors.append(error)
+        
+        # Validate request body for POST endpoints (train, test, predict)
+        if request.method == "POST":
+            content_type = request.headers.get("content-type", "")
+            
+            if "application/json" in content_type:
+                try:
+                    body = await request.body()
+                    MAX_BODY_SIZE = 50 * 1024 * 1024  # 50MB for model operations (larger than gateway)
+                    if len(body) > MAX_BODY_SIZE:
+                        validation_errors.append(f"Request body too large. Maximum size: {MAX_BODY_SIZE / (1024*1024):.1f}MB")
+                    else:
+                        try:
+                            json_data = json.loads(body.decode('utf-8'))
+                            
+                            # Service-specific validation for model endpoints
+                            if "/predict" in path:
+                                # Validate predict request structure
+                                if not isinstance(json_data, dict):
+                                    validation_errors.append("Predict request must be a JSON object")
+                                elif "data" not in json_data:
+                                    validation_errors.append("Predict request must contain 'data' field")
+                                elif not isinstance(json_data.get("data"), list):
+                                    validation_errors.append("Predict 'data' must be an array")
+                            
+                            request.state.validated_json = json_data
+                        except json.JSONDecodeError as e:
+                            validation_errors.append(f"Invalid JSON: {str(e)}")
+                except Exception as e:
+                    validation_errors.append(f"Error reading request body: {str(e)}")
+        
+        # Path validation
+        if ".." in path or "//" in path or "\x00" in path:
+            validation_errors.append("Invalid path: path traversal or null byte detected")
+        
+        if validation_errors:
+            logger.warning(f"Validation errors for {request.method} {path}: {validation_errors}")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Validation failed",
+                    "errors": validation_errors,
+                    "path": path
+                }
+            )
+        
+        return await call_next(request)
+
+
+# Add input validation middleware
+app.add_middleware(InputValidationMiddleware)
+
 # Configuration
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 MODEL_DIR = "models"
@@ -172,24 +277,24 @@ async def fetch_all_data(endpoint: str, label_type: str = "all", database_name: 
                     params={"limit": limit, "offset": page_offset},
                     headers=headers
                 )
-                
-                if response.status_code >= 400:
-                    error_detail = f"{response.status_code}"
-                    try:
-                        error_json = response.json()
-                        error_detail = error_json.get("detail", error_json.get("message", f"{response.status_code}"))
-                    except:
-                        error_detail = response.text or f"{response.status_code}"
+            
+            if response.status_code >= 400:
+                error_detail = f"{response.status_code}"
+                try:
+                    error_json = response.json()
+                    error_detail = error_json.get("detail", error_json.get("message", f"{response.status_code}"))
+                except:
+                    error_detail = response.text or f"{response.status_code}"
                     raise Exception(f"HTTP {response.status_code}: {error_detail}")
-                
-                result = response.json()
-                if result.get("status") != "success":
-                    error_msg = result.get("message", result.get("detail", "Unknown error"))
-                    raise Exception(f"API error: {error_msg}")
-                
-                data = result.get("data", [])
-                logger.info(f"  Fetched page {page_num + 1}: {len(data)} rows")
-                return (page_num, data)
+            
+            result = response.json()
+            if result.get("status") != "success":
+                error_msg = result.get("message", result.get("detail", "Unknown error"))
+                raise Exception(f"API error: {error_msg}")
+            
+            data = result.get("data", [])
+            logger.info(f"  Fetched page {page_num + 1}: {len(data)} rows")
+            return (page_num, data)
         except Exception as e:
             logger.error(f"Error fetching page {page_num + 1}: {e}")
             raise
@@ -234,7 +339,7 @@ async def fetch_all_data(endpoint: str, label_type: str = "all", database_name: 
                 status_code=400,
                 detail=error_msg
             )
-        
+            
         first_data = first_result.get("data", [])
         if not first_data:
             logger.info(f"Total {label_type} records fetched: 0")
@@ -249,28 +354,75 @@ async def fetch_all_data(endpoint: str, label_type: str = "all", database_name: 
             logger.info(f"Total {label_type} records fetched: {len(first_data)}")
             return first_data
         
-        # Fetch remaining pages (1 to num_pages-1) in parallel using asyncio.gather
+        # Fetch remaining pages (1 to num_pages-1) in batches to avoid overwhelming the server
         # Page 0 is already fetched, so we start from page 1
         all_data = [None] * num_pages  # Pre-allocate list to maintain order
         all_data[0] = first_data  # First page is already fetched
         
-        # Create tasks for pages 1 to num_pages-1
-        tasks = [fetch_page(page_num) for page_num in range(1, num_pages)]
+        # Batch size: fetch 10 pages at a time to avoid overwhelming the server
+        batch_size = 10
+        remaining_pages = list(range(1, num_pages))
         
-        # Execute all remaining page fetches in parallel
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Fetch pages in batches with retries
+        async def fetch_with_retry(page_num: int, max_retries: int = 3) -> tuple[int, List[Dict]]:
+            """Fetch a page with retry logic"""
+            for attempt in range(max_retries):
+                try:
+                    return await fetch_page(page_num)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        logger.error(f"Failed to fetch page {page_num + 1} after {max_retries} attempts: {e}")
+                        raise
+                    logger.warning(f"Retry {attempt + 1}/{max_retries} for page {page_num + 1}: {e}")
+                    await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
         
-        # Process results and handle errors
-        for i, result in enumerate(results):
-            page_num = i + 1  # Results correspond to pages 1, 2, 3, ...
-            if isinstance(result, Exception):
-                logger.error(f"Error fetching page {page_num + 1}: {result}")
+        # Process pages in batches
+        failed_pages = []
+        for batch_start in range(0, len(remaining_pages), batch_size):
+            batch = remaining_pages[batch_start:batch_start + batch_size]
+            logger.info(f"Fetching batch of {len(batch)} pages (pages {batch[0] + 1} to {batch[-1] + 1})")
+            
+            # Create tasks for this batch
+            tasks = [fetch_with_retry(page_num) for page_num in batch]
+            
+            # Execute batch in parallel
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            for i, result in enumerate(results):
+                page_num = batch[i]
+                if isinstance(result, Exception):
+                    logger.error(f"Error fetching page {page_num + 1}: {result}")
+                    failed_pages.append((page_num, str(result)))
+                else:
+                    result_page_num, data = result
+                    all_data[result_page_num] = data
+            
+            # Small delay between batches to avoid overwhelming the server
+            if batch_start + batch_size < len(remaining_pages):
+                await asyncio.sleep(0.1)
+        
+        # If we have failed pages, try to continue with what we have or raise error
+        if failed_pages:
+            failed_count = len(failed_pages)
+            total_pages = num_pages
+            success_count = sum(1 for data in all_data if data is not None)
+            
+            # If more than 10% of pages failed, raise an error
+            if failed_count > total_pages * 0.1:
+                logger.error(f"Too many page fetch failures: {failed_count}/{total_pages} pages failed")
                 raise HTTPException(
                     status_code=503,
-                    detail=f"Error fetching page {page_num + 1}: {str(result)}"
+                    detail={
+                        "error": "Data fetch partially failed",
+                        "message": f"Failed to fetch {failed_count} out of {total_pages} pages",
+                        "successful_pages": success_count,
+                        "failed_pages": failed_count,
+                        "solution": "The Data Ingestion Service may be overloaded. Please try again or reduce the dataset size."
+                    }
                 )
-            result_page_num, data = result
-            all_data[result_page_num] = data
+            else:
+                logger.warning(f"Some pages failed ({failed_count}/{total_pages}), but continuing with available data")
         
         # Flatten the list of lists, maintaining order
         flattened_data = []
@@ -280,7 +432,7 @@ async def fetch_all_data(endpoint: str, label_type: str = "all", database_name: 
         
         logger.info(f"Total {label_type} records fetched: {len(flattened_data)}")
         return flattened_data
-        
+    
     except HTTPException:
         raise
     except httpx.RequestError as e:
@@ -297,7 +449,14 @@ async def fetch_all_data(endpoint: str, label_type: str = "all", database_name: 
         )
 
 def extract_features_and_labels(data_records: List[Dict], include_fields: Optional[List[str]] = None, exclude_fields: Optional[List[str]] = None) -> tuple:
-    """Extract features and labels from API response data."""
+    """Extract features and labels from API response data.
+    
+    Returns:
+        X: Feature matrix (DataFrame)
+        y: Label array (0 = safe, 1 = unsafe)
+        y_attack_cat: Attack category array (strings) - None if not available
+        feature_cols: List of feature column names
+    """
     rows = []
     for record in data_records:
         row_data = record.get("data", {})
@@ -306,7 +465,7 @@ def extract_features_and_labels(data_records: List[Dict], include_fields: Option
         rows.append(row_data)
     
     if not rows:
-        return pd.DataFrame(), np.array([]), []
+        return pd.DataFrame(), np.array([]), None, []
     
     df = pd.DataFrame(rows)
     
@@ -336,23 +495,43 @@ def extract_features_and_labels(data_records: List[Dict], include_fields: Option
     if "label" in feature_cols:
         raise ValueError("CRITICAL: 'label' was found in feature columns. This should never happen!")
     
+    if "attack_cat" in feature_cols:
+        raise ValueError("CRITICAL: 'attack_cat' was found in feature columns. This should never happen!")
+    
     if not feature_cols:
         raise ValueError("No features available after filtering. Please check your include/exclude field settings.")
     
     X = df[feature_cols].copy()
     y = df["label"].copy()
     
+    # Extract attack_cat if available
+    y_attack_cat = None
+    if "attack_cat" in df.columns:
+        y_attack_cat = df["attack_cat"].copy()
+        # Fill missing values with "Normal" or empty string
+        y_attack_cat = y_attack_cat.fillna("Normal")
+        y_attack_cat = y_attack_cat.astype(str)
+        # Replace empty strings with "Normal"
+        y_attack_cat = y_attack_cat.replace("", "Normal")
+    
     if "label" in X.columns:
         raise ValueError("CRITICAL: 'label' column found in feature matrix X. Removing it would cause data leakage!")
+    
+    if "attack_cat" in X.columns:
+        raise ValueError("CRITICAL: 'attack_cat' column found in feature matrix X. This must be excluded!")
     
     y = pd.to_numeric(y, errors='coerce')
     valid_mask = ~y.isna()
     X = X[valid_mask]
     y = y[valid_mask]
+    if y_attack_cat is not None:
+        y_attack_cat = y_attack_cat[valid_mask]
     
     for col in X.columns:
         if col == "label":
             raise ValueError(f"CRITICAL: Found 'label' in feature column '{col}'. This must be excluded!")
+        if col == "attack_cat":
+            raise ValueError(f"CRITICAL: Found 'attack_cat' in feature column '{col}'. This must be excluded!")
         X[col] = pd.to_numeric(X[col], errors='coerce')
     
     X = X.fillna(0)
@@ -361,15 +540,21 @@ def extract_features_and_labels(data_records: List[Dict], include_fields: Option
     if "label" in feature_cols:
         raise ValueError("CRITICAL: 'label' found in feature_cols list. This must be excluded!")
     
+    if "attack_cat" in feature_cols:
+        raise ValueError("CRITICAL: 'attack_cat' found in feature_cols list. This must be excluded!")
+    
     logger.info(f"Extracted {len(X)} samples with {len(feature_cols)} features")
     logger.info(f"Label distribution: Safe (0) = {(y == 0).sum()}, Unsafe (1) = {(y == 1).sum()}")
-    logger.info(f"VERIFIED: 'label' is NOT in feature columns. Features: {len(feature_cols)}, Label used only as target variable.")
+    if y_attack_cat is not None:
+        attack_cat_counts = y_attack_cat.value_counts()
+        logger.info(f"Attack category distribution: {dict(attack_cat_counts.head(10))}")
+    logger.info(f"VERIFIED: 'label' and 'attack_cat' are NOT in feature columns. Features: {len(feature_cols)}")
     
-    return X, y, feature_cols
+    return X, y, y_attack_cat, feature_cols
 
 def train_rf_model(X_train: pd.DataFrame, y_train: np.ndarray, 
-                   n_estimators: int = 100, max_depth: Optional[int] = None, 
-                   random_state: int = 42) -> RandomForestClassifier:
+                n_estimators: int = 100, max_depth: Optional[int] = None, 
+                random_state: int = 42) -> RandomForestClassifier:
     """Train a Random Forest classifier (RFv1)."""
     logger.info(f"Training Random Forest model with n_estimators={n_estimators}, max_depth={max_depth}")
     
@@ -437,7 +622,7 @@ def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
     return model, scaler
 
 def evaluate_rf_model(model: RandomForestClassifier, X_test: pd.DataFrame, 
-                     y_test: np.ndarray) -> Dict[str, Any]:
+                   y_test: np.ndarray) -> Dict[str, Any]:
     """Evaluate Random Forest model and return metrics."""
     y_pred = model.predict(X_test)
     y_pred_proba = model.predict_proba(X_test)[:, 1]
@@ -589,17 +774,33 @@ def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: np.ndarray,
             raise ValueError("Scaler is required for Autoencoder model evaluation")
         return evaluate_ae_model(model, scaler, X_test, y_test)
     else:
-        # Fallback: try Random Forest evaluation
-        logger.warning(f"Unknown model type {model_type_str}, attempting Random Forest evaluation")
-        return evaluate_rf_model(model, X_test, y_test)
+        # Fallback: try to infer model type from instance
+        if isinstance(model, MLPRegressor):
+            if scaler is None:
+                raise ValueError("Scaler is required for Autoencoder model evaluation")
+            logger.warning(f"Unknown model type {model_type_str}, but detected MLPRegressor - using Autoencoder evaluation")
+            return evaluate_ae_model(model, scaler, X_test, y_test)
+        elif isinstance(model, IsolationForest):
+            logger.warning(f"Unknown model type {model_type_str}, but detected IsolationForest - using Isolation Forest evaluation")
+            return evaluate_if_model(model, X_test, y_test)
+        elif isinstance(model, RandomForestClassifier):
+            logger.warning(f"Unknown model type {model_type_str}, but detected RandomForestClassifier - using Random Forest evaluation")
+            return evaluate_rf_model(model, X_test, y_test)
+        else:
+            raise ValueError(f"Unknown model type {model_type_str} and cannot infer from model instance. Model class: {type(model).__name__}")
 
 def save_model(model: Any, feature_names: List[str], 
                metrics: Dict[str, Any], training_params: Dict[str, Any],
-               model_name: str = "model", scaler: Optional[Any] = None):
+               model_name: str = "model", scaler: Optional[Any] = None,
+               attack_cat_model: Optional[Any] = None, attack_cat_classes: Optional[List[str]] = None):
     """Save the trained model and metadata. Supports different model types."""
     if "label" in feature_names:
         logger.error("CRITICAL ERROR: Attempting to save model with 'label' in feature_names!")
         raise ValueError("CRITICAL: 'label' must not be included in feature_names. This would cause data leakage!")
+    
+    if "attack_cat" in feature_names:
+        logger.error("CRITICAL ERROR: Attempting to save model with 'attack_cat' in feature_names!")
+        raise ValueError("CRITICAL: 'attack_cat' must not be included in feature_names. This would cause data leakage!")
     
     os.makedirs(MODEL_DIR, exist_ok=True)
     
@@ -611,6 +812,13 @@ def save_model(model: Any, feature_names: List[str],
     joblib.dump(model, model_path)
     logger.info(f"Model saved to: {model_path}")
     
+    # Save attack category model if provided
+    if attack_cat_model is not None:
+        attack_cat_filename = f"{sanitized_model_name}_attack_cat.pkl"
+        attack_cat_path = os.path.join(MODEL_DIR, attack_cat_filename)
+        joblib.dump(attack_cat_model, attack_cat_path)
+        logger.info(f"Attack category model saved to: {attack_cat_path}")
+    
     # Save scaler if provided (for autoencoder)
     if scaler is not None:
         scaler_filename = f"{sanitized_model_name}_scaler.pkl"
@@ -618,7 +826,7 @@ def save_model(model: Any, feature_names: List[str],
         joblib.dump(scaler, scaler_path)
         logger.info(f"Scaler saved to: {scaler_path}")
     
-    logger.info(f"VALIDATION: Saving model with {len(feature_names)} features (label correctly excluded)")
+    logger.info(f"VALIDATION: Saving model with {len(feature_names)} features (label and attack_cat correctly excluded)")
     
     # Get model type from training_params or infer from model class
     model_type_str = training_params.get('model_type', type(model).__name__)
@@ -631,7 +839,9 @@ def save_model(model: Any, feature_names: List[str],
         'training_date': datetime.now(timezone.utc).isoformat(),
         'training_params': training_params,
         'metrics': metrics,
-        'has_scaler': scaler is not None
+        'has_scaler': scaler is not None,
+        'has_attack_cat_model': attack_cat_model is not None,
+        'attack_cat_classes': attack_cat_classes if attack_cat_classes else []
     }
     
     # Add label mapping for supervised models
@@ -639,7 +849,7 @@ def save_model(model: Any, feature_names: List[str],
         metadata['label_mapping'] = {
             '0': 'safe',
             '1': 'unsafe'
-        }
+    }
     
     metadata_path = os.path.join(MODEL_DIR, metadata_filename)
     with open(metadata_path, 'w') as f:
@@ -647,34 +857,46 @@ def save_model(model: Any, feature_names: List[str],
     logger.info(f"Metadata saved to: {metadata_path}")
 
 def load_model(model_name: str) -> tuple:
-    """Load model, metadata, and scaler (if exists). Returns (model, metadata, scaler)."""
+    """Load model, metadata, scaler, and attack_cat_model (if exists). 
+    Returns (model, metadata, scaler, attack_cat_model)."""
     sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
     model_filename = f"{sanitized_model_name}.pkl"
     metadata_filename = f"{sanitized_model_name}_metadata.json"
     scaler_filename = f"{sanitized_model_name}_scaler.pkl"
+    attack_cat_filename = f"{sanitized_model_name}_attack_cat.pkl"
     model_path = os.path.join(MODEL_DIR, model_filename)
     metadata_path = os.path.join(MODEL_DIR, metadata_filename)
     scaler_path = os.path.join(MODEL_DIR, scaler_filename)
+    attack_cat_path = os.path.join(MODEL_DIR, attack_cat_filename)
     
     if not os.path.exists(model_path):
-        return None, None, None
+        return None, None, None, None
     
     try:
         model = joblib.load(model_path)
+    except (OSError, IOError) as e:
+        logger.error(f"File error loading model: {e}")
+        return None, None, None, None
     except Exception as e:
-        logger.error(f"Error loading model file: {e}")
-        return None, None, None
+        logger.error(f"Error loading model file (possibly corrupted): {e}")
+        return None, None, None, None
     
     if not os.path.exists(metadata_path):
         logger.warning(f"Metadata file not found: {metadata_path}")
-        return None, None, None
+        return None, None, None, None
     
     try:
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
+    except (OSError, IOError) as e:
+        logger.error(f"File error loading metadata: {e}")
+        return None, None, None, None
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error in metadata file (possibly corrupted): {e}")
+        return None, None, None, None
     except Exception as e:
         logger.error(f"Error loading metadata file: {e}")
-        return None, None, None
+        return None, None, None, None
     
     # Load scaler if it exists (for autoencoder models)
     scaler = None
@@ -685,7 +907,16 @@ def load_model(model_name: str) -> tuple:
         except Exception as e:
             logger.warning(f"Error loading scaler file: {e}")
     
-    return model, metadata, scaler
+    # Load attack category model if it exists
+    attack_cat_model = None
+    if os.path.exists(attack_cat_path):
+        try:
+            attack_cat_model = joblib.load(attack_cat_path)
+            logger.info(f"Loaded attack category model from: {attack_cat_path}")
+        except Exception as e:
+            logger.warning(f"Error loading attack category model: {e}")
+    
+    return model, metadata, scaler, attack_cat_model
 
 @app.get("/health")
 async def health_check():
@@ -742,7 +973,12 @@ async def list_models():
                 "models": model_files,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             },
-            status_code=200
+            status_code=200,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
         )
     
     except Exception as e:
@@ -850,26 +1086,61 @@ async def train(
     try:
         health_url = f"{API_BASE_URL}/health"
         logger.info(f"Checking backend health at {health_url} with headers: {headers}")
-        response = requests.get(health_url, headers=headers, timeout=5)
+        # Increase timeout to 10 seconds for health checks
+        response = requests.get(health_url, headers=headers, timeout=10)
         logger.info(f"Backend health check response: {response.status_code}")
         if response.status_code != 200:
             logger.error(f"Backend API health check failed with status {response.status_code}")
             raise HTTPException(
                 status_code=503,
-                detail="Backend API is not healthy. Please ensure FastAPI backend is running."
+                detail={
+                    "error": "Backend service unhealthy",
+                    "message": f"Data Ingestion Service returned status {response.status_code}",
+                    "service": "Data Ingestion Service",
+                    "port": "8000"
+                }
+            )
+    except requests.exceptions.Timeout as e:
+        logger.error(f"Timeout connecting to backend API at {API_BASE_URL}: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "Backend service timeout",
+                "message": f"Data Ingestion Service did not respond within 10 seconds",
+                "service": "Data Ingestion Service",
+                "port": "8000",
+                "solution": "The service may be overloaded or not responding. Check if the Data Ingestion Service is running and healthy."
+            }
+        )
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Connection error to backend API at {API_BASE_URL}: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "Backend service unavailable",
+                "message": f"Cannot connect to Data Ingestion Service at {API_BASE_URL}",
+                "service": "Data Ingestion Service",
+                "port": "8000",
+                "solution": "Please ensure the Data Ingestion Service is running. Start it with: cd 01_Data_Ingestion_Service && uvicorn main:app --reload --port 8000"
+            }
             )
     except requests.exceptions.RequestException as e:
         logger.error(f"Error connecting to backend API at {API_BASE_URL}: {e}")
         raise HTTPException(
             status_code=503,
-            detail=f"Cannot connect to backend API at {API_BASE_URL}"
+            detail={
+                "error": "Backend service error",
+                "message": f"Error connecting to Data Ingestion Service: {str(e)}",
+                "service": "Data Ingestion Service",
+                "port": "8000"
+            }
         )
     
     try:
         training_data = await fetch_all_data("/training", "training", dataset_name)
         if not training_data:
             raise HTTPException(
-                status_code=400,
+                status_code=422,
                 detail="No training data found. Please ensure data has been uploaded and validated."
             )
     except HTTPException:
@@ -880,15 +1151,15 @@ async def train(
     
     # Extract features and labels
     try:
-        X_train, y_train, feature_names = extract_features_and_labels(
+        X_train, y_train, y_attack_cat_train, feature_names = extract_features_and_labels(
             training_data,
             include_fields=train_request.include_fields,
             exclude_fields=train_request.exclude_fields
         )
         if len(X_train) == 0:
             raise HTTPException(
-                status_code=400,
-                detail="No valid training samples found."
+                status_code=422,
+                detail="No valid training samples found. Training data may be missing required features or labels."
             )
         
         if "label" in feature_names:
@@ -918,14 +1189,40 @@ async def train(
     training_params = {}
     
     try:
+        attack_cat_model = None
+        attack_cat_classes = None
+        
         if model_type == "RFv1":
-            # Random Forest
+            # Random Forest for binary classification (label)
             model = train_rf_model(
                 X_train, y_train,
                 n_estimators=train_request.n_estimators,
                 max_depth=train_request.max_depth,
                 random_state=train_request.random_state
             )
+            # Train separate model for attack category (multi-class) if attack_cat is available
+            if y_attack_cat_train is not None and len(y_attack_cat_train) > 0:
+                # Only train on unsafe samples (label == 1) for attack category
+                unsafe_mask = (y_train == 1)
+                if unsafe_mask.sum() > 0:
+                    X_unsafe = X_train[unsafe_mask]
+                    y_attack_cat_unsafe = y_attack_cat_train[unsafe_mask]
+                    # Filter out "Normal" category from unsafe samples
+                    non_normal_mask = (y_attack_cat_unsafe != "Normal") & (y_attack_cat_unsafe != "")
+                    if non_normal_mask.sum() > 0:
+                        X_attack_train = X_unsafe[non_normal_mask]
+                        y_attack_train = y_attack_cat_unsafe[non_normal_mask]
+                        # Encode string labels to numeric for Random Forest
+                        label_encoder = LabelEncoder()
+                        y_attack_train_encoded = label_encoder.fit_transform(y_attack_train.values)
+                        attack_cat_model = train_rf_model(
+                            X_attack_train, y_attack_train_encoded,
+                            n_estimators=train_request.n_estimators,
+                            max_depth=train_request.max_depth,
+                            random_state=train_request.random_state
+                        )
+                        attack_cat_classes = label_encoder.classes_.tolist()
+                        logger.info(f"Trained attack category model with {len(attack_cat_classes)} categories: {attack_cat_classes}")
             training_params = {
                 'model_type': 'RandomForestClassifier',
                 'n_estimators': train_request.n_estimators,
@@ -956,7 +1253,7 @@ async def train(
                 random_state=train_request.random_state
             )
             training_params = {
-                'model_type': 'Autoencoder',
+                'model_type': 'AEv1',  # Use AEv1 for consistency
                 'hidden_layers': hidden_layers,
                 'random_state': train_request.random_state
             }
@@ -982,7 +1279,9 @@ async def train(
         'feature_importance': []
     }
     
-    save_model(model, feature_names, metrics, training_params, model_name, scaler=scaler)
+    # Save model (attack_cat_model is in scope from training block)
+    save_model(model, feature_names, metrics, training_params, model_name, scaler=scaler,
+               attack_cat_model=attack_cat_model, attack_cat_classes=attack_cat_classes)
     
     response_content = {
         "status": "success",
@@ -1033,7 +1332,7 @@ async def test(
     logger.info("Testing request received")
     logger.info(f"Using model: {model_name}")
     
-    model, metadata, scaler = load_model(model_name)
+    model, metadata, scaler, attack_cat_model = load_model(model_name)
     if model is None or metadata is None:
         raise HTTPException(
             status_code=404,
@@ -1067,8 +1366,8 @@ async def test(
         testing_data = await fetch_all_data("/testing", "testing", database_name)
         if not testing_data:
             raise HTTPException(
-                status_code=400,
-                detail="No testing data found."
+                status_code=422,
+                detail="No testing data found. Please validate data to create training/testing split first."
             )
     except HTTPException:
         raise
@@ -1078,11 +1377,11 @@ async def test(
     
     # Extract features and labels
     try:
-        X_test, y_test, _ = extract_features_and_labels(testing_data)
+        X_test, y_test, _, _ = extract_features_and_labels(testing_data)
         if len(X_test) == 0:
             raise HTTPException(
-                status_code=400,
-                detail="No valid testing samples found."
+                status_code=422,
+                detail="No valid testing samples found. Testing data may be missing required features."
             )
         
         if "label" in X_test.columns:
@@ -1138,6 +1437,30 @@ async def test(
             elif 'MLPRegressor' in model_type:
                 model_type = 'AEv1'
         
+        # If model_type is still not set, infer from model instance
+        if not model_type or model_type not in ['RFv1', 'IFv1', 'AEv1']:
+            if isinstance(model, RandomForestClassifier):
+                model_type = 'RFv1'
+            elif isinstance(model, IsolationForest):
+                model_type = 'IFv1'
+            elif isinstance(model, MLPRegressor):
+                model_type = 'AEv1'
+            else:
+                # Try to infer from class name
+                model_class_name = type(model).__name__
+                if 'RandomForest' in model_class_name:
+                    model_type = 'RFv1'
+                elif 'IsolationForest' in model_class_name:
+                    model_type = 'IFv1'
+                elif 'MLPRegressor' in model_class_name:
+                    model_type = 'AEv1'
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Unknown model type: {model_class_name}. Cannot evaluate model."
+                    )
+        
+        logger.info(f"Evaluating model with type: {model_type}")
         metrics = evaluate_model(model, X_test, y_test, model_type=model_type, scaler=scaler)
     except Exception as e:
         logger.error(f"Error evaluating model: {e}")
@@ -1181,8 +1504,16 @@ async def predict(
     logger.info(f"Using model: {model_name}")
     
     # Load model
-    model, metadata, scaler = load_model(model_name)
+    model, metadata, scaler, attack_cat_model = load_model(model_name)
     if model is None or metadata is None:
+        # Check if model file exists but is corrupted
+        sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
+        model_path = os.path.join(MODEL_DIR, f"{sanitized_model_name}.pkl")
+        if os.path.exists(model_path):
+            raise HTTPException(
+                status_code=500,
+                detail="Model file exists but could not be loaded. Model may be corrupted. Please retrain."
+            )
         raise HTTPException(
             status_code=404,
             detail="Model not found. Please train the model first using POST /train"
@@ -1195,6 +1526,13 @@ async def predict(
         raise HTTPException(
             status_code=500,
             detail="CRITICAL: Model metadata contains 'label' in features. This model is corrupted!"
+        )
+    
+    # Validate input data
+    if not predict_request.data or len(predict_request.data) == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Prediction request must contain at least one data record."
         )
     
     # Prepare features
@@ -1239,22 +1577,36 @@ async def predict(
         # Get model_type from metadata or infer from model class
         model_type = metadata.get('model_type')
         if model_type and model_type not in ['RFv1', 'IFv1', 'AEv1']:
-            # Convert class name to model type string
+            # Convert class name or display name to model type string
             if 'RandomForest' in model_type:
                 model_type = 'RFv1'
             elif 'IsolationForest' in model_type:
                 model_type = 'IFv1'
-            elif 'MLPRegressor' in model_type:
+            elif 'MLPRegressor' in model_type or model_type == 'Autoencoder':
                 model_type = 'AEv1'
         
         # Infer from model class if not in metadata
-        if not model_type:
+        if not model_type or model_type not in ['RFv1', 'IFv1', 'AEv1']:
             if isinstance(model, RandomForestClassifier):
                 model_type = 'RFv1'
             elif isinstance(model, IsolationForest):
                 model_type = 'IFv1'
             elif isinstance(model, MLPRegressor):
                 model_type = 'AEv1'
+            else:
+                # Last resort: try to infer from model class name
+                model_class_name = type(model).__name__
+                if 'RandomForest' in model_class_name:
+                    model_type = 'RFv1'
+                elif 'IsolationForest' in model_class_name:
+                    model_type = 'IFv1'
+                elif 'MLPRegressor' in model_class_name:
+                    model_type = 'AEv1'
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Unknown model type: {model_type or model_class_name}. Cannot make predictions."
+                    )
         
         logger.info(f"Making predictions with model type: {model_type}")
         
@@ -1266,15 +1618,58 @@ async def predict(
             probabilities = model.predict_proba(X)
             label_mapping = metadata.get('label_mapping', {'0': 'safe', '1': 'unsafe'})
             
+            # Predict attack categories for unsafe samples if attack_cat_model is available
+            attack_cat_predictions = None
+            attack_cat_probabilities = None
+            unsafe_indices = None
+            if attack_cat_model is not None:
+                # Only predict attack category for samples predicted as unsafe
+                unsafe_indices = np.where(predictions == 1)[0]
+                if len(unsafe_indices) > 0:
+                    X_unsafe = X[unsafe_indices]
+                    attack_cat_predictions_raw = attack_cat_model.predict(X_unsafe)
+                    attack_cat_probabilities_raw = attack_cat_model.predict_proba(X_unsafe)
+                    # Get class names from the model
+                    attack_cat_classes = metadata.get('attack_cat_classes', [])
+                    if len(attack_cat_classes) > 0:
+                        # Map predictions to class names
+                        attack_cat_predictions = [attack_cat_classes[int(pred)] for pred in attack_cat_predictions_raw]
+                        # Get probabilities for each class
+                        attack_cat_probabilities = []
+                        for probs in attack_cat_probabilities_raw:
+                            prob_dict = {attack_cat_classes[i]: float(probs[i]) for i in range(len(attack_cat_classes))}
+                            attack_cat_probabilities.append(prob_dict)
+            
             for i in range(len(predictions)):
                 pred = int(predictions[i])
-                results.append({
+                result = {
                     'prediction': pred,
                     'label': label_mapping.get(str(pred), 'unknown'),
                     'probability_safe': float(probabilities[i][0]),
                     'probability_unsafe': float(probabilities[i][1]),
                     'confidence': float(max(probabilities[i]))
-                })
+                }
+                
+                # Add attack category prediction if available and sample is unsafe
+                if pred == 1 and attack_cat_model is not None and attack_cat_predictions is not None and unsafe_indices is not None:
+                    # Find the position of this sample in the unsafe_indices array
+                    pos_in_unsafe = np.where(unsafe_indices == i)[0]
+                    if len(pos_in_unsafe) > 0:
+                        idx = pos_in_unsafe[0]
+                        result['attack_cat'] = attack_cat_predictions[idx]
+                        result['attack_cat_probabilities'] = attack_cat_probabilities[idx]
+                    else:
+                        result['attack_cat'] = 'Unknown'
+                        result['attack_cat_probabilities'] = {}
+                elif pred == 0:
+                    # Safe samples don't have attack categories
+                    result['attack_cat'] = 'Normal'
+                    result['attack_cat_probabilities'] = {}
+                else:
+                    result['attack_cat'] = None
+                    result['attack_cat_probabilities'] = {}
+                
+                results.append(result)
         
         elif model_type == 'IFv1':
             # Isolation Forest: unsupervised model
@@ -1302,7 +1697,9 @@ async def predict(
                     'label': 'unsafe' if pred == 1 else 'safe',
                     'probability_safe': prob_safe,
                     'probability_unsafe': prob_unsafe,
-                    'confidence': max(prob_safe, prob_unsafe)
+                    'confidence': max(prob_safe, prob_unsafe),
+                    'attack_cat': None,  # Isolation Forest doesn't predict attack categories
+                    'attack_cat_probabilities': {}
                 })
         
         elif model_type == 'AEv1':
@@ -1365,7 +1762,7 @@ async def predict(
 async def get_model_status(model_name: str = Depends(get_model_name)):
     """Get the current status of the model."""
     logger.info(f"Getting status for model: {model_name}")
-    model, metadata, scaler = load_model(model_name)
+    model, metadata, scaler, attack_cat_model = load_model(model_name)
     
     if model is None or metadata is None:
         return JSONResponse(
@@ -1394,7 +1791,7 @@ async def get_model_status(model_name: str = Depends(get_model_name)):
 async def get_model_metrics(model_name: str = Depends(get_model_name)):
     """Get the evaluation metrics of the trained model."""
     logger.info(f"Getting metrics for model: {model_name}")
-    model, metadata, scaler = load_model(model_name)
+    model, metadata, scaler, attack_cat_model = load_model(model_name)
     
     if model is None or metadata is None:
         raise HTTPException(

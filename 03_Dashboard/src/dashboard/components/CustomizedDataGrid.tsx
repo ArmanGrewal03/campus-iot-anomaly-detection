@@ -46,16 +46,10 @@ const columns: GridColDef<NetworkLogRow>[] = [
   },
 ];
 
-interface CustomizedDataGridProps {
-  onInitialLoadComplete?: () => void;
-  hideLoadingDuringInitialLoad?: boolean;
-}
-
-export default function CustomizedDataGrid({ onInitialLoadComplete, hideLoadingDuringInitialLoad = false }: CustomizedDataGridProps) {
+export default function CustomizedDataGrid() {
   const [rows, setRows] = React.useState<NetworkLogRow[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [hasLoadedOnce, setHasLoadedOnce] = React.useState(false);
 
   React.useEffect(() => {
     const fetchLogs = async () => {
@@ -97,35 +91,23 @@ export default function CustomizedDataGrid({ onInitialLoadComplete, hideLoadingD
         }));
 
         setRows(mapped);
-        
-        // Notify parent that initial load is complete
-        if (!hasLoadedOnce && onInitialLoadComplete) {
-          setHasLoadedOnce(true);
-          onInitialLoadComplete();
-        }
       } catch (err) {
         console.error('Failed to fetch network logs:', err);
         setError('Failed to load recent activity. Check backend.');
         setRows([]);
-        
-        // Still notify parent even on error
-        if (!hasLoadedOnce && onInitialLoadComplete) {
-          setHasLoadedOnce(true);
-          onInitialLoadComplete();
-        }
       } finally {
         setLoading(false);
       }
     };
 
     fetchLogs();
-  }, [onInitialLoadComplete, hasLoadedOnce]);
+  }, []);
 
   return (
     <Box sx={{ height: 400, width: '100%' }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
         <Typography variant="subtitle2">Recent Activity</Typography>
-        {loading && !hideLoadingDuringInitialLoad && (
+        {loading && (
           <Stack direction="row" spacing={1} alignItems="center">
             <CircularProgress size={14} />
             <Typography variant="caption" color="text.secondary">
@@ -151,7 +133,7 @@ export default function CustomizedDataGrid({ onInitialLoadComplete, hideLoadingD
         pageSizeOptions={[10, 20, 50]}
         disableColumnResize
         density="compact"
-        loading={loading && !hideLoadingDuringInitialLoad}
+        loading={loading}
         slots={{
           noRowsOverlay: () => (
             <Stack alignItems="center" justifyContent="center" sx={{ height: '100%' }}>

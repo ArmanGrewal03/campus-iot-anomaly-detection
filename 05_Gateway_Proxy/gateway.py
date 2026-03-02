@@ -17,7 +17,7 @@ import os
 import asyncio
 import websockets
 from websockets.exceptions import ConnectionClosed
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from datetime import datetime, timezone
 from collections import defaultdict
 import logging
@@ -92,6 +92,178 @@ app.add_middleware(
 
 # Add status code middleware (after CORS)
 app.add_middleware(StatusCodeMiddleware)
+
+
+# Input validation middleware
+class InputValidationMiddleware(BaseHTTPMiddleware):
+    """Validate and sanitize input parameters"""
+    
+    def validate_integer_param(self, value: str, param_name: str, min_val: Optional[int] = None, max_val: Optional[int] = None) -> Tuple[Optional[int], Optional[str]]:
+        """Validate integer parameter"""
+        try:
+            int_value = int(value)
+            if min_val is not None and int_value < min_val:
+                return None, f"{param_name} must be >= {min_val}"
+            if max_val is not None and int_value > max_val:
+                return None, f"{param_name} must be <= {max_val}"
+            return int_value, None
+        except ValueError:
+            return None, f"{param_name} must be a valid integer"
+    
+    def validate_string_param(self, value: str, param_name: str, min_len: int = 1, max_len: Optional[int] = None, allow_empty: bool = False) -> Tuple[Optional[str], Optional[str]]:
+        """Validate string parameter"""
+        if not value and not allow_empty:
+            return None, f"{param_name} cannot be empty"
+        if len(value) < min_len:
+            return None, f"{param_name} must be at least {min_len} characters"
+        if max_len and len(value) > max_len:
+            return None, f"{param_name} must be <= {max_len} characters"
+        return value.strip(), None
+    
+    def validate_boolean_param(self, value: str, param_name: str) -> Tuple[Optional[bool], Optional[str]]:
+        """Validate boolean parameter"""
+        value_lower = value.lower()
+        if value_lower in ["true", "1", "yes"]:
+            return True, None
+        elif value_lower in ["false", "0", "no", ""]:
+            return False, None
+        return None, f"{param_name} must be 'true' or 'false'"
+    
+    async def dispatch(self, request: Request, call_next):
+        # Skip validation for health checks
+        if request.url.path in ["/health", "/gateway/health"]:
+            return await call_next(request)
+        
+        # Validate query parameters
+        validation_errors = []
+        path = request.url.path
+        
+        # Validate limit parameter (if present)
+        if "limit" in request.query_params:
+            limit, error = self.validate_integer_param(request.query_params["limit"], "limit", min_val=1, max_val=10000)
+            if error:
+                validation_errors.append(error)
+        
+        # Validate offset parameter (if present)
+        if "offset" in request.query_params:
+            offset, error = self.validate_integer_param(request.query_params["offset"], "offset", min_val=0)
+            if error:
+                validation_errors.append(error)
+        
+        # Validate user_id parameter (if present)
+        if "user_id" in request.query_params:
+            user_id, error = self.validate_integer_param(request.query_params["user_id"], "user_id", min_val=1)
+            if error:
+                validation_errors.append(error)
+        
+        # Validate network_id parameter (if present)
+        if "network_id" in request.query_params:
+            network_id, error = self.validate_string_param(request.query_params["network_id"], "network_id", max_len=255)
+            if error:
+                validation_errors.append(error)
+        
+        # Validate boolean parameters
+        for bool_param in ["has_prediction", "is_active"]:
+            if bool_param in request.query_params:
+                _, error = self.validate_boolean_param(request.query_params[bool_param], bool_param)
+                if error:
+                    validation_errors.append(error)
+        
+        # Validate dataset_name/database_name (if present)
+        for name_param in ["dataset_name", "database_name"]:
+            if name_param in request.query_params:
+                name, error = self.validate_string_param(request.query_params[name_param], name_param, max_len=255)
+                if error:
+                    validation_errors.append(error)
+        
+        # Validate X-User-ID header (if present)
+        user_id_header = request.headers.get("X-User-ID")
+        if user_id_header:
+            user_id, error = self.validate_integer_param(user_id_header, "X-User-ID header", min_val=1)
+            if error:
+                validation_errors.append(error)
+        
+        # Validate request body for POST/PUT/PATCH
+        if request.method in ["POST", "PUT", "PATCH"]:
+            content_type = request.headers.get("content-type", "")
+            
+            # Check content-type
+            if "application/json" in content_type:
+                try:
+                    body = await request.body()
+                    
+                    # Check body size (10MB limit)
+                    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
+                    if len(body) > MAX_BODY_SIZE:
+                        validation_errors.append(f"Request body too large. Maximum size: {MAX_BODY_SIZE / (1024*1024):.1f}MB")
+                    else:
+                        # Validate JSON structure
+                        try:
+                            json_data = json.loads(body.decode('utf-8'))
+                            
+                            # Basic JSON validation - check for common issues
+                            if isinstance(json_data, dict):
+                                # Check for SQL injection patterns in string values (only warn, don't block)
+                                sql_keywords = ["DROP", "DELETE", "INSERT", "UPDATE", "SELECT", "UNION", "--", "/*", "*/"]
+                                for key, value in json_data.items():
+                                    if isinstance(value, str):
+                                        value_upper = value.upper()
+                                        for keyword in sql_keywords:
+                                            if keyword in value_upper and len(value) > 100:
+                                                # Only log warning, don't block (could be legitimate data)
+                                                logger.warning(f"Potential SQL injection pattern detected in field '{key}' (logging only)")
+                                                break
+                            
+                            # Store validated body for later use
+                            request.state.validated_body = body
+                            request.state.validated_json = json_data
+                        except json.JSONDecodeError as e:
+                            validation_errors.append(f"Invalid JSON: {str(e)}")
+                except Exception as e:
+                    validation_errors.append(f"Error reading request body: {str(e)}")
+            elif "multipart/form-data" in content_type:
+                # For file uploads, we'll let the backend handle validation
+                # But check Content-Length header if present
+                content_length = request.headers.get("content-length")
+                if content_length:
+                    try:
+                        size = int(content_length)
+                        MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB for file uploads
+                        if size > MAX_UPLOAD_SIZE:
+                            validation_errors.append(f"Upload too large. Maximum size: {MAX_UPLOAD_SIZE / (1024*1024):.1f}MB")
+                    except ValueError:
+                        pass  # Invalid content-length, let backend handle it
+            elif content_type and request.method in ["POST", "PUT", "PATCH"]:
+                # Warn about unexpected content types (but don't block)
+                logger.warning(f"Unexpected content-type for {request.method}: {content_type}")
+        
+        # Validate path parameters (basic sanitization)
+        # Check for path traversal attempts
+        if ".." in path or "//" in path:
+            validation_errors.append("Invalid path: path traversal detected")
+        
+        # Check for null bytes in path
+        if "\x00" in path:
+            validation_errors.append("Invalid path: null byte detected")
+        
+        # If validation errors exist, return 400
+        if validation_errors:
+            logger.warning(f"Validation errors for {request.method} {path} from {request.client.host if request.client else 'unknown'}: {validation_errors}")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Validation failed",
+                    "errors": validation_errors,
+                    "path": path
+                }
+            )
+        
+        response = await call_next(request)
+        return response
+
+
+# Add input validation middleware
+app.add_middleware(InputValidationMiddleware)
 
 # Configuration
 USERS_DB = os.path.join(os.path.dirname(__file__), "..", "04_User_Service", "users.db")
@@ -436,29 +608,53 @@ async def proxy_request(request: Request, path: str):
         cleanup_expired_cache()
     
     # Skip caching for certain endpoints (analytics, write operations, etc.)
+    # Normalize path to ensure it starts with / and remove query params for matching
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    # Extract just the path part (without query string) for cache skip checking
+    path_without_query = normalized_path.split("?")[0] if "?" in normalized_path else normalized_path
+    
     skip_cache_paths = [
         "/train", "/test", "/predict", "/upload", "/validate", "/insert", "/publish",
-        "/history", "/network-logs", "/get-model", "/set-model"
+        "/history", "/network-logs", "/get-model", "/set-model", "/models", "/recompute-predictions", "/dashboard-kpis"
     ]
     # Note: /models (list) and /model-types are cacheable, but /model/status and /model/metrics are not
-    should_cache = not any(path.startswith(skip) for skip in skip_cache_paths)
+    # Check if path (without query) starts with any skip path
+    should_cache = not any(path_without_query.startswith(skip) for skip in skip_cache_paths)
     
     # Allow caching for health endpoints (with short TTL)
-    if "/health" in path:
+    if "/health" in path_without_query:
         should_cache = True
     
-    # Check cache for GET requests
+    # IMPORTANT: Never cache analytics endpoints, even if there's an old cache entry
+    # If this is an analytics endpoint, clear any existing cache entry for it
+    if any(path_without_query.startswith(skip) for skip in skip_cache_paths):
+        # Clear any existing cache entries for this path to prevent stale data
+        if request.method == "GET":
+            temp_cache_key = get_cache_key(request)
+            if temp_cache_key in cache_store:
+                del cache_store[temp_cache_key]
+                logger.debug(f"Cleared stale cache entry for analytics endpoint: {path_without_query}")
+    
+    # Check cache for GET requests ONLY if should_cache is True
+    # Also verify the path is not in skip_cache_paths as a safety check
     cache_key = None
-    if request.method == "GET" and should_cache:
+    if request.method == "GET" and should_cache and not any(path_without_query.startswith(skip) for skip in skip_cache_paths):
         cache_key = get_cache_key(request)
         cached_response = get_cached_response(cache_key, path)
         if cached_response:
+            # Remove Content-Length from cached headers to avoid mismatches
+            cached_headers = {}
+            for key, value in cached_response.get("headers", {}).items():
+                if key.lower() not in ["content-length", "transfer-encoding", "content-encoding"]:
+                    cached_headers[key] = value
+            
+            cached_content = json.dumps(cached_response["content"])
             response = Response(
-                content=json.dumps(cached_response["content"]),
+                content=cached_content,
                 status_code=cached_response["status_code"],
                 media_type="application/json",
                 headers={
-                    **cached_response.get("headers", {}),
+                    **cached_headers,
                     "X-Cache": "HIT",
                     "X-Cache-Key": cache_key[:16],
                     "Cache-Control": f"public, max-age={CACHE_TTL}",
@@ -493,44 +689,67 @@ async def proxy_request(request: Request, path: str):
     
     # Forward request to backend service
     try:
+        logger.debug(f"Making {request.method} request to {target_url} with headers: {list(headers.keys())}")
         async with httpx.AsyncClient(timeout=None) as client:
-            # Get request body if present
+            # Get request body if present (use validated body if available)
             body = None
             if request.method in ["POST", "PUT", "PATCH"]:
-                body = await request.body()
+                # Use validated body if available (from validation middleware)
+                if hasattr(request.state, "validated_body"):
+                    body = request.state.validated_body
+                else:
+                    body = await request.body()
             
-            response = await client.request(
-                method=request.method,
-                url=target_url,
-                headers=headers,
-                content=body,
-                follow_redirects=True
-            )
+            try:
+                response = await client.request(
+                    method=request.method,
+                    url=target_url,
+                    headers=headers,
+                    content=body,
+                    follow_redirects=True
+                )
+                logger.debug(f"Received response from {target_url}: {response.status_code}")
+            except Exception as req_err:
+                logger.error(f"Error making request to {target_url}: {type(req_err).__name__}: {req_err}", exc_info=True)
+                raise
             
-            # Read response content
-            content = await response.aread()
+            # Get response content as bytes
+            # Use response.content which is a property that returns bytes synchronously
+            # This ensures we get the exact bytes without any encoding issues
+            try:
+                content_bytes = response.content
+                # Ensure we have bytes
+                if not isinstance(content_bytes, bytes):
+                    if isinstance(content_bytes, str):
+                        content_bytes = content_bytes.encode('utf-8')
+                    else:
+                        content_bytes = bytes(content_bytes)
+                logger.debug(f"Retrieved {len(content_bytes)} bytes from response")
+            except Exception as content_err:
+                logger.error(f"Error reading response content: {type(content_err).__name__}: {content_err}", exc_info=True)
+                raise
             
-            # Parse JSON if applicable
+            # Parse JSON if applicable (for caching purposes only)
             response_data = None
             if response.headers.get("content-type", "").startswith("application/json"):
                 try:
-                    response_data = json.loads(content.decode())
-                except:
-                    response_data = {"content": content.decode()}
+                    response_data = json.loads(content_bytes.decode('utf-8'))
+                except Exception as e:
+                    logger.warning(f"Failed to parse JSON response: {e}")
+                    response_data = None
             
             # Cache successful GET responses with appropriate TTL based on endpoint
-            if request.method == "GET" and should_cache and response.status_code == 200 and response_data:
+            # Double-check we're not caching analytics endpoints (defense in depth)
+            if request.method == "GET" and should_cache and response.status_code == 200 and response_data and not any(path_without_query.startswith(skip) for skip in skip_cache_paths):
                 # Determine TTL based on endpoint type
                 cache_ttl = CACHE_TTL
-                if "/health" in path:
+                if "/health" in path_without_query:
                     cache_ttl = 30  # Health checks: 30 seconds
-                elif "/model-types" in path:
+                elif "/model-types" in path_without_query:
                     cache_ttl = 600  # Model types: 10 minutes (rarely changes)
-                elif "/models" in path and "/model/" not in path:
-                    cache_ttl = 180  # Model list: 3 minutes
-                elif "/stats" in path or "/type-stats" in path:
+                elif "/stats" in path_without_query or "/type-stats" in path_without_query:
                     cache_ttl = 120  # Statistics: 2 minutes
-                elif "/tables" in path or "/fields" in path:
+                elif "/tables" in path_without_query or "/fields" in path_without_query:
                     cache_ttl = 300  # Table/field metadata: 5 minutes
                 
                 set_cached_response(cache_key, {
@@ -539,25 +758,29 @@ async def proxy_request(request: Request, path: str):
                     "headers": dict(response.headers)
                 }, ttl=cache_ttl, path=path)
             
-            # Prepare response headers
-            response_headers = dict(response.headers)
-            response_headers.pop("content-length", None)
-            response_headers.pop("transfer-encoding", None)
+            # Prepare response headers - create a new dict and explicitly exclude problematic headers
+            response_headers = {}
+            for key, value in response.headers.items():
+                # Skip headers that FastAPI should handle automatically
+                if key.lower() not in ["content-length", "transfer-encoding", "connection", "keep-alive"]:
+                    response_headers[key] = value
             
-            # Add caching headers for GET requests
-            if request.method == "GET" and should_cache:
+            # Always add no-cache headers for analytics endpoints
+            analytics_paths = ["/history", "/network-logs", "/get-model", "/set-model", "/models", "/recompute-predictions", "/dashboard-kpis"]
+            is_analytics_endpoint = any(path_without_query.startswith(analytics_path) for analytics_path in analytics_paths)
+            
+            # Add caching headers for GET requests (skip for analytics endpoints)
+            if request.method == "GET" and should_cache and not is_analytics_endpoint:
                 if response.status_code == 200:
                     # Determine TTL for Cache-Control header
                     cache_ttl = CACHE_TTL
-                    if "/health" in path:
+                    if "/health" in path_without_query:
                         cache_ttl = 30
-                    elif "/model-types" in path:
+                    elif "/model-types" in path_without_query:
                         cache_ttl = 600
-                    elif "/models" in path and "/model/" not in path:
-                        cache_ttl = 180
-                    elif "/stats" in path or "/type-stats" in path:
+                    elif "/stats" in path_without_query or "/type-stats" in path_without_query:
                         cache_ttl = 120
-                    elif "/tables" in path or "/fields" in path:
+                    elif "/tables" in path_without_query or "/fields" in path_without_query:
                         cache_ttl = 300
                     
                     response_headers["Cache-Control"] = f"public, max-age={cache_ttl}"
@@ -566,52 +789,175 @@ async def proxy_request(request: Request, path: str):
                     response_headers["X-Cache-Key"] = cache_key[:16] if cache_key else ""
                 else:
                     response_headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                    response_headers["Pragma"] = "no-cache"
+                    response_headers["Expires"] = "0"
                     response_headers["X-Cache"] = "BYPASS"
             
-            # Create response
+            # Force no-cache for analytics endpoints
+            if is_analytics_endpoint:
+                response_headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                response_headers["Pragma"] = "no-cache"
+                response_headers["Expires"] = "0"
+                response_headers["X-Cache"] = "BYPASS"
+            
+            # Create response with original content bytes
+            # FastAPI will automatically calculate the correct content-length based on content_bytes
+            # Ensure content is bytes (not string) to avoid encoding issues
+            if not isinstance(content_bytes, bytes):
+                if isinstance(content_bytes, str):
+                    content_bytes = content_bytes.encode('utf-8')
+                else:
+                    content_bytes = bytes(content_bytes)
+            
+            # Get content type from original response
+            content_type = response.headers.get("content-type", "application/json")
+            
+            # Clean content-type header (remove charset for JSON, FastAPI will handle it)
+            if content_type.startswith("application/json"):
+                if "charset" in content_type:
+                    content_type = "application/json"
+            
+            logger.debug(f"Returning response with status {response.status_code}, {len(content_bytes)} bytes, content-type: {content_type}")
+            
+            # Create Response - FastAPI will automatically set Content-Length based on content_bytes size
+            # Do NOT include Content-Length in headers - let FastAPI calculate it
+            # Double-check headers don't contain Content-Length or Transfer-Encoding
+            final_headers = {}
+            for key, value in response_headers.items():
+                key_lower = key.lower()
+                # Explicitly exclude any headers that might interfere with Content-Length calculation
+                if key_lower not in ["content-length", "transfer-encoding", "content-encoding", "content-range"]:
+                    final_headers[key] = value
+            
+            # Use Response with explicit content_length=None to let FastAPI calculate it
+            # This ensures the Content-Length matches the actual content size
             return Response(
-                content=content,
+                content=content_bytes,
                 status_code=response.status_code,
-                headers=response_headers,
-                media_type=response.headers.get("content-type", "application/json")
+                headers=final_headers,
+                media_type=content_type
             )
     
     except httpx.TimeoutException:
-        logger.error(f"Timeout proxying request to {target_url}")
-        raise HTTPException(status_code=504, detail="Gateway timeout")
-    except httpx.ConnectError:
-        logger.error(f"Connection error proxying to {target_url}")
-        raise HTTPException(status_code=503, detail="Backend service unavailable")
+        logger.error(f"Timeout proxying {request.method} {path} to {target_url}")
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "error": "Gateway timeout",
+                "message": f"Backend service did not respond in time",
+                "service": target_service,
+                "path": path
+            }
+        )
+    except httpx.ConnectError as e:
+        # Determine service name for better error message
+        service_name = "Unknown"
+        if target_service == DATA_INGESTION_SERVICE:
+            service_name = "Data Ingestion Service"
+        elif target_service == MODEL_SERVICE:
+            service_name = "Model Service"
+        elif target_service == USER_SERVICE:
+            service_name = "User Service"
+        
+        logger.error(f"Connection error proxying {request.method} {path} to {target_url} - {service_name} appears to be down: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "Backend service unavailable",
+                "message": f"{service_name} is not responding. Please ensure the service is running.",
+                "service": target_service,
+                "service_name": service_name,
+                "path": path,
+                "target_url": target_url
+            }
+        )
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error {e.response.status_code} from {target_url}: {e}")
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail={
+                "error": "Backend service error",
+                "message": f"Backend service returned error status {e.response.status_code}",
+                "service": target_service,
+                "path": path
+            }
+        )
     except Exception as e:
-        logger.error(f"Error proxying request: {e}")
-        raise HTTPException(status_code=502, detail=f"Gateway error: {str(e)}")
+        logger.error(f"Error proxying {request.method} {path} to {target_url}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "Gateway error",
+                "message": f"Unexpected error while proxying request: {str(e)}",
+                "service": target_service,
+                "path": path
+            }
+        )
 
 
 async def connect_to_data_generation_websocket():
     """Connect to the data generation WebSocket endpoint in User Service"""
     ws_url = f"{USER_SERVICE.replace('http://', 'ws://')}/ws/generate-data"
-    logger.info(f"Connecting to data generation WebSocket: {ws_url}")
+    reconnect_delay = 5  # Start with 5 seconds
+    max_delay = 60  # Maximum delay of 60 seconds
+    consecutive_failures = 0
     
-    try:
-        async with websockets.connect(ws_url) as websocket:
-            logger.info("Connected to data generation WebSocket")
-            while True:
-                try:
-                    # Keep connection alive - we don't need to process messages
-                    message = await websocket.recv()
-                    logger.debug(f"Received message from data generation WebSocket: {message[:100]}")
-                except ConnectionClosed:
-                    logger.warning("Data generation WebSocket connection closed")
-                    break
-                except Exception as e:
-                    logger.error(f"Error in data generation WebSocket: {e}")
-                    break
-    except Exception as e:
-        logger.error(f"Failed to connect to data generation WebSocket: {e}")
-    
-    # Reconnect after delay
-    await asyncio.sleep(5)
-    asyncio.create_task(connect_to_data_generation_websocket())
+    while True:
+        try:
+            # Check if User Service is up before attempting WebSocket connection
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    health_check = await client.get(f"{USER_SERVICE}/health")
+                    if health_check.status_code != 200:
+                        raise Exception("Health check failed")
+            except Exception:
+                # Service is down, wait before retrying
+                if consecutive_failures == 0:
+                    logger.warning(f"User Service appears to be down. Will retry WebSocket connection in {reconnect_delay}s")
+                consecutive_failures += 1
+                await asyncio.sleep(reconnect_delay)
+                # Exponential backoff with max delay
+                reconnect_delay = min(reconnect_delay * 1.5, max_delay)
+                continue
+            
+            # Service is up, attempt WebSocket connection
+            logger.info(f"Connecting to data generation WebSocket: {ws_url}")
+            async with websockets.connect(ws_url, ping_interval=30, ping_timeout=10) as websocket:
+                logger.info("Connected to data generation WebSocket")
+                consecutive_failures = 0
+                reconnect_delay = 5  # Reset delay on successful connection
+                
+                while True:
+                    try:
+                        # Keep connection alive - we don't need to process messages
+                        message = await websocket.recv()
+                        logger.debug(f"Received message from data generation WebSocket: {message[:100]}")
+                    except ConnectionClosed:
+                        logger.warning("Data generation WebSocket connection closed")
+                        break
+                    except Exception as e:
+                        logger.error(f"Error in data generation WebSocket: {e}")
+                        break
+        except websockets.exceptions.InvalidURI:
+            logger.error(f"Invalid WebSocket URI: {ws_url}")
+            await asyncio.sleep(30)  # Wait longer for configuration errors
+            continue
+        except (ConnectionRefusedError, OSError) as e:
+            # Connection refused - service is likely down
+            consecutive_failures += 1
+            if consecutive_failures == 1 or consecutive_failures % 10 == 0:
+                # Only log every 10th failure to reduce log noise
+                logger.warning(f"User Service WebSocket connection refused (attempt {consecutive_failures}). Service may be down. Retrying in {reconnect_delay}s")
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 1.5, max_delay)
+            continue
+        except Exception as e:
+            consecutive_failures += 1
+            if consecutive_failures == 1 or consecutive_failures % 5 == 0:
+                logger.error(f"Failed to connect to data generation WebSocket (attempt {consecutive_failures}): {e}")
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 1.5, max_delay)
+            continue
 
 
 @app.on_event("startup")

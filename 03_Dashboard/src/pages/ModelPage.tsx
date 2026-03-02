@@ -131,7 +131,7 @@ export default function ModelPage() {
     // The search should be handled server-side, but for now we'll only filter if there's a search query
     // and we'll adjust rowCount accordingly
     if (!searchQuery) return rows;
-    const q = searchQuery.toLowerCase();
+      const q = searchQuery.toLowerCase();
     return rows.filter((r) => Object.values(r).some((v) => String(v).toLowerCase().includes(q)));
   }, [rows, searchQuery]);
 
@@ -1558,13 +1558,13 @@ export default function ModelPage() {
                   onInputChange={(_, newValue) => setModelName(newValue)}
                   loading={modelTypesLoading}
                   renderInput={(params) => (
-                    <TextField
+                <TextField
                       {...params}
-                      fullWidth
-                      size="small"
-                      label="Model Name"
+                  fullWidth
+                  size="small"
+                  label="Model Name"
                       placeholder="e.g., AEv1, IFv1, RFv1, or custom name"
-                      error={!!modelNameError}
+                  error={!!modelNameError}
                       helperText={modelNameError || 'Required: Unique name for this model. Select from available types or enter custom name.'}
                       InputProps={{
                         ...params.InputProps,
@@ -1584,9 +1584,9 @@ export default function ModelPage() {
                   <Select
                     labelId="model-architecture-label"
                     id="model-architecture-select"
-                    value={modelType}
+                  value={modelType}
                     label="Select Model Architecture"
-                    onChange={(e) => setModelType(e.target.value)}
+                  onChange={(e) => setModelType(e.target.value)}
                     disabled={modelTypesLoading || modelTypes.length === 0}
                   >
                     {modelTypes.length > 0 ? (

@@ -1,0 +1,125 @@
+version: '3.8'
+
+# Development docker-compose with hot reload and volume mounts
+
+services:
+  # Data Ingestion Service
+  data-ingestion:
+    build:
+      context: ./01_Data_Ingestion_Service
+      dockerfile: Dockerfile
+    container_name: campus-iot-data-ingestion-dev
+    ports:
+      - "8000:8000"
+      - "50051:50051"
+    environment:
+      - DB_PATH=/app/data/campus_iot_data.db
+      - GRPC_PORT=50051
+      - ERROR_ONLY_LOGGING=false
+    volumes:
+      - ./01_Data_Ingestion_Service:/app
+      - data-ingestion-db:/app/data
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - campus-iot-network
+    restart: unless-stopped
+
+  # Model Service
+  model-service:
+    build:
+      context: ./02_Model_Service
+      dockerfile: Dockerfile
+    container_name: campus-iot-model-service-dev
+    ports:
+      - "8001:8001"
+      - "50052:50052"
+    environment:
+      - API_BASE_URL=http://data-ingestion:8000
+      - GRPC_PORT=50052
+      - DATA_INGESTION_GRPC=data-ingestion:50051
+      - ERROR_ONLY_LOGGING=false
+    volumes:
+      - ./02_Model_Service:/app
+      - model-models:/app/models
+    command: uvicorn model_api:app --host 0.0.0.0 --port 8001 --reload
+    depends_on:
+      - data-ingestion
+    networks:
+      - campus-iot-network
+    restart: unless-stopped
+
+  # User Service
+  user-service:
+    build:
+      context: ./04_User_Service
+      dockerfile: Dockerfile
+    container_name: campus-iot-user-service-dev
+    ports:
+      - "8002:8002"
+    environment:
+      - MODEL_API_URL=http://model-service:8001
+      - MODEL_SERVICE_GRPC=model-service:50052
+      - ERROR_ONLY_LOGGING=false
+    volumes:
+      - ./04_User_Service:/app
+      - user-service-db:/app/data
+    command: uvicorn user_service:app --host 0.0.0.0 --port 8002 --reload
+    depends_on:
+      - model-service
+    networks:
+      - campus-iot-network
+    restart: unless-stopped
+
+  # API Gateway
+  gateway:
+    build:
+      context: ./05_Gateway_Proxy
+      dockerfile: Dockerfile
+    container_name: campus-iot-gateway-dev
+    ports:
+      - "8003:8003"
+    environment:
+      - DATA_INGESTION_SERVICE=http://data-ingestion:8000
+      - MODEL_SERVICE=http://model-service:8001
+      - USER_SERVICE=http://user-service:8002
+      - ERROR_ONLY_LOGGING=false
+    volumes:
+      - ./05_Gateway_Proxy:/app
+    command: uvicorn gateway:app --host 0.0.0.0 --port 8003 --reload
+    depends_on:
+      - data-ingestion
+      - model-service
+      - user-service
+    networks:
+      - campus-iot-network
+    restart: unless-stopped
+
+  # Frontend Dashboard (dev mode with Vite)
+  dashboard:
+    build:
+      context: ./03_Dashboard
+      dockerfile: Dockerfile.dev
+    container_name: campus-iot-dashboard-dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./03_Dashboard:/app
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0
+    depends_on:
+      - gateway
+    networks:
+      - campus-iot-network
+    restart: unless-stopped
+
+volumes:
+  data-ingestion-db:
+    driver: local
+  model-models:
+    driver: local
+  user-service-db:
+    driver: local
+
+networks:
+  campus-iot-network:
+    driver: bridge
