@@ -469,6 +469,20 @@ def extract_features_and_labels(data_records: List[Dict], include_fields: Option
     
     df = pd.DataFrame(rows)
     
+    # Log available columns for debugging
+    logger.info(f"Available columns in data: {list(df.columns)}")
+    
+    # Check for attack_cat column (case-insensitive)
+    attack_cat_col = None
+    for col in df.columns:
+        if col.lower() == 'attack_cat' or col.lower() == 'attackcat':
+            attack_cat_col = col
+            break
+    
+    if attack_cat_col and attack_cat_col != 'attack_cat':
+        logger.info(f"Found attack category column '{attack_cat_col}', renaming to 'attack_cat'")
+        df = df.rename(columns={attack_cat_col: 'attack_cat'})
+    
     if "label" not in df.columns:
         raise ValueError("'label' column not found in data.")
     
@@ -504,7 +518,7 @@ def extract_features_and_labels(data_records: List[Dict], include_fields: Option
     X = df[feature_cols].copy()
     y = df["label"].copy()
     
-    # Extract attack_cat if available
+    # Extract attack_cat column if available
     y_attack_cat = None
     if "attack_cat" in df.columns:
         y_attack_cat = df["attack_cat"].copy()
@@ -625,13 +639,40 @@ def evaluate_rf_model(model: RandomForestClassifier, X_test: pd.DataFrame,
                    y_test: np.ndarray) -> Dict[str, Any]:
     """Evaluate Random Forest model and return metrics."""
     y_pred = model.predict(X_test)
-    y_pred_proba = model.predict_proba(X_test)[:, 1]
+    proba = model.predict_proba(X_test)
+    # Handle case where model might only have one class (shouldn't happen but be defensive)
+    if proba.shape[1] == 1:
+        # Only one class - use that class's probability
+        y_pred_proba = proba[:, 0]
+    elif proba.shape[1] >= 2:
+        # Binary or multi-class: use probability of class 1 (unsafe/anomaly)
+        y_pred_proba = proba[:, 1]
+    else:
+        # Fallback: use predictions as probabilities
+        y_pred_proba = y_pred.astype(float)
     
     accuracy = accuracy_score(y_test, y_pred)
     precision = precision_score(y_test, y_pred, zero_division=0)
     recall = recall_score(y_test, y_pred, zero_division=0)
     f1 = f1_score(y_test, y_pred, zero_division=0)
     cm = confusion_matrix(y_test, y_pred)
+    
+    # Calculate ROC AUC and PR AUC using probabilities
+    try:
+        # Check if we have both classes in y_test for ROC AUC calculation
+        unique_classes = np.unique(y_test)
+        if len(unique_classes) >= 2:
+            roc_auc = roc_auc_score(y_test, y_pred_proba)
+            pr_auc = average_precision_score(y_test, y_pred_proba)
+        else:
+            # Only one class in test data - can't calculate AUC
+            logger.warning(f"Only one class ({unique_classes[0]}) in test data. Cannot calculate ROC AUC and PR AUC.")
+            roc_auc = 0.0
+            pr_auc = 0.0
+    except ValueError as e:
+        logger.warning(f"Could not calculate AUC metrics: {e}")
+        roc_auc = 0.0
+        pr_auc = 0.0
     
     # Feature importance
     feature_importance = model.feature_importances_
@@ -647,6 +688,8 @@ def evaluate_rf_model(model: RandomForestClassifier, X_test: pd.DataFrame,
         'recall': float(recall),
         'f1_score': float(f1),
         'confusion_matrix': cm.tolist(),
+        'roc_auc': float(roc_auc),
+        'pr_auc': float(pr_auc),
         'feature_importance': importance_df.head(20).to_dict('records')
     }
     
@@ -1200,18 +1243,20 @@ async def train(
                 max_depth=train_request.max_depth,
                 random_state=train_request.random_state
             )
-            # Train separate model for attack category (multi-class) if attack_cat is available
+            # Train separate model for attack category using the 'attack_cat' column if available
             if y_attack_cat_train is not None and len(y_attack_cat_train) > 0:
                 # Only train on unsafe samples (label == 1) for attack category
                 unsafe_mask = (y_train == 1)
                 if unsafe_mask.sum() > 0:
                     X_unsafe = X_train[unsafe_mask]
                     y_attack_cat_unsafe = y_attack_cat_train[unsafe_mask]
-                    # Filter out "Normal" category from unsafe samples
+                    
+                    # Filter out "Normal" category from unsafe samples (unsafe samples shouldn't be "Normal")
                     non_normal_mask = (y_attack_cat_unsafe != "Normal") & (y_attack_cat_unsafe != "")
                     if non_normal_mask.sum() > 0:
                         X_attack_train = X_unsafe[non_normal_mask]
                         y_attack_train = y_attack_cat_unsafe[non_normal_mask]
+                        
                         # Encode string labels to numeric for Random Forest
                         label_encoder = LabelEncoder()
                         y_attack_train_encoded = label_encoder.fit_transform(y_attack_train.values)
@@ -1222,7 +1267,7 @@ async def train(
                             random_state=train_request.random_state
                         )
                         attack_cat_classes = label_encoder.classes_.tolist()
-                        logger.info(f"Trained attack category model with {len(attack_cat_classes)} categories: {attack_cat_classes}")
+                        logger.info(f"Trained attack category model using 'attack_cat' column with {len(attack_cat_classes)} categories: {attack_cat_classes}")
             training_params = {
                 'model_type': 'RandomForestClassifier',
                 'n_estimators': train_request.n_estimators,
@@ -1615,22 +1660,65 @@ async def predict(
         if model_type == 'RFv1':
             # Random Forest: supervised model with predict_proba
             predictions = model.predict(X)
-            probabilities = model.predict_proba(X)
+            proba = model.predict_proba(X)
             label_mapping = metadata.get('label_mapping', {'0': 'safe', '1': 'unsafe'})
+            
+            # Handle case where model might only have one class
+            if proba.shape[1] == 1:
+                # Only one class - check which class the model has
+                model_classes = model.classes_
+                prob_single = proba[:, 0]
+                
+                if len(model_classes) == 1:
+                    # Model only has one class - determine if it's class 0 (safe) or class 1 (unsafe)
+                    if model_classes[0] == 0:
+                        # Model only predicts safe (0)
+                        probabilities = np.column_stack([prob_single, 1.0 - prob_single])
+                        logger.warning(f"Model has only class 0 (safe). Creating probabilities: safe={prob_single}, unsafe={1.0 - prob_single}")
+                    elif model_classes[0] == 1:
+                        # Model only predicts unsafe (1)
+                        probabilities = np.column_stack([1.0 - prob_single, prob_single])
+                        logger.warning(f"Model has only class 1 (unsafe). Creating probabilities: safe={1.0 - prob_single}, unsafe={prob_single}")
+                    else:
+                        # Unknown class - assume it's unsafe
+                        probabilities = np.column_stack([1.0 - prob_single, prob_single])
+                        logger.warning(f"Model has unknown single class {model_classes[0]}. Assuming unsafe probabilities.")
+                else:
+                    # Fallback: assume unsafe
+                    probabilities = np.column_stack([1.0 - prob_single, prob_single])
+                    logger.warning(f"Model predict_proba returned 1 column but classes={model_classes}. Assuming unsafe probabilities.")
+            elif proba.shape[1] >= 2:
+                # Binary or multi-class: use as is
+                probabilities = proba
+            else:
+                # Fallback: create probabilities from predictions
+                pred_float = predictions.astype(float)
+                probabilities = np.column_stack([1.0 - pred_float, pred_float])
+                logger.warning("Could not get probabilities from model, using predictions as probabilities")
             
             # Predict attack categories for unsafe samples if attack_cat_model is available
             attack_cat_predictions = None
             attack_cat_probabilities = None
             unsafe_indices = None
             if attack_cat_model is not None:
+                logger.info("Attack category model found, attempting to predict attack categories for unsafe samples")
                 # Only predict attack category for samples predicted as unsafe
                 unsafe_indices = np.where(predictions == 1)[0]
+                logger.info(f"Found {len(unsafe_indices)} unsafe samples out of {len(predictions)} total")
                 if len(unsafe_indices) > 0:
                     X_unsafe = X[unsafe_indices]
                     attack_cat_predictions_raw = attack_cat_model.predict(X_unsafe)
                     attack_cat_probabilities_raw = attack_cat_model.predict_proba(X_unsafe)
-                    # Get class names from the model
+                    # Get class names from metadata or use model's classes_ attribute
                     attack_cat_classes = metadata.get('attack_cat_classes', [])
+                    if len(attack_cat_classes) == 0:
+                        # Fallback: try to get classes from the model itself
+                        if hasattr(attack_cat_model, 'classes_'):
+                            attack_cat_classes = attack_cat_model.classes_.tolist()
+                            logger.info(f"Using attack_cat_classes from model: {attack_cat_classes}")
+                        else:
+                            logger.warning("attack_cat_classes not found in metadata and model has no classes_ attribute")
+                    
                     if len(attack_cat_classes) > 0:
                         # Map predictions to class names
                         attack_cat_predictions = [attack_cat_classes[int(pred)] for pred in attack_cat_predictions_raw]
@@ -1639,29 +1727,48 @@ async def predict(
                         for probs in attack_cat_probabilities_raw:
                             prob_dict = {attack_cat_classes[i]: float(probs[i]) for i in range(len(attack_cat_classes))}
                             attack_cat_probabilities.append(prob_dict)
+                        logger.info(f"Successfully predicted {len(attack_cat_predictions)} attack categories: {attack_cat_predictions[:5]}")
+                    else:
+                        logger.warning("attack_cat_classes is empty, cannot map predictions to category names")
+                else:
+                    logger.info("No unsafe samples found, skipping attack category prediction")
+            else:
+                logger.info("No attack category model found for this model")
             
             for i in range(len(predictions)):
-                pred = int(predictions[i])
+                pred_binary = int(predictions[i])
+                # Calculate risk percentage (0-100) based on probability_unsafe
+                risk_percentage = float(probabilities[i][1] * 100)
                 result = {
-                    'prediction': pred,
-                    'label': label_mapping.get(str(pred), 'unknown'),
+                    'prediction': round(risk_percentage, 2),  # Risk percentage (0-100)
+                    'label': label_mapping.get(str(pred_binary), 'unknown'),
                     'probability_safe': float(probabilities[i][0]),
                     'probability_unsafe': float(probabilities[i][1]),
                     'confidence': float(max(probabilities[i]))
                 }
                 
                 # Add attack category prediction if available and sample is unsafe
-                if pred == 1 and attack_cat_model is not None and attack_cat_predictions is not None and unsafe_indices is not None:
-                    # Find the position of this sample in the unsafe_indices array
-                    pos_in_unsafe = np.where(unsafe_indices == i)[0]
-                    if len(pos_in_unsafe) > 0:
-                        idx = pos_in_unsafe[0]
-                        result['attack_cat'] = attack_cat_predictions[idx]
-                        result['attack_cat_probabilities'] = attack_cat_probabilities[idx]
-                    else:
+                if pred_binary == 1:  # Unsafe/anomaly prediction (using binary for logic)
+                    if attack_cat_model is not None and attack_cat_predictions is not None and unsafe_indices is not None:
+                        # Find the position of this sample in the unsafe_indices array
+                        pos_in_unsafe = np.where(unsafe_indices == i)[0]
+                        if len(pos_in_unsafe) > 0:
+                            idx = pos_in_unsafe[0]
+                            result['attack_cat'] = attack_cat_predictions[idx]
+                            result['attack_cat_probabilities'] = attack_cat_probabilities[idx] if attack_cat_probabilities else {}
+                        else:
+                            result['attack_cat'] = 'Unknown'
+                            result['attack_cat_probabilities'] = {}
+                    elif attack_cat_model is not None:
+                        # Attack category model exists but predictions weren't generated (likely missing attack_cat_classes)
                         result['attack_cat'] = 'Unknown'
                         result['attack_cat_probabilities'] = {}
-                elif pred == 0:
+                        logger.debug(f"Attack category model exists but no predictions for sample {i}")
+                    else:
+                        # No attack category model available
+                        result['attack_cat'] = None
+                        result['attack_cat_probabilities'] = {}
+                elif pred_binary == 0:
                     # Safe samples don't have attack categories
                     result['attack_cat'] = 'Normal'
                     result['attack_cat_probabilities'] = {}
@@ -1689,12 +1796,14 @@ async def predict(
                 normalized_scores = np.zeros_like(scores)
             
             for i in range(len(predictions)):
-                pred = int(predictions[i])
+                pred_binary = int(predictions[i])
                 prob_unsafe = float(normalized_scores[i])
                 prob_safe = 1.0 - prob_unsafe
+                # Calculate risk percentage (0-100) based on probability_unsafe
+                risk_percentage = round(prob_unsafe * 100, 2)
                 results.append({
-                    'prediction': pred,
-                    'label': 'unsafe' if pred == 1 else 'safe',
+                    'prediction': risk_percentage,  # Risk percentage (0-100)
+                    'label': 'unsafe' if pred_binary == 1 else 'safe',
                     'probability_safe': prob_safe,
                     'probability_unsafe': prob_unsafe,
                     'confidence': max(prob_safe, prob_unsafe),
@@ -1731,12 +1840,14 @@ async def predict(
                 normalized_errors = np.zeros_like(mse)
             
             for i in range(len(predictions)):
-                pred = int(predictions[i])
+                pred_binary = int(predictions[i])
                 prob_unsafe = float(normalized_errors[i])
                 prob_safe = 1.0 - prob_unsafe
+                # Calculate risk percentage (0-100) based on probability_unsafe
+                risk_percentage = round(prob_unsafe * 100, 2)
                 results.append({
-                    'prediction': pred,
-                    'label': 'unsafe' if pred == 1 else 'safe',
+                    'prediction': risk_percentage,  # Risk percentage (0-100)
+                    'label': 'unsafe' if pred_binary == 1 else 'safe',
                     'probability_safe': prob_safe,
                     'probability_unsafe': prob_unsafe,
                     'confidence': max(prob_safe, prob_unsafe)

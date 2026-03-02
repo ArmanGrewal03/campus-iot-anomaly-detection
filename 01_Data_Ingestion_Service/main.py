@@ -1004,9 +1004,28 @@ async def validate_data(
         else:
             logger.info(f"Total rows: {total_rows}, Training: {training_count}, Testing: {testing_count} (labels not modified)")
         
-        # Shuffle rows for random assignment
-        row_data_list = [(row['id'], row['row_data']) for row in all_rows]
-        random.shuffle(row_data_list)
+        # Separate rows by existing label for stratified split
+        label_0_rows = []
+        label_1_rows = []
+        label_unknown_rows = []
+        
+        for row in all_rows:
+            try:
+                row_data = json.loads(row['row_data'])
+                label = row_data.get('label')
+                if label == 0 or label == '0':
+                    label_0_rows.append((row['id'], row['row_data']))
+                elif label == 1 or label == '1':
+                    label_1_rows.append((row['id'], row['row_data']))
+                else:
+                    label_unknown_rows.append((row['id'], row['row_data']))
+            except (json.JSONDecodeError, KeyError):
+                label_unknown_rows.append((row['id'], row['row_data']))
+        
+        # Shuffle each group separately for stratified split
+        random.shuffle(label_0_rows)
+        random.shuffle(label_1_rows)
+        random.shuffle(label_unknown_rows)
         
         # Begin transaction for atomic label and training/testing assignment
         try:
@@ -1014,10 +1033,14 @@ async def validate_data(
             
             # Assign labels if requested
             if assign_labels:
-                label_0_rows = row_data_list[:label_0_count]
-                label_1_rows = row_data_list[label_0_count:]
+                # Combine all rows and shuffle for label assignment
+                all_rows_list = label_0_rows + label_1_rows + label_unknown_rows
+                random.shuffle(all_rows_list)
                 
-                for row_id, row_data_json in label_0_rows:
+                label_0_assigned = all_rows_list[:label_0_count]
+                label_1_assigned = all_rows_list[label_0_count:]
+                
+                for row_id, row_data_json in label_0_assigned:
                     try:
                         row_data = json.loads(row_data_json)
                         row_data['label'] = 0
@@ -1026,7 +1049,7 @@ async def validate_data(
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Failed to update label for row {row_id}: {e}")
                 
-                for row_id, row_data_json in label_1_rows:
+                for row_id, row_data_json in label_1_assigned:
                     try:
                         row_data = json.loads(row_data_json)
                         row_data['label'] = 1
@@ -1034,10 +1057,29 @@ async def validate_data(
                         cursor.execute(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", (updated_json, row_id))
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Failed to update label for row {row_id}: {e}")
+                
+                # Re-separate by newly assigned labels for stratified split
+                label_0_rows = label_0_assigned
+                label_1_rows = label_1_assigned
+                label_unknown_rows = []
             
-            # Assign training/testing split
-            training_ids = set([row_id for row_id, _ in row_data_list[:training_count]])
-            testing_ids = set([row_id for row_id, _ in row_data_list[training_count:]])
+            # Stratified split: ensure both classes are in both training and testing
+            # Calculate how many of each label should go to training
+            label_0_train_count = int(len(label_0_rows) * train_pct)
+            label_1_train_count = int(len(label_1_rows) * train_pct)
+            unknown_train_count = int(len(label_unknown_rows) * train_pct)
+            
+            # Split each label group
+            label_0_training = label_0_rows[:label_0_train_count]
+            label_0_testing = label_0_rows[label_0_train_count:]
+            label_1_training = label_1_rows[:label_1_train_count]
+            label_1_testing = label_1_rows[label_1_train_count:]
+            unknown_training = label_unknown_rows[:unknown_train_count]
+            unknown_testing = label_unknown_rows[unknown_train_count:]
+            
+            # Combine training and testing sets
+            training_ids = set([row_id for row_id, _ in label_0_training + label_1_training + unknown_training])
+            testing_ids = set([row_id for row_id, _ in label_0_testing + label_1_testing + unknown_testing])
             
             updated_training = 0
             updated_testing = 0

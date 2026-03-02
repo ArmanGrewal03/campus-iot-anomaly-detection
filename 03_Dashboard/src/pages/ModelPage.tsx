@@ -941,15 +941,35 @@ export default function ModelPage() {
       const result = await res.json();
       if (!res.ok) throw new Error(result.detail || 'Prediction failed');
 
+      // Debug: log the raw response to see attack_cat
+      console.log('Prediction response:', result);
+      if (result.predictions && result.predictions.length > 0) {
+        console.log('First prediction:', result.predictions[0]);
+        console.log('attack_cat in first prediction:', result.predictions[0]?.attack_cat);
+      }
+
       // Transform backend response to match frontend expectations
-      const transformedResults = (result.predictions || []).map((pred: any, idx: number) => ({
-        index: idx,
-        label: pred.label || (pred.prediction === 0 ? 'normal' : 'anomaly'),
-        confidence: pred.confidence || pred.probability_safe || 0,
-        prediction: pred.prediction,
-        probability_safe: pred.probability_safe,
-        probability_unsafe: pred.probability_unsafe,
-      }));
+      const transformedResults = (result.predictions || []).map((pred: any, idx: number) => {
+        // prediction is now a percentage (0-100), not binary 0/1
+        const riskPercentage = typeof pred.prediction === 'number' ? pred.prediction : (pred.prediction === 1 ? 100 : 0);
+        const isAnomaly = riskPercentage >= 50; // Consider >= 50% as anomaly
+        
+        const transformed = {
+          index: idx,
+          label: pred.label || (isAnomaly ? 'anomaly' : 'normal'),
+          confidence: pred.confidence || pred.probability_safe || 0,
+          prediction: riskPercentage, // Risk percentage (0-100)
+          probability_safe: pred.probability_safe,
+          probability_unsafe: pred.probability_unsafe,
+          attack_cat: pred.attack_cat || null,
+          attack_cat_probabilities: pred.attack_cat_probabilities || {},
+        };
+        // Debug: log attack_cat for anomalies
+        if (isAnomaly) {
+          console.log(`Sample ${idx}: attack_cat =`, transformed.attack_cat);
+        }
+        return transformed;
+      });
       setPredictionResults(transformedResults);
       setSnackbar({ open: true, message: `Successfully generated ${result.results.length} predictions.`, severity: 'success' });
     } catch (err) {
@@ -2401,7 +2421,7 @@ export default function ModelPage() {
                   <Typography variant="subtitle2" gutterBottom>Prediction Results (Recent)</Typography>
                   <Stack spacing={1}>
                     {predictionResults.slice(0, 5).map((res, idx) => (
-                      <Stack key={idx} direction="row" justifyContent="space-between" alignItems="center">
+                      <Stack key={idx} direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" spacing={1}>
                         <Typography variant="body2">Sample #{res.index + 1}</Typography>
                         <Chip
                           label={res.label.toUpperCase()}
@@ -2409,8 +2429,32 @@ export default function ModelPage() {
                           color={res.label === 'anomaly' ? 'error' : 'success'}
                           sx={{ fontWeight: 700 }}
                         />
+                        {res.attack_cat && res.attack_cat !== 'Normal' && res.attack_cat !== null && res.attack_cat !== 'Unknown' && (
+                          <Chip
+                            label={`Attack: ${res.attack_cat}`}
+                            size="small"
+                            color="error"
+                            variant="outlined"
+                          />
+                        )}
+                        {res.attack_cat === 'Unknown' && (
+                          <Chip
+                            label="Attack: Unknown"
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                          />
+                        )}
+                        {typeof res.prediction === 'number' && res.prediction >= 50 && !res.attack_cat && (
+                          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+                            (No attack category model)
+                          </Typography>
+                        )}
                         <Typography variant="caption" color="text.secondary">
-                          {(res.confidence * 100).toFixed(1)}% Confidence
+                          Risk: {typeof res.prediction === 'number' ? res.prediction.toFixed(1) : (res.prediction * 100).toFixed(1)}%
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Confidence: {(res.confidence * 100).toFixed(1)}%
                         </Typography>
                       </Stack>
                     ))}
