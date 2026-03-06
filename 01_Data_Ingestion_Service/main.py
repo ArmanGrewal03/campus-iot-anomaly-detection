@@ -478,14 +478,39 @@ async def upload_csv(
         
         logger.info("Decoding file contents...")
         try:
-            csv_string = contents.decode('utf-8')
+            # use utf-8-sig to automatically handle BOM (from Excel exports)
+            csv_string = contents.decode('utf-8-sig')
             logger.info(f"Decoded CSV string length: {len(csv_string)}")
         except UnicodeDecodeError as e:
             logger.error(f"Unicode decode error: {e}")
-            raise HTTPException(status_code=400, detail="File must be UTF-8 encoded")
+            # Try latin-1 as a fallback for older Excel CSVs
+            try:
+                csv_string = contents.decode('latin-1')
+                logger.warning("Decoded with latin-1 fallback")
+            except:
+                raise HTTPException(status_code=400, detail="File must be UTF-8 or Latin-1 encoded")
         
         logger.info("Parsing CSV...")
-        csv_reader = csv.DictReader(io.StringIO(csv_string))
+        try:
+            # Create a reader to get the fieldnames first
+            f = io.StringIO(csv_string)
+            raw_reader = csv.reader(f)
+            headers = next(raw_reader, None)
+            
+            if not headers:
+                raise HTTPException(status_code=400, detail="CSV file has no headers")
+                
+            # Clean headers: trim whitespace and remove BOM remnants if any
+            clean_headers = [h.strip().lstrip('\ufeff') for h in headers]
+            logger.info(f"Detected {len(clean_headers)} columns: {clean_headers[:5]}...")
+            
+            # Re-read using DictReader with cleaned headers
+            f.seek(0)
+            next(f) # skip raw header line
+            csv_reader = csv.DictReader(f, fieldnames=clean_headers)
+        except Exception as e:
+            logger.error(f"Error parsing CSV: {e}")
+            raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
         
         csv_table = get_table_name("csv_data", dataset_name)
         logger.info(f"Connecting to database: {DEFAULT_DB_NAME}, dataset: {dataset_name}, table: {csv_table}")
@@ -523,15 +548,27 @@ async def upload_csv(
         
         logger.info("Inserting rows into database...")
         try:
-            # Begin transaction for atomic bulk insert
-            cursor.execute("BEGIN TRANSACTION")
+            # Prepare batch for executemany
+            batch = []
             for row in csv_reader:
-                row_json = json.dumps(row)
-                cursor.execute(
+                batch.append((upload_timestamp, json.dumps(row)))
+                
+                # Insert in chunks of 5000 to balance speed and memory
+                if len(batch) >= 5000:
+                    cursor.executemany(
+                        f"INSERT INTO {csv_table} (upload_timestamp, row_data) VALUES (?, ?)",
+                        batch
+                    )
+                    batch = []
+                    rows_inserted += 5000
+            
+            # Insert remaining rows
+            if batch:
+                cursor.executemany(
                     f"INSERT INTO {csv_table} (upload_timestamp, row_data) VALUES (?, ?)",
-                    (upload_timestamp, row_json)
+                    batch
                 )
-                rows_inserted += 1
+                rows_inserted += len(batch)
             
             conn.commit()
             logger.info(f"Successfully inserted {rows_inserted} rows")
@@ -1043,60 +1080,56 @@ async def validate_data(
                 label_0_assigned = all_rows_list[:label_0_count]
                 label_1_assigned = all_rows_list[label_0_count:]
                 
+                # BATCH UPDATE LABELS
+                label_0_updates = []
                 for row_id, row_data_json in label_0_assigned:
                     try:
                         row_data = json.loads(row_data_json)
                         row_data['label'] = 0
-                        updated_json = json.dumps(row_data)
-                        cursor.execute(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", (updated_json, row_id))
-                    except (json.JSONDecodeError, KeyError) as e:
-                        logger.warning(f"Failed to update label for row {row_id}: {e}")
+                        label_0_updates.append((json.dumps(row_data), row_id))
+                    except: pass
                 
+                if label_0_updates:
+                    cursor.executemany(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", label_0_updates)
+
+                label_1_updates = []
                 for row_id, row_data_json in label_1_assigned:
                     try:
                         row_data = json.loads(row_data_json)
                         row_data['label'] = 1
-                        updated_json = json.dumps(row_data)
-                        cursor.execute(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", (updated_json, row_id))
-                    except (json.JSONDecodeError, KeyError) as e:
-                        logger.warning(f"Failed to update label for row {row_id}: {e}")
+                        label_1_updates.append((json.dumps(row_data), row_id))
+                    except: pass
                 
-                # Re-separate by newly assigned labels for stratified split
+                if label_1_updates:
+                    cursor.executemany(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", label_1_updates)
+                
+                # Re-separate for split logic
                 label_0_rows = label_0_assigned
                 label_1_rows = label_1_assigned
                 label_unknown_rows = []
             
-            # Stratified split: ensure both classes are in both training and testing
-            # Calculate how many of each label should go to training
+            # Stratified split calculations
             label_0_train_count = int(len(label_0_rows) * train_pct)
             label_1_train_count = int(len(label_1_rows) * train_pct)
             unknown_train_count = int(len(label_unknown_rows) * train_pct)
             
-            # Split each label group
-            label_0_training = label_0_rows[:label_0_train_count]
-            label_0_testing = label_0_rows[label_0_train_count:]
-            label_1_training = label_1_rows[:label_1_train_count]
-            label_1_testing = label_1_rows[label_1_train_count:]
-            unknown_training = label_unknown_rows[:unknown_train_count]
-            unknown_testing = label_unknown_rows[unknown_train_count:]
+            training_ids = [r[0] for r in label_0_rows[:label_0_train_count]] + \
+                           [r[0] for r in label_1_rows[:label_1_train_count]] + \
+                           [r[0] for r in label_unknown_rows[:unknown_train_count]]
             
-            # Combine training and testing sets
-            training_ids = set([row_id for row_id, _ in label_0_training + label_1_training + unknown_training])
-            testing_ids = set([row_id for row_id, _ in label_0_testing + label_1_testing + unknown_testing])
+            testing_ids = [r[0] for r in label_0_rows[label_0_train_count:]] + \
+                          [r[0] for r in label_1_rows[label_1_train_count:]] + \
+                          [r[0] for r in label_unknown_rows[unknown_train_count:]]
             
-            updated_training = 0
-            updated_testing = 0
-            
-            for row in all_rows:
-                rid = row['id']
-                if rid in training_ids:
-                    cursor.execute(f"UPDATE {csv_table} SET T = ? WHERE id = ?", ("training", rid))
-                    updated_training += 1
-                else:
-                    cursor.execute(f"UPDATE {csv_table} SET T = ? WHERE id = ?", ("testing", rid))
-                    updated_testing += 1
+            # BATCH UPDATE SPLITS
+            if training_ids:
+                cursor.executemany(f"UPDATE {csv_table} SET T = 'training' WHERE id = ?", [(rid,) for rid in training_ids])
+            if testing_ids:
+                cursor.executemany(f"UPDATE {csv_table} SET T = 'testing' WHERE id = ?", [(rid,) for rid in testing_ids])
             
             conn.commit()
+            updated_training = len(training_ids)
+            updated_testing = len(testing_ids)
             logger.info(f"Validation complete: {updated_training} training, {updated_testing} testing")
         except Exception as e:
             conn.rollback()

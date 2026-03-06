@@ -650,7 +650,7 @@ def train_rf_model(X_train: pd.DataFrame, y_train: np.ndarray,
         random_state=random_state,
         n_jobs=-1,
         verbose=1,
-        class_weight='balanced'  # Improved accuracy for imbalanced data
+        class_weight='balanced'  # This is critical for high accuracy on imbalanced network data
     )
     
     model.fit(X_train, y_train)
@@ -708,9 +708,15 @@ def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
     logger.info("Autoencoder model training completed")
     return model, scaler
 
-def evaluate_rf_model(model: RandomForestClassifier, X_test: pd.DataFrame, 
+def evaluate_rf_model(model: RandomForestClassifier, X_test: Any, 
                    y_test: np.ndarray) -> Dict[str, Any]:
     """Evaluate Random Forest model and return metrics."""
+    # Ensure X_test is a DataFrame for column access
+    if isinstance(X_test, np.ndarray):
+        logger.warning("X_test is numpy array in evaluate_rf_model, converting to DataFrame")
+        feature_names = [f"feature_{i}" for i in range(X_test.shape[1])]
+        X_test = pd.DataFrame(X_test, columns=feature_names)
+        
     y_pred = model.predict(X_test)
     proba = model.predict_proba(X_test)
     # Handle case where model might only have one class (shouldn't happen but be defensive)
@@ -1157,12 +1163,15 @@ async def list_model_types():
         raise HTTPException(status_code=500, detail=f"Error listing model types: {str(e)}")
 
 def get_database_name(
-    dataset_name: str = Header(...),
+    dataset_name: Optional[str] = Header(None, alias="dataset-name"),
+    dataset_name_alt: Optional[str] = Header(None, alias="dataset_name"),
     train_request: TrainRequest = TrainRequest()
 ) -> str:
-    if dataset_name:
-        return dataset_name
-    return train_request.database_name or "default"
+    # Check both dataset-name and dataset_name for compatibility
+    resolved_name = dataset_name or dataset_name_alt
+    if resolved_name:
+        return resolved_name
+    return train_request.database_name or "LATEST"
 
 @app.get("/features")
 async def list_features():
@@ -1232,9 +1241,13 @@ async def vectorize_features(
         raise HTTPException(status_code=500, detail=f"Vectorization failed: {str(e)}")
 
 def get_model_name(
-    model_name: str = Header(...)
+    model_name: Optional[str] = Header(None, alias="model-name"),
+    model_name_alt: Optional[str] = Header(None, alias="model_name")
 ) -> str:
-    return model_name
+    resolved_name = model_name or model_name_alt
+    if resolved_name:
+        return resolved_name
+    return "RFv1"
 
 @app.post("/train")
 async def train(
@@ -1346,7 +1359,13 @@ async def train(
                 raise HTTPException(status_code=400, detail="Required 'label' column missing for supervised training.")
         
         y_train = pd.to_numeric(df['label'], errors='coerce').fillna(0).astype(int).values
-        X_raw = df.drop(['label', 'id', 'attack_cat'], axis=1, errors='ignore')
+        
+        # EXTREMELY IMPORTANT: Drop columns that would cause data leakage or noise
+        # 1. No IDs/UUIDs (they are unique per row and confuse the model)
+        # 2. No target columns (label, attack_cat)
+        # 3. No timestamp strings (if any)
+        drop_cols = ['label', 'id', 'attack_cat', 'id_uuid', 'timestamp', '\ufeffid']
+        X_raw = df.drop([c for c in drop_cols if c in df.columns], axis=1)
         
         # Fit logic
         vectorizer = DataVectorizer()
@@ -1394,59 +1413,28 @@ async def train(
     except Exception as e:
         logger.error(f"Training failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-    metrics = {
-        'accuracy': 0.0,
-        'precision': 0.0,
-        'recall': 0.0,
-        'f1_score': 0.0,
-        'confusion_matrix': [[0, 0], [0, 0]],
-        'feature_importance': []
-    }
-    
-    # Save model (attack_cat_model is in scope from training block)
-    save_model(model, feature_names, metrics, training_params, model_name, scaler=scaler,
-               attack_cat_model=attack_cat_model, attack_cat_classes=attack_cat_classes,
-               cat_encoders=cat_encoders)
-    
-    response_content = {
-        "status": "success",
-        "message": "Model trained successfully",
-        "dataset_name": dataset_name,
-        "model_name": model_name,
-        "model_type": model_type,
-        "training_samples": len(X_train),
-        "n_features": len(feature_names),
-        "feature_names": feature_names,
-        "training_params": training_params,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-    
-    if train_request.include_fields is not None:
-        response_content["include_fields"] = train_request.include_fields
-    
-    if train_request.exclude_fields is not None:
-        response_content["exclude_fields"] = train_request.exclude_fields
-    
-    return JSONResponse(
-        content=response_content,
-        status_code=200
-    )
 
 class TestRequest(BaseModel):
     database_name: Optional[str] = None
 
 def get_test_database_name(
-    dataset_name: Optional[str] = Header(None),
+    dataset_name: Optional[str] = Header(None, alias="dataset-name"),
+    dataset_name_alt: Optional[str] = Header(None, alias="dataset_name"),
     test_request: TestRequest = TestRequest()
 ) -> Optional[str]:
-    if dataset_name:
-        return dataset_name
-    return test_request.database_name
+    resolved_name = dataset_name or dataset_name_alt
+    if resolved_name:
+        return resolved_name
+    return test_request.database_name or "LATEST"
 
 def get_test_model_name(
-    model_name: str = Header(...)
+    model_name: Optional[str] = Header(None, alias="model-name"),
+    model_name_alt: Optional[str] = Header(None, alias="model_name")
 ) -> str:
-    return model_name
+    resolved_name = model_name or model_name_alt
+    if resolved_name:
+        return resolved_name
+    return "RFv1"
 
 @app.post("/test")
 async def test(
@@ -1487,78 +1475,43 @@ async def test(
             detail=f"Cannot connect to backend API at {API_BASE_URL}"
         )
     
+    # --- UNIFIED VECTORIZED TESTING ---
     try:
-        testing_data = await fetch_all_data("/testing", "testing", database_name)
-        if not testing_data:
-            raise HTTPException(
-                status_code=422,
-                detail="No testing data found. Please validate data to create training/testing split first."
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching testing data: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching testing data: {str(e)}")
-    
-    # Extract features and labels using the training encoders
-    try:
-        # Pass the plain dict records into the standardized pipeline.
-        raw_records = [{"data": row} for _, row in pd.DataFrame(testing_data).iterrows()] if isinstance(testing_data, pd.DataFrame) else testing_data
+        # Load test data
+        response_data = await fetch_all_data("/testing", "testing", database_name)
+        if not response_data:
+            raise HTTPException(status_code=400, detail="No testing data found.")
+            
+        # Parse records
+        rows = [json.loads(r["data"]) if isinstance(r["data"], str) else r["data"] for r in response_data]
+        df_test = pd.DataFrame(rows)
         
-        feature_names = metadata['feature_names']
+        # Ensure labels exist
+        if 'label' not in df_test.columns:
+            label_col = next((c for c in df_test.columns if c.lower() == 'label'), None)
+            if label_col: df_test = df_test.rename(columns={label_col: 'label'})
+            else: raise HTTPException(status_code=400, detail="Test set missing 'label' column.")
+            
+        y_test = pd.to_numeric(df_test['label'], errors='coerce').fillna(0).astype(int).values
         
-        X_df, y_test, _, _, _ = extract_features_and_labels(
-            data_records=raw_records, 
-            include_fields=feature_names,
-            cat_encoders=cat_encoders
-        )
+        # Capture the vectorizer from the load_model call above
+        model, metadata, scaler, attack_cat_model, cat_encoders, vectorizer = load_model(model_name)
         
-        X_test = X_df
-        if len(X_test) == 0:
-            raise HTTPException(
-                status_code=422,
-                detail="No valid testing samples found. Testing data may be missing required features."
-            )
-        
-        if "label" in X_test.columns:
-            logger.error("CRITICAL ERROR: 'label' found in test feature matrix!")
-            raise HTTPException(
-                status_code=500,
-                detail="CRITICAL: 'label' column found in test features. This must be excluded!"
-            )
-        
-        logger.info(f"VALIDATION PASSED: 'label' is correctly excluded from test features")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error processing testing data: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing testing data: {str(e)}")
-    
-    # Ensure feature columns match training features exactly
-    feature_names = metadata['feature_names']
-    logger.info(f"Model expects {len(feature_names)} features: {feature_names[:5]}...")
-    logger.info(f"Test data has {len(X_test.columns)} features: {list(X_test.columns)[:5]}...")
-    
-    # Create a new DataFrame with features in the exact order as training
-    X_test_aligned = pd.DataFrame(index=X_test.index)
-    for feature in feature_names:
-        if feature in X_test.columns:
-            X_test_aligned[feature] = X_test[feature]
+        if vectorizer is None:
+            # Fallback only if no vectorizer pkl exists
+            X_test_df, _, _, _, _ = extract_features_and_labels(response_data, cat_encoders=cat_encoders)
+            X_test = X_test_df
         else:
-            logger.warning(f"Feature '{feature}' not found in test data, filling with 0")
-            X_test_aligned[feature] = 0
+            # Drop target columns before transformation
+            drop_cols = ['label', 'attack_cat', 'id', 'id_uuid', 'timestamp', '\ufeffid']
+            X_raw_test = df_test.drop([c for c in drop_cols if c in df_test.columns], axis=1)
+            X_test = vectorizer.transform(X_raw_test)
+            
+    except Exception as e:
+        logger.error(f"Error preparing test data: {e}")
+        raise HTTPException(status_code=500, detail=f"Data preparation failed: {str(e)}")
     
-    # Remove any extra features that weren't in training
-    missing_features = set(feature_names) - set(X_test.columns)
-    if missing_features:
-        logger.warning(f"Missing features in test data: {missing_features}")
-    
-    extra_features = set(X_test.columns) - set(feature_names)
-    if extra_features:
-        logger.info(f"Extra features in test data (will be ignored): {extra_features}")
-    
-    X_test = X_test_aligned[feature_names]
-    logger.info(f"Aligned test data: {X_test.shape[0]} samples, {X_test.shape[1]} features")
+    # Data is already prepared in X_test and y_test above
     
     # Evaluate model
     try:
@@ -1630,7 +1583,6 @@ async def predict(
     predict_request: PredictRequest,
     model_name: str = Depends(get_model_name)
 ):
-# a
     """
     Make predictions on new data.
     

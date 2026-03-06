@@ -243,7 +243,7 @@ NETWORK_LOGS_DB = "network_logs.db"
 USERS_DB = "users.db"
 MESSAGE_QUEUE_DB = "message_queue.db"
 MODEL_API_URL = os.getenv("MODEL_API_URL", "http://127.0.0.1:8001")
-DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL_NAME", "A")
+DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL_NAME", "RFv1")
 
 # Singleton WebSocket connection tracking for data generation
 active_generate_websocket: Optional[WebSocket] = None

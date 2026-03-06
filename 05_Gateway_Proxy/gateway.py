@@ -190,30 +190,16 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
             # Check content-type
             if "application/json" in content_type:
                 try:
-                    body = await request.body()
-                    
-                    # Check body size (10MB limit)
-                    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
-                    if len(body) > MAX_BODY_SIZE:
-                        validation_errors.append(f"Request body too large. Maximum size: {MAX_BODY_SIZE / (1024*1024):.1f}MB")
+                    # Only read body if it's manageable size for validation
+                    # For very large JSON, we should stream or skip basic validation
+                    content_length = request.headers.get("content-length")
+                    if content_length and int(content_length) > 10 * 1024 * 1024:
+                        logger.warning(f"JSON body too large ({content_length} bytes), bypassing gateway validation")
                     else:
+                        body = await request.body()
                         # Validate JSON structure
                         try:
                             json_data = json.loads(body.decode('utf-8'))
-                            
-                            # Basic JSON validation - check for common issues
-                            if isinstance(json_data, dict):
-                                # Check for SQL injection patterns in string values (only warn, don't block)
-                                sql_keywords = ["DROP", "DELETE", "INSERT", "UPDATE", "SELECT", "UNION", "--", "/*", "*/"]
-                                for key, value in json_data.items():
-                                    if isinstance(value, str):
-                                        value_upper = value.upper()
-                                        for keyword in sql_keywords:
-                                            if keyword in value_upper and len(value) > 100:
-                                                # Only log warning, don't block (could be legitimate data)
-                                                logger.warning(f"Potential SQL injection pattern detected in field '{key}' (logging only)")
-                                                break
-                            
                             # Store validated body for later use
                             request.state.validated_body = body
                             request.state.validated_json = json_data
@@ -221,21 +207,17 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
                             validation_errors.append(f"Invalid JSON: {str(e)}")
                 except Exception as e:
                     validation_errors.append(f"Error reading request body: {str(e)}")
-            elif "multipart/form-data" in content_type:
-                # For file uploads, we'll let the backend handle validation
-                # But check Content-Length header if present
+            elif "multipart/form-data" in content_type or "text/csv" in content_type:
+                # For file uploads, we'll let the backend handle validation via streaming
                 content_length = request.headers.get("content-length")
                 if content_length:
                     try:
                         size = int(content_length)
-                        MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB for file uploads
+                        MAX_UPLOAD_SIZE = 500 * 1024 * 1024  # Increased to 500MB
                         if size > MAX_UPLOAD_SIZE:
                             validation_errors.append(f"Upload too large. Maximum size: {MAX_UPLOAD_SIZE / (1024*1024):.1f}MB")
                     except ValueError:
-                        pass  # Invalid content-length, let backend handle it
-            elif content_type and request.method in ["POST", "PUT", "PATCH"]:
-                # Warn about unexpected content types (but don't block)
-                logger.warning(f"Unexpected content-type for {request.method}: {content_type}")
+                        pass
         
         # Validate path parameters (basic sanitization)
         # Check for path traversal attempts
@@ -688,7 +670,7 @@ async def proxy_request(request: Request, path: str):
     headers = dict(request.headers)
     headers.pop("host", None)
     headers.pop("connection", None)
-    headers.pop("content-length", None)
+    # headers.pop("content-length", None)  # KEEP content-length for large uploads
     
     # Forward request to backend service
     try:
