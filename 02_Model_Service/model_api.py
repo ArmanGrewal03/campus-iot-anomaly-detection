@@ -267,7 +267,7 @@ async def fetch_all_data(endpoint: str, label_type: str = "all", database_name: 
     
     headers = {}
     if database_name:
-        headers["dataset_name"] = database_name
+        headers["dataset-name"] = database_name
     
     url = f"{API_BASE_URL}{endpoint}"
     
@@ -948,48 +948,50 @@ def save_model(model: Any, vectorizer: DataVectorizer,
     logger.info(f"Model and DNA (Vectorizer) saved for {model_name}")
 
 def load_model(model_name: str) -> tuple:
-    """Load model, metadata, scaler, and attack_cat_model (if exists). 
-    Returns (model, metadata, scaler, attack_cat_model)."""
+    """Load model, metadata, scaler, attack_cat_model, cat_encoders, and vectorizer.
+    Returns (model, metadata, scaler, attack_cat_model, cat_encoders, vectorizer)."""
     sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
     model_filename = f"{sanitized_model_name}.pkl"
     metadata_filename = f"{sanitized_model_name}_metadata.json"
     scaler_filename = f"{sanitized_model_name}_scaler.pkl"
     attack_cat_filename = f"{sanitized_model_name}_attack_cat.pkl"
     cat_enc_filename = f"{sanitized_model_name}_cat_encoders.pkl"
+    vectorizer_filename = f"{sanitized_model_name}_vectorizer.pkl"
     model_path = os.path.join(MODEL_DIR, model_filename)
     metadata_path = os.path.join(MODEL_DIR, metadata_filename)
     scaler_path = os.path.join(MODEL_DIR, scaler_filename)
     attack_cat_path = os.path.join(MODEL_DIR, attack_cat_filename)
     cat_enc_path = os.path.join(MODEL_DIR, cat_enc_filename)
+    vectorizer_path = os.path.join(MODEL_DIR, vectorizer_filename)
     
     if not os.path.exists(model_path):
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     
     try:
         model = joblib.load(model_path)
     except (OSError, IOError) as e:
         logger.error(f"File error loading model: {e}")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     except Exception as e:
         logger.error(f"Error loading model file (possibly corrupted): {e}")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     
     if not os.path.exists(metadata_path):
         logger.warning(f"Metadata file not found: {metadata_path}")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     
     try:
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
     except (OSError, IOError) as e:
         logger.error(f"File error loading metadata: {e}")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error in metadata file (possibly corrupted): {e}")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     except Exception as e:
         logger.error(f"Error loading metadata file: {e}")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     
     # Load scaler if it exists (for autoencoder models)
     scaler = None
@@ -1018,7 +1020,16 @@ def load_model(model_name: str) -> tuple:
         except Exception as e:
             logger.warning(f"Error loading cat encoders: {e}")
     
-    return model, metadata, scaler, attack_cat_model, cat_encoders
+    # Load vectorizer if it exists
+    vectorizer = None
+    if os.path.exists(vectorizer_path):
+        try:
+            vectorizer = joblib.load(vectorizer_path)
+            logger.info(f"Loaded vectorizer from: {vectorizer_path}")
+        except Exception as e:
+            logger.warning(f"Error loading vectorizer: {e}")
+    
+    return model, metadata, scaler, attack_cat_model, cat_encoders, vectorizer
 
 @app.get("/health")
 async def health_check():
@@ -1146,7 +1157,7 @@ async def list_model_types():
         raise HTTPException(status_code=500, detail=f"Error listing model types: {str(e)}")
 
 def get_database_name(
-    dataset_name: str = Header(..., alias="dataset_name"),
+    dataset_name: str = Header(...),
     train_request: TrainRequest = TrainRequest()
 ) -> str:
     if dataset_name:
@@ -1221,7 +1232,7 @@ async def vectorize_features(
         raise HTTPException(status_code=500, detail=f"Vectorization failed: {str(e)}")
 
 def get_model_name(
-    model_name: str = Header(..., alias="model_name")
+    model_name: str = Header(...)
 ) -> str:
     return model_name
 
@@ -1250,7 +1261,7 @@ async def train(
         )
     
     headers = {}
-    headers["dataset_name"] = dataset_name
+    headers["dataset-name"] = dataset_name
     
     try:
         health_url = f"{API_BASE_URL}/health"
@@ -1425,7 +1436,7 @@ class TestRequest(BaseModel):
     database_name: Optional[str] = None
 
 def get_test_database_name(
-    dataset_name: Optional[str] = Header(None, alias="dataset_name"),
+    dataset_name: Optional[str] = Header(None),
     test_request: TestRequest = TestRequest()
 ) -> Optional[str]:
     if dataset_name:
@@ -1433,7 +1444,7 @@ def get_test_database_name(
     return test_request.database_name
 
 def get_test_model_name(
-    model_name: str = Header(..., alias="model_name")
+    model_name: str = Header(...)
 ) -> str:
     return model_name
 
@@ -1446,7 +1457,7 @@ async def test(
     logger.info("Testing request received")
     logger.info(f"Using model: {model_name}")
     
-    model, metadata, scaler, attack_cat_model, cat_encoders = load_model(model_name)
+    model, metadata, scaler, attack_cat_model, cat_encoders, _ = load_model(model_name)
     if model is None or metadata is None:
         raise HTTPException(
             status_code=404,
@@ -1455,7 +1466,7 @@ async def test(
     
     headers = {}
     if database_name:
-        headers["dataset_name"] = database_name
+        headers["dataset-name"] = database_name
         logger.info(f"Using database: {database_name}")
     
     try:
@@ -1629,7 +1640,7 @@ async def predict(
     logger.info(f"Using model: {model_name}")
     
     # Load model
-    model, metadata, scaler, attack_cat_model, cat_encoders = load_model(model_name)
+    model, metadata, scaler, attack_cat_model, cat_encoders, vectorizer = load_model(model_name)
     if model is None or metadata is None:
         # Check if model file exists but is corrupted
         sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
@@ -1937,7 +1948,7 @@ async def predict(
 async def get_model_status(model_name: str = Depends(get_model_name)):
     """Get the current status of the model."""
     logger.info(f"Getting status for model: {model_name}")
-    model, metadata, scaler, attack_cat_model, cat_encoders = load_model(model_name)
+    model, metadata, scaler, attack_cat_model, cat_encoders, _ = load_model(model_name)
     
     if model is None or metadata is None:
         return JSONResponse(
@@ -1966,7 +1977,7 @@ async def get_model_status(model_name: str = Depends(get_model_name)):
 async def get_model_metrics(model_name: str = Depends(get_model_name)):
     """Get the evaluation metrics of the trained model."""
     logger.info(f"Getting metrics for model: {model_name}")
-    model, metadata, scaler, attack_cat_model, cat_encoders = load_model(model_name)
+    model, metadata, scaler, attack_cat_model, cat_encoders, _ = load_model(model_name)
     
     if model is None or metadata is None:
         raise HTTPException(

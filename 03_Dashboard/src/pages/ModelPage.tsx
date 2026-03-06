@@ -172,7 +172,7 @@ export default function ModelPage() {
         setUploading(false);
         return;
       }
-      headers['dataset_name'] = nameToUse;
+      headers['dataset-name'] = nameToUse;
       const res = await fetch(`${API_BASE}/new`, {
         method: 'POST',
         headers,
@@ -202,12 +202,11 @@ export default function ModelPage() {
       }
       setSnackbar({ open: true, message, severity: 'success' });
       setSelectedFile(null);
-      if (datasetName.trim()) {
-        const id = `ds-${Date.now()}`;
-        setDatasets((d) => [...d, { id, name: datasetName.trim() }]);
-        setSelectedDatasetId(id);
-      }
       setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
+      await fetchTables();
+      if (datasetName.trim()) {
+        setSelectedDataset(datasetName.trim());
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Network error. Is the backend running at http://localhost:8000?';
       setSnackbar({ open: true, message, severity: 'error' });
@@ -219,7 +218,7 @@ export default function ModelPage() {
   const fetchTables = React.useCallback(async () => {
     setDatasetsLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/tables`);
+      const res = await fetch(`${API_BASE}/tables?t=${Date.now()}`);
       const json = await res.json() as { status?: string; tables?: string[] };
       if (res.ok && json.status === 'success' && json.tables) {
         // Extract dataset names from table names (format: csv_data_{dataset_name})
@@ -254,9 +253,9 @@ export default function ModelPage() {
     setFieldsLoading(true);
     try {
       const headers: Record<string, string> = {
-        'dataset_name': datasetName.trim(),
+        'dataset-name': datasetName.trim(),
       };
-      const res = await fetch(`${API_BASE}/fields`, { headers });
+      const res = await fetch(`${API_BASE}/fields?t=${Date.now()}`, { headers });
       const json = await res.json() as { status?: string; fields?: string[]; detail?: string };
       if (res.ok && json.status === 'success' && json.fields) {
         // Filter out label, id, attack_cat as they shouldn't be included as features
@@ -297,13 +296,13 @@ export default function ModelPage() {
     setStatsLoading(true);
     try {
       const headers: Record<string, string> = {
-        'dataset_name': datasetName.trim(),
+        'dataset-name': datasetName.trim(),
       };
       
       // Fetch both stats and type-stats in parallel
       const [statsRes, typeStatsRes] = await Promise.all([
-        fetch(`${API_BASE}/stats`, { headers }),
-        fetch(`${API_BASE}/type-stats`, { headers }),
+        fetch(`${API_BASE}/stats?t=${Date.now()}`, { headers }),
+        fetch(`${API_BASE}/type-stats?t=${Date.now()}`, { headers }),
       ]);
 
       const statsJson = await statsRes.json() as any;
@@ -340,7 +339,7 @@ export default function ModelPage() {
   const fetchModels = React.useCallback(async () => {
     setModelsLoading(true);
     try {
-      const res = await fetch(`${MODEL_API_BASE}/models`);
+      const res = await fetch(`${MODEL_API_BASE}/models?t=${Date.now()}`);
       const json = await res.json() as { status?: string; models?: any[]; total_models?: number; detail?: string };
       
       console.log('Models API response:', json);
@@ -381,7 +380,7 @@ export default function ModelPage() {
   const fetchModelTypes = React.useCallback(async () => {
     setModelTypesLoading(true);
     try {
-      const res = await fetch(`${MODEL_API_BASE}/model-types`);
+      const res = await fetch(`${MODEL_API_BASE}/model-types?t=${Date.now()}`);
       const json = await res.json() as { 
         status?: string; 
         model_types?: Array<{ model_type: string; path: string; files: Array<{ name: string; size: number; modified: string }> }>; 
@@ -430,12 +429,12 @@ export default function ModelPage() {
     
     try {
       const headers: Record<string, string> = {
-        'model_name': modelName,
+        'model-name': modelName,
       };
 
       const [statusRes, metricsRes] = await Promise.all([
-        fetch(`${MODEL_API_BASE}/model/status`, { headers }),
-        fetch(`${MODEL_API_BASE}/model/metrics`, { headers }).catch(() => null), // Metrics might not exist
+        fetch(`${MODEL_API_BASE}/model/status?t=${Date.now()}`, { headers }),
+        fetch(`${MODEL_API_BASE}/model/metrics?t=${Date.now()}`, { headers }).catch(() => null),
       ]);
 
       const statusJson = await statusRes.json();
@@ -493,12 +492,12 @@ export default function ModelPage() {
     try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'model_name': selectedTestModel.trim(),
+        'model-name': selectedTestModel.trim(),
       };
 
       // dataset_name is optional for /test endpoint
       if (testDataset) {
-        headers['dataset_name'] = testDataset;
+        headers['dataset-name'] = testDataset;
       }
 
       const res = await fetch(`${MODEL_API_BASE}/test`, {
@@ -536,17 +535,15 @@ export default function ModelPage() {
       setViewLoading(true);
       // Don't reset total_rows - keep it to maintain pagination state
       try {
-        const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+        const params = new URLSearchParams({ limit: String(limit), offset: String(offset), t: String(Date.now()) });
         const headers: Record<string, string> = {};
-        headers['dataset_name'] = selectedDataset.trim();
+        headers['dataset-name'] = selectedDataset.trim();
         
-        // Determine which endpoint to call based on filterMode
-        // Note: These are GET endpoints from Data Ingestion Service, not POST /train from Model Service
         let endpoint = '/view';
         if (filterMode === 'training') {
-          endpoint = '/training';  // GET endpoint from Data Ingestion Service
+          endpoint = '/training';
         } else if (filterMode === 'testing') {
-          endpoint = '/testing';  // GET endpoint from Data Ingestion Service
+          endpoint = '/testing';
         }
         
         const res = await fetch(`${API_BASE}${endpoint}?${params}`, { headers });
@@ -670,7 +667,7 @@ export default function ModelPage() {
     setValidationResult(null);
     try {
       const headers: Record<string, string> = {
-        'dataset_name': selectedDataset.trim(),
+        'dataset-name': selectedDataset.trim(),
       };
       
       // Add optional percentage headers if provided
@@ -753,7 +750,7 @@ export default function ModelPage() {
     setClearLoading(true);
     try {
       const headers: Record<string, string> = {};
-      if (selectedDataset.trim()) headers['dataset_name'] = selectedDataset.trim();
+      if (selectedDataset.trim()) headers['dataset-name'] = selectedDataset.trim();
       const res = await fetch(`${API_BASE}/clear`, { method: 'DELETE', headers });
       const text = await res.text();
       if (!res.ok) {
@@ -783,6 +780,7 @@ export default function ModelPage() {
       setClearConfirmOpen(false);
       setSnackbar({ open: true, message, severity: 'success' });
       setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
+      await fetchTables();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to clear database.';
       setSnackbar({ open: true, message: msg, severity: 'error' });
@@ -828,8 +826,8 @@ export default function ModelPage() {
       // Headers: dataset_name and model_name are required
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'dataset_name': selectedDataset.trim(),
-        'model_name': modelName.trim(),
+        'dataset-name': selectedDataset.trim(),
+        'model-name': modelName.trim(),
       };
 
       const res = await fetch(`${MODEL_API_BASE}/train`, {
@@ -875,7 +873,7 @@ export default function ModelPage() {
         // Fetch testing data from backend
         const params = new URLSearchParams({ limit: '100', offset: '0' });
         const headers: Record<string, string> = {};
-        if (selectedDataset.trim()) headers['dataset_name'] = selectedDataset.trim();
+        if (selectedDataset.trim()) headers['dataset-name'] = selectedDataset.trim();
         const res = await fetch(`${API_BASE}/testing?${params}`, { headers });
         const json = await res.json();
         if (!res.ok) throw new Error(json.detail || 'Failed to fetch testing data');
@@ -908,10 +906,9 @@ export default function ModelPage() {
         data: dataToPredict
       };
 
-      // Headers: model_name is required
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'model_name': modelName.trim(),
+        'model-name': modelName.trim(),
       };
 
       const res = await fetch(`${MODEL_API_BASE}/predict`, {

@@ -401,7 +401,7 @@ async def process_missing_predictions(batch_size: int = 10):
                 payload = {"data": [data]}
                 headers = {
                     "Content-Type": "application/json",
-                    "model_name": selected_model_name
+                    "model-name": selected_model_name
                 }
                 
                 logger.info(f"Calling prediction API for network_id: {network_id}, data: {json.dumps(data)}")
@@ -1363,7 +1363,7 @@ async def process_predict_request(message_id: int, network_id: str, data: dict):
         payload = {"data": [data]}
         headers = {
             "Content-Type": "application/json",
-            "model_name": selected_model_name
+            "model-name": selected_model_name
         }
         
         logger.info(f"Calling prediction API for network_id: {network_id}, data: {json.dumps(data)}")

@@ -434,11 +434,13 @@ def check_rate_limit(identifier: str, rate_limit: int) -> bool:
 
 
 def get_cache_key(request: Request) -> str:
-    """Generate cache key from request"""
+    """Generate cache key from request including dataset/model headers"""
     path = request.url.path
     query = str(sorted(request.query_params.items()))
     method = request.method
-    return hashlib.md5(f"{method}:{path}:{query}".encode()).hexdigest()
+    ds = request.headers.get("dataset-name", "")
+    mn = request.headers.get("model-name", "")
+    return hashlib.md5(f"{method}:{path}:{query}:{ds}:{mn}".encode()).hexdigest()
 
 
 def get_cached_response(cache_key: str, path: str = "") -> Optional[Dict]:
@@ -615,9 +617,10 @@ async def proxy_request(request: Request, path: str):
     
     skip_cache_paths = [
         "/train", "/test", "/predict", "/upload", "/validate", "/insert", "/publish",
-        "/history", "/network-logs", "/get-model", "/set-model", "/models", "/recompute-predictions", "/dashboard-kpis"
+        "/history", "/network-logs", "/get-model", "/set-model", "/models", "/model-types",
+        "/model/status", "/model/metrics", "/recompute-predictions", "/dashboard-kpis",
+        "/tables", "/fields", "/new", "/clear", "/view", "/stats", "/type-stats"
     ]
-    # Note: /models (list) and /model-types are cacheable, but /model/status and /model/metrics are not
     # Check if path (without query) starts with any skip path
     should_cache = not any(path_without_query.startswith(skip) for skip in skip_cache_paths)
     
