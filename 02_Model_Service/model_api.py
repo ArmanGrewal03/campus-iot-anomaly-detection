@@ -936,6 +936,9 @@ def save_model(model: Any, vectorizer: DataVectorizer,
     
     # Metadata
     model_type_str = training_params.get('model_type', type(model).__name__)
+    # Capture model.classes_ and label_mapping for reproducible, auditable predictions
+    model_classes_list = model.classes_.tolist() if hasattr(model, 'classes_') else [0, 1]
+    label_mapping = {str(c): ('safe' if c == 0 else 'unsafe') for c in model_classes_list}
     metadata = {
         'model_type': model_type_str,
         'model_name': model_name,
@@ -945,7 +948,9 @@ def save_model(model: Any, vectorizer: DataVectorizer,
         'training_params': training_params,
         'metrics': metrics,
         'has_attack_cat_model': attack_cat_model is not None,
-        'attack_cat_classes': attack_cat_classes if attack_cat_classes else []
+        'attack_cat_classes': attack_cat_classes if attack_cat_classes else [],
+        'model_classes': model_classes_list,
+        'label_mapping': label_mapping
     }
     
     with open(metadata_path, 'w') as f:
@@ -1689,38 +1694,37 @@ async def predict(
             predictions = model.predict(X)
             proba = model.predict_proba(X)
             label_mapping = metadata.get('label_mapping', {'0': 'safe', '1': 'unsafe'})
-            
+
+            # Determine which column in proba corresponds to class 0 (safe) and class 1 (unsafe).
+            # sklearn orders predict_proba columns by model.classes_, NOT necessarily [safe, unsafe].
+            model_classes = list(model.classes_)
+            safe_col = model_classes.index(0) if 0 in model_classes else None
+            unsafe_col = model_classes.index(1) if 1 in model_classes else None
+            logger.info(f"model.classes_={model_classes}, safe_col={safe_col}, unsafe_col={unsafe_col}")
+
             # Handle case where model might only have one class
             if proba.shape[1] == 1:
-                # Only one class - check which class the model has
-                model_classes = model.classes_
                 prob_single = proba[:, 0]
-                
-                if len(model_classes) == 1:
-                    # Model only has one class - determine if it's class 0 (safe) or class 1 (unsafe)
-                    if model_classes[0] == 0:
-                        # Model only predicts safe (0)
-                        probabilities = np.column_stack([prob_single, 1.0 - prob_single])
-                        logger.warning(f"Model has only class 0 (safe). Creating probabilities: safe={prob_single}, unsafe={1.0 - prob_single}")
-                    elif model_classes[0] == 1:
-                        # Model only predicts unsafe (1)
-                        probabilities = np.column_stack([1.0 - prob_single, prob_single])
-                        logger.warning(f"Model has only class 1 (unsafe). Creating probabilities: safe={1.0 - prob_single}, unsafe={prob_single}")
-                    else:
-                        # Unknown class - assume it's unsafe
-                        probabilities = np.column_stack([1.0 - prob_single, prob_single])
-                        logger.warning(f"Model has unknown single class {model_classes[0]}. Assuming unsafe probabilities.")
+                if safe_col is not None:
+                    probabilities = np.column_stack([prob_single, 1.0 - prob_single])
+                    logger.warning("Model has only class 0 (safe). Filling unsafe column as complement.")
                 else:
-                    # Fallback: assume unsafe
                     probabilities = np.column_stack([1.0 - prob_single, prob_single])
-                    logger.warning(f"Model predict_proba returned 1 column but classes={model_classes}. Assuming unsafe probabilities.")
+                    logger.warning("Model has only class 1 (unsafe). Filling safe column as complement.")
+                safe_col, unsafe_col = 0, 1
             elif proba.shape[1] >= 2:
-                # Binary or multi-class: use as is
                 probabilities = proba
+                # Ensure we have valid column indices
+                if safe_col is None:
+                    safe_col = 0
+                    logger.warning("Class 0 (safe) not found in model.classes_. Using column 0 as safe.")
+                if unsafe_col is None:
+                    unsafe_col = 1
+                    logger.warning("Class 1 (unsafe) not found in model.classes_. Using column 1 as unsafe.")
             else:
-                # Fallback: create probabilities from predictions
                 pred_float = predictions.astype(float)
                 probabilities = np.column_stack([1.0 - pred_float, pred_float])
+                safe_col, unsafe_col = 0, 1
                 logger.warning("Could not get probabilities from model, using predictions as probabilities")
             
             # Predict attack categories for unsafe samples if attack_cat_model is available
@@ -1762,16 +1766,35 @@ async def predict(
             else:
                 logger.info("No attack category model found for this model")
             
+            UNSAFE_THRESHOLD = 0.6
+
+            def sharpen_prob(p, temperature=0.6):
+                """Temperature scaling to sharpen probability away from 0.5."""
+                if p <= 0.0 or p >= 1.0:
+                    return p
+                log_odds = np.log(p / (1.0 - p))
+                return float(1.0 / (1.0 + np.exp(-log_odds / temperature)))
+
             for i in range(len(predictions)):
-                pred_binary = int(predictions[i])
-                # Calculate risk percentage (0-100) based on probability_unsafe
-                risk_percentage = float(probabilities[i][1] * 100)
+                raw_safe = float(probabilities[i][safe_col])
+                raw_unsafe = float(probabilities[i][unsafe_col])
+
+                # Use a proper threshold instead of default 0.5
+                pred_binary = 1 if raw_unsafe >= UNSAFE_THRESHOLD else 0
+
+                sharp_unsafe = sharpen_prob(raw_unsafe)
+                sharp_safe = 1.0 - sharp_unsafe
+                confidence = max(sharp_safe, sharp_unsafe)
+
+                logger.debug(f"Sample {i}: raw_safe={raw_safe:.4f}, raw_unsafe={raw_unsafe:.4f}, "
+                             f"threshold_pred={pred_binary}, sharp_unsafe={sharp_unsafe:.4f}")
+
                 result = {
-                    'prediction': round(risk_percentage, 2),  # Risk percentage (0-100)
+                    'prediction': round(sharp_unsafe * 100, 2),
                     'label': label_mapping.get(str(pred_binary), 'unknown'),
-                    'probability_safe': float(probabilities[i][0]),
-                    'probability_unsafe': float(probabilities[i][1]),
-                    'confidence': float(max(probabilities[i]))
+                    'probability_safe': round(sharp_safe, 4),
+                    'probability_unsafe': round(sharp_unsafe, 4),
+                    'confidence': round(confidence, 4)
                 }
                 
                 # Add attack category prediction if available and sample is unsafe

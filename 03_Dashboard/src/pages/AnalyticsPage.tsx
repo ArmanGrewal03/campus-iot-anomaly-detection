@@ -125,7 +125,7 @@ function Globe3D({ locations }: { locations: Array<{ record: HistoryRecord; lat:
           predResults?.predictions && predResults.predictions.length > 0
             ? predResults.predictions[0]
             : null;
-        const isAnomaly = prediction?.prediction === 1;
+        const isAnomaly = prediction?.label === 'unsafe' || prediction?.label === 'Anomaly' || (prediction?.prediction !== undefined && prediction.prediction > 50);
         const status = prediction
           ? isAnomaly
             ? 'Anomaly'
@@ -669,7 +669,7 @@ export default function AnalyticsPage() {
         const predResults = row.prediction_results;
         if (!predResults || !predResults.predictions || predResults.predictions.length === 0) return 'Pending';
         const prediction = predResults.predictions[0];
-        return prediction.label || (prediction.prediction === 1 ? 'Anomaly' : 'Safe');
+        return prediction.label || (prediction.prediction !== undefined && prediction.prediction > 50 ? 'unsafe' : 'safe');
       },
       renderCell: (params: GridRenderCellParams<HistoryRecord>) => {
         // Always read the full prediction object from the row to avoid conflicts with valueGetter
@@ -696,14 +696,10 @@ export default function AnalyticsPage() {
         // Extract the first prediction from the predictions array
         const prediction = predResults.predictions[0];
         
-        // prediction: 0 = safe, 1 = unsafe/anomaly
-        const isAnomaly = prediction.prediction === 1;
-        const label = prediction.label || (isAnomaly ? 'Anomaly' : 'Safe');
+        const label = prediction.label || 'unknown';
+        const isAnomaly = label === 'unsafe' || label === 'Anomaly' || (prediction.prediction !== undefined && prediction.prediction > 50);
         const confidence = prediction.confidence !== undefined 
           ? (prediction.confidence * 100).toFixed(1) + '%' 
-          : null;
-        const probUnsafe = prediction.probability_unsafe !== undefined
-          ? (prediction.probability_unsafe * 100).toFixed(1) + '%'
           : null;
 
         // Model name used for this prediction (added by backend)
@@ -712,28 +708,13 @@ export default function AnalyticsPage() {
         // Attack category (only available for RFv1 models and unsafe predictions)
         const attackCat = prediction.attack_cat;
         
-        // Color code probability_unsafe: red if high (>50%), green if low (<=50%)
-        const probUnsafeColor = prediction.probability_unsafe !== undefined
-          ? (prediction.probability_unsafe > 0.5 ? 'error.main' : 'success.main')
-          : 'text.secondary';
-        
         return (
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
             <Chip 
-              label={label} 
+              label={confidence ? `${label} (${confidence})` : label} 
               color={isAnomaly ? 'error' : 'success'} 
               size="small" 
             />
-            {confidence && (
-              <Typography variant="caption" color="text.secondary">
-                ({confidence})
-              </Typography>
-            )}
-            {probUnsafe && (
-              <Typography variant="caption" sx={{ color: probUnsafeColor, fontWeight: 'medium' }}>
-                Unsafe: {probUnsafe}
-              </Typography>
-            )}
             {modelName && (
               <Typography variant="caption" color="text.secondary">
                 Model: {modelName}
@@ -1222,9 +1203,9 @@ export default function AnalyticsPage() {
                   }
                   const prediction = predResults.predictions[0];
                   if (filterPrediction === 'safe') {
-                    return prediction.prediction === 0;
+                    return prediction.label === 'safe' || (prediction.prediction !== undefined && prediction.prediction <= 50);
                   } else if (filterPrediction === 'anomaly') {
-                    return prediction.prediction === 1;
+                    return prediction.label === 'unsafe' || prediction.label === 'Anomaly' || (prediction.prediction !== undefined && prediction.prediction > 50);
                   }
                   return false;
                 });
@@ -1278,7 +1259,7 @@ export default function AnalyticsPage() {
                           predResults?.predictions && predResults.predictions.length > 0
                             ? predResults.predictions[0]
                             : null;
-                        const isAnomaly = prediction?.prediction === 1;
+                        const isAnomaly = prediction?.label === 'unsafe' || prediction?.label === 'Anomaly' || (prediction?.prediction !== undefined && prediction.prediction > 50);
                         const status = prediction
                           ? isAnomaly
                             ? 'Anomaly'

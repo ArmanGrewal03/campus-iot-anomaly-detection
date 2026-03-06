@@ -26,9 +26,9 @@ class DataVectorizer:
         self.CATEGORICAL_COLS_LOW = ['service', 'state']
         self.CATEGORICAL_COLS_HIGH = ['proto']
         self.LOG_COLS = ['dur', 'sbytes', 'dbytes', 'sload', 'dload', 'spkts', 'dpkts',
-                        'stcpb', 'dtcpb', 'smeansz', 'dmeansz', 'sjit', 'djit',
-                        'sinpkt', 'dinpkt', 'ct_srv_src', 'ct_dst_ltm', 'ct_src_ltm',
-                        'ct_dst_sport_ltm', 'ct_dst_src_ltm']
+                        'stcpb', 'dtcpb', 'smeansz', 'dmeansz', 'smean', 'dmean',
+                        'sjit', 'djit', 'sinpkt', 'dinpkt', 'ct_srv_src', 'ct_dst_ltm',
+                        'ct_src_ltm', 'ct_dst_sport_ltm', 'ct_dst_src_ltm']
 
     def fit(self, df: pd.DataFrame):
         """Fit the vectorizer on training data."""
@@ -132,9 +132,11 @@ class DataVectorizer:
             X['total_pkts'] = spkts + dpkts
             X['pkt_ratio'] = spkts / (X['total_pkts'] + 1)
             
-        if 'smeansz' in X.columns and 'dmeansz' in X.columns:
-            smeansz = pd.to_numeric(X['smeansz'], errors='coerce').fillna(0)
-            dmeansz = pd.to_numeric(X['dmeansz'], errors='coerce').fillna(0)
+        scol = 'smeansz' if 'smeansz' in X.columns else ('smean' if 'smean' in X.columns else None)
+        dcol = 'dmeansz' if 'dmeansz' in X.columns else ('dmean' if 'dmean' in X.columns else None)
+        if scol and dcol:
+            smeansz = pd.to_numeric(X[scol], errors='coerce').fillna(0)
+            dmeansz = pd.to_numeric(X[dcol], errors='coerce').fillna(0)
             X['mean_pkt_size_ratio'] = smeansz / (dmeansz + 1)
 
         if 'sload' in X.columns and 'dload' in X.columns:
