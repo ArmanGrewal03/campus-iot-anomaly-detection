@@ -9,7 +9,6 @@ import Dashboard from './dashboard/Dashboard';
 // Lazy load pages to avoid Three.js/react-spring initialization issues on direct load
 const HomePage = lazy(() => import('./pages/HomePage'));
 const TestPage = lazy(() => import('./pages/TestPage'));
-const HomeBackupFeb5 = lazy(() => import('./pages/HomeBackupFeb5'));
 const ModelPage = lazy(() => import('./pages/ModelPage'));
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
 const ClientsPage = lazy(() => import('./pages/ClientsPage'));
@@ -74,7 +73,6 @@ export default function App() {
       <Route path="/" element={<Dashboard />}>
         <Route index element={<Navigate to="/home" replace />} />
         <Route path="home" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><TestPage /></Suspense></ErrorBoundary>} />
-        <Route path="test_2026_feb5" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><HomeBackupFeb5 /></Suspense></ErrorBoundary>} />
         <Route path="model" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><ModelPage /></Suspense></ErrorBoundary>} />
         <Route path="analytics" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><AnalyticsPage /></Suspense></ErrorBoundary>} />
         <Route path="clients" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><ClientsPage /></Suspense></ErrorBoundary>} />

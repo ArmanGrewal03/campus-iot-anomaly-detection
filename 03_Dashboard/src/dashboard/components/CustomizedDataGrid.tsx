@@ -46,7 +46,15 @@ const columns: GridColDef<NetworkLogRow>[] = [
   },
 ];
 
-export default function CustomizedDataGrid() {
+export interface CustomizedDataGridProps {
+  onInitialLoadComplete?: () => void;
+  hideLoadingDuringInitialLoad?: boolean;
+  /** When true, root uses height 100% to fill parent (e.g. match adjacent column). */
+  fillHeight?: boolean;
+}
+
+export default function CustomizedDataGrid(props: CustomizedDataGridProps = {}) {
+  const { onInitialLoadComplete, hideLoadingDuringInitialLoad, fillHeight } = props;
   const [rows, setRows] = React.useState<NetworkLogRow[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -74,9 +82,8 @@ export default function CustomizedDataGrid() {
         };
 
         if (!res.ok || json.status !== 'success') {
-          const msg = json.detail || json.status || res.statusText;
-          setError(`Failed to load recent activity: ${msg}`);
           setRows([]);
+          setError(null);
           return;
         }
 
@@ -91,22 +98,30 @@ export default function CustomizedDataGrid() {
         }));
 
         setRows(mapped);
+        setError(null);
       } catch (err) {
         console.error('Failed to fetch network logs:', err);
-        setError('Failed to load recent activity. Check backend.');
         setRows([]);
+        setError(null);
       } finally {
         setLoading(false);
+        onInitialLoadComplete?.();
       }
     };
 
     fetchLogs();
-  }, []);
+  }, [onInitialLoadComplete]);
 
   return (
-    <Box sx={{ height: 400, width: '100%' }}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-        <Typography variant="subtitle2">Recent Activity</Typography>
+    <Box
+      sx={{
+        width: '100%',
+        height: fillHeight ? '100%' : 400,
+        minHeight: fillHeight ? 400 : undefined,
+        ...(fillHeight ? { display: 'flex', flexDirection: 'column' } : {}),
+      }}
+    >
+      <Stack direction="row" alignItems="center" justifyContent="flex-end" sx={{ mb: 1, flexShrink: 0 }}>
         {loading && (
           <Stack direction="row" spacing={1} alignItems="center">
             <CircularProgress size={14} />
@@ -117,13 +132,15 @@ export default function CustomizedDataGrid() {
         )}
       </Stack>
       {error && (
-        <Alert severity="warning" sx={{ mb: 1 }}>
+        <Alert severity="warning" sx={{ mb: 1, flexShrink: 0 }}>
           {error}
         </Alert>
       )}
+      <Box sx={fillHeight ? { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } : undefined}>
       <DataGrid
         rows={rows}
         columns={columns}
+        sx={fillHeight ? { height: '100%', minHeight: 400 } : undefined}
         getRowClassName={(params) =>
           params.indexRelativeToCurrentPage % 2 === 0 ? 'even' : 'odd'
         }
@@ -170,6 +187,7 @@ export default function CustomizedDataGrid() {
           },
         }}
       />
+      </Box>
     </Box>
   );
 }

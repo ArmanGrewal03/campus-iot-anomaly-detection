@@ -588,7 +588,7 @@ export default function ModelPage() {
   
   // Reset to page 0 ONLY when dataset or filter actually changes (not on pagination changes)
   React.useEffect(() => {
-    if (!selectedViewDataset) {
+    if (!selectedDataset) {
       // Initialize refs on first render when dataset is not selected
       if (prevDatasetRef.current === null) {
         prevDatasetRef.current = '';
@@ -599,32 +599,32 @@ export default function ModelPage() {
     
     // Initialize refs on first render with dataset
     if (prevDatasetRef.current === null) {
-      prevDatasetRef.current = selectedViewDataset;
+      prevDatasetRef.current = selectedDataset;
       prevFilterRef.current = filterMode;
       return; // Don't reset on initial load
     }
     
-    const datasetChanged = prevDatasetRef.current !== selectedViewDataset;
+    const datasetChanged = prevDatasetRef.current !== selectedDataset;
     const filterChanged = prevFilterRef.current !== filterMode;
     
     if (datasetChanged || filterChanged) {
-      prevDatasetRef.current = selectedViewDataset;
+      prevDatasetRef.current = selectedDataset;
       prevFilterRef.current = filterMode;
       // Reset to page 0 when dataset or filter changes
       setPaginationModel(prev => ({ page: 0, pageSize: prev.pageSize }));
     }
-  }, [selectedViewDataset, filterMode]);
+  }, [selectedDataset, filterMode]);
   
   // Fetch data when pagination, dataset, or filter changes
   React.useEffect(() => {
-    if (selectedViewDataset) {
+    if (selectedDataset) {
       const offset = paginationModel.page * paginationModel.pageSize;
       fetchViewData(paginationModel.pageSize, offset);
     }
-    // fetchViewData is stable (useCallback with selectedViewDataset and filterMode dependencies)
+    // fetchViewData is stable (useCallback with selectedDataset and filterMode dependencies)
     // We exclude it from deps to avoid unnecessary re-renders, but it will use latest values
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paginationModel.page, paginationModel.pageSize, selectedViewDataset, filterMode]);
+  }, [paginationModel.page, paginationModel.pageSize, selectedDataset, filterMode]);
 
   const fetchApiHealth = React.useCallback(async (silent = false) => {
     if (!silent) {
@@ -1206,7 +1206,7 @@ export default function ModelPage() {
                     const offset = paginationModel.page * paginationModel.pageSize;
                     fetchViewData(paginationModel.pageSize, offset);
                   }}
-                  disabled={viewLoading || !selectedViewDataset}
+                  disabled={viewLoading || !selectedDataset}
                 >
                   Refresh Data
                 </Button>

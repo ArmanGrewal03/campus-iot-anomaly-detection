@@ -43,10 +43,11 @@ export default function ClientsPage() {
     severity: 'success',
   });
 
-  const fetchUsers = React.useCallback(async (limit: number = 25, offset: number = 0) => {
+  const fetchUsers = React.useCallback(async (limit: number = 25, offset: number = 0, skipCache: boolean = false) => {
     setLoading(true);
     try {
-      const res = await fetch(`${USER_SERVICE_BASE}/users?limit=${limit}&offset=${offset}`);
+      const url = `${USER_SERVICE_BASE}/users?limit=${limit}&offset=${offset}${skipCache ? `&_=${Date.now()}` : ''}`;
+      const res = await fetch(url, { cache: skipCache ? 'no-store' : 'default' });
       const json = await res.json() as { 
         status?: string; 
         users?: any[]; 
@@ -114,7 +115,8 @@ export default function ClientsPage() {
       const json = await res.json();
       if (res.ok) {
         setSnackbar({ open: true, message: `User ${userId} unblocked successfully`, severity: 'success' });
-        fetchUsers();
+        const offset = paginationModel.page * paginationModel.pageSize;
+        fetchUsers(paginationModel.pageSize, offset, true);
       } else {
         setSnackbar({ open: true, message: json.detail || 'Failed to unblock user', severity: 'error' });
       }
@@ -149,7 +151,8 @@ export default function ClientsPage() {
       if (res.ok) {
         setSnackbar({ open: true, message: `User ${selectedUserId} blocked successfully`, severity: 'success' });
         setBlockDialogOpen(false);
-        fetchUsers();
+        const offset = paginationModel.page * paginationModel.pageSize;
+        fetchUsers(paginationModel.pageSize, offset, true);
       } else {
         setSnackbar({ open: true, message: json.detail || 'Failed to block user', severity: 'error' });
       }
@@ -252,7 +255,10 @@ export default function ClientsPage() {
         <Button
           variant="outlined"
           startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <RefreshRoundedIcon />}
-          onClick={fetchUsers}
+          onClick={() => {
+            const offset = paginationModel.page * paginationModel.pageSize;
+            fetchUsers(paginationModel.pageSize, offset, true);
+          }}
           disabled={loading}
         >
           Refresh

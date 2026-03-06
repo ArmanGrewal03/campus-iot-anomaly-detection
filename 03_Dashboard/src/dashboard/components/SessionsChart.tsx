@@ -1,10 +1,14 @@
+import * as React from 'react';
 import { useTheme } from '@mui/material/styles';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
-import Chip from '@mui/material/Chip';
 import Typography from '@mui/material/Typography';
 import Stack from '@mui/material/Stack';
+import CircularProgress from '@mui/material/CircularProgress';
+import Alert from '@mui/material/Alert';
 import { LineChart } from '@mui/x-charts/LineChart';
+
+const GATEWAY_BASE = 'http://127.0.0.1:8003';
 
 function AreaGradient({ color, id }: { color: string; id: string }) {
   return (
@@ -17,128 +21,201 @@ function AreaGradient({ color, id }: { color: string; id: string }) {
   );
 }
 
-function getDaysInMonth(month: number, year: number) {
-  const date = new Date(year, month, 0);
-  const monthName = date.toLocaleDateString('en-US', {
-    month: 'short',
-  });
-  const daysInMonth = date.getDate();
-  const days = [];
-  let i = 1;
-  while (days.length < daysInMonth) {
-    days.push(`${monthName} ${i}`);
-    i += 1;
-  }
-  return days;
-}
+// Duration bins (seconds): [max value, label]
+const DURATION_BINS: { max: number; label: string }[] = [
+  { max: 0.001, label: '<1ms' },
+  { max: 0.01, label: '1–10ms' },
+  { max: 0.1, label: '10–100ms' },
+  { max: 1, label: '0.1–1s' },
+  { max: 10, label: '1–10s' },
+  { max: 60, label: '10–60s' },
+  { max: 300, label: '1–5m' },
+  { max: Infinity, label: '5m+' },
+];
 
 export default function SessionsChart() {
   const theme = useTheme();
-  const data = getDaysInMonth(4, 2024);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [datasetName, setDatasetName] = React.useState<string>('');
+  const [binLabels, setBinLabels] = React.useState<string[]>([]);
+  const [normalData, setNormalData] = React.useState<number[]>([]);
+  const [attackData, setAttackData] = React.useState<number[]>([]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    async function fetchData() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const tablesRes = await fetch(`${GATEWAY_BASE}/tables`);
+        const tablesJson = (await tablesRes.json()) as { status?: string; tables?: string[] };
+        if (!tablesRes.ok || tablesJson.status !== 'success' || !tablesJson.tables?.length) {
+          if (!cancelled) setError('No datasets. Upload data on the Model page.');
+          return;
+        }
+
+        const names = tablesJson.tables
+          .filter((t) => t.startsWith('csv_data_'))
+          .map((t) => t.replace(/^csv_data_/, ''));
+        const firstDataset = names[0];
+        if (!firstDataset) {
+          if (!cancelled) setError('No datasets.');
+          return;
+        }
+
+        const viewRes = await fetch(`${GATEWAY_BASE}/view?limit=5000&offset=0`, {
+          headers: { dataset_name: firstDataset },
+        });
+        const viewJson = (await viewRes.json()) as {
+          status?: string;
+          data?: { id: number; data: Record<string, unknown> }[];
+        };
+
+        if (!viewRes.ok || viewJson.status !== 'success' || !viewJson.data?.length) {
+          if (!cancelled) setError('No records to display. Upload data on the Model page.');
+          return;
+        }
+
+        const rows = viewJson.data.map((r) => r.data);
+        const normal = new Array(DURATION_BINS.length).fill(0);
+        const attack = new Array(DURATION_BINS.length).fill(0);
+
+        for (const row of rows) {
+          const dur = Number(row.dur ?? 0);
+          if (typeof dur !== 'number' || isNaN(dur) || dur < 0) continue;
+          const label = Number(row.label ?? 0);
+          for (let i = 0; i < DURATION_BINS.length; i++) {
+            if (dur <= DURATION_BINS[i].max) {
+              if (label === 0) normal[i]++;
+              else attack[i]++;
+              break;
+            }
+          }
+        }
+
+        if (!cancelled) {
+          setDatasetName(firstDataset);
+          setBinLabels(DURATION_BINS.map((b) => b.label));
+          setNormalData(normal);
+          setAttackData(attack);
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load data.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    fetchData();
+    return () => { cancelled = true; };
+  }, []);
+
+  const maxVal = Math.max(
+    ...normalData,
+    ...attackData,
+    1
+  );
+  const yTickStep =
+    maxVal <= 10 ? 5
+    : maxVal <= 50 ? 10
+    : maxVal <= 200 ? 50
+    : maxVal <= 1000 ? 100
+    : 500;
 
   const colorPalette = [
-    theme.palette.primary.light,
     theme.palette.primary.main,
-    theme.palette.primary.dark,
+    theme.palette.error.main,
   ];
+  const chartHeight = 280;
+  const cardMinHeight = 380;
+
+  if (loading) {
+    return (
+      <Card variant="outlined" sx={{ width: '100%', minHeight: cardMinHeight }}>
+        <CardContent>
+          <Typography component="h2" variant="subtitle2" gutterBottom>
+            Traffic by connection duration
+          </Typography>
+          <Stack alignItems="center" justifyContent="center" sx={{ minHeight: chartHeight }}>
+            <CircularProgress size={32} />
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+              Loading from data ingestion…
+            </Typography>
+          </Stack>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card variant="outlined" sx={{ width: '100%', minHeight: cardMinHeight }}>
+        <CardContent>
+          <Typography component="h2" variant="subtitle2" gutterBottom>
+            Traffic by connection duration
+          </Typography>
+          <Alert severity="info">{error}</Alert>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
-    <Card variant="outlined" sx={{ width: '100%' }}>
+    <Card variant="outlined" sx={{ width: '100%', minHeight: cardMinHeight }}>
       <CardContent>
         <Typography component="h2" variant="subtitle2" gutterBottom>
-          Sessions
+          Traffic by connection duration
         </Typography>
-        <Stack sx={{ justifyContent: 'space-between' }}>
-          <Stack
-            direction="row"
-            sx={{
-              alignContent: { xs: 'center', sm: 'flex-start' },
-              alignItems: 'center',
-              gap: 1,
-            }}
-          >
-            <Typography variant="h4" component="p">
-              13,277
-            </Typography>
-            <Chip size="small" color="success" label="+35%" />
-          </Stack>
-          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-            Sessions per day for the last 30 days
-          </Typography>
-        </Stack>
+        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1 }}>
+          Normal vs Attack flows by duration bucket — dataset: {datasetName}
+        </Typography>
         <LineChart
           colors={colorPalette}
           xAxis={[
             {
               scaleType: 'point',
-              data,
-              tickInterval: (index, i) => (i + 1) % 5 === 0,
+              data: binLabels,
+              tickLabelStyle: { fontSize: 11 },
             },
           ]}
-          yAxis={[{}]}
+          yAxis={[
+            {
+              tickMinStep: yTickStep,
+              valueFormatter: (v) => (Number(v) >= 1000 ? `${Number(v) / 1000}k` : String(v)),
+            },
+          ]}
           series={[
             {
-              id: 'direct',
-              label: 'Direct',
-              showMark: false,
-              curve: 'linear',
-              stack: 'total',
+              id: 'normal',
+              label: 'Normal',
+              showMark: true,
+              curve: 'natural',
               area: true,
-              stackOrder: 'ascending',
-              data: [
-                300, 900, 600, 1200, 1500, 1800, 2400, 2100, 2700, 3000, 1800, 3300,
-                3600, 3900, 4200, 4500, 3900, 4800, 5100, 5400, 4800, 5700, 6000,
-                6300, 6600, 6900, 7200, 7500, 7800, 8100,
-              ],
+              data: normalData,
             },
             {
-              id: 'referral',
-              label: 'Referral',
-              showMark: false,
-              curve: 'linear',
-              stack: 'total',
+              id: 'attack',
+              label: 'Attack',
+              showMark: true,
+              curve: 'natural',
               area: true,
-              stackOrder: 'ascending',
-              data: [
-                500, 900, 700, 1400, 1100, 1700, 2300, 2000, 2600, 2900, 2300, 3200,
-                3500, 3800, 4100, 4400, 2900, 4700, 5000, 5300, 5600, 5900, 6200,
-                6500, 5600, 6800, 7100, 7400, 7700, 8000,
-              ],
-            },
-            {
-              id: 'organic',
-              label: 'Organic',
-              showMark: false,
-              curve: 'linear',
-              stack: 'total',
-              stackOrder: 'ascending',
-              data: [
-                1000, 1500, 1200, 1700, 1300, 2000, 2400, 2200, 2600, 2800, 2500,
-                3000, 3400, 3700, 3200, 3900, 4100, 3500, 4300, 4500, 4000, 4700,
-                5000, 5200, 4800, 5400, 5600, 5900, 6100, 6300,
-              ],
-              area: true,
+              data: attackData,
             },
           ]}
-          height={250}
-          margin={{ left: 0, right: 20, top: 20, bottom: 0 }}
+          height={chartHeight}
+          margin={{ left: 48, right: 20, top: 20, bottom: 24 }}
           grid={{ horizontal: true }}
           sx={{
-            '& .MuiAreaElement-series-organic': {
-              fill: "url('#organic')",
-            },
-            '& .MuiAreaElement-series-referral': {
-              fill: "url('#referral')",
-            },
-            '& .MuiAreaElement-series-direct': {
-              fill: "url('#direct')",
-            },
+            '& .MuiAreaElement-series-normal': { fill: "url('#sessions-normal')" },
+            '& .MuiAreaElement-series-attack': { fill: "url('#sessions-attack')" },
           }}
           slotProps={{ legend: { hidden: true } }}
         >
-          <AreaGradient color={theme.palette.primary.dark} id="organic" />
-          <AreaGradient color={theme.palette.primary.main} id="referral" />
-          <AreaGradient color={theme.palette.primary.light} id="direct" />
+          <AreaGradient color={theme.palette.primary.main} id="sessions-normal" />
+          <AreaGradient color={theme.palette.error.main} id="sessions-attack" />
         </LineChart>
       </CardContent>
     </Card>
