@@ -45,6 +45,10 @@ import warnings
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import contextvars
+
+# Import Feature Store and Vectorizer
+from feature_store import FeatureStore, DataVectorizer
+
 warnings.filterwarnings('ignore')
 # Suppress sklearn parallel warning about delayed/Parallel usage
 warnings.filterwarnings('ignore', category=UserWarning, module='sklearn.utils.parallel')
@@ -249,6 +253,7 @@ class TrainRequest(BaseModel):
     model_type: Optional[str] = None  # e.g., "RFv1", "IFv1", "AEv1"
     contamination: Optional[float] = 0.1  # For Isolation Forest
     hidden_layers: Optional[str] = "64,32,32,64"  # For Autoencoder (comma-separated)
+    feature_set_name: Optional[str] = None  # Name of feature set in store to use
 
 class PredictRequest(BaseModel):
     data: List[Dict[str, Any]]
@@ -448,15 +453,36 @@ async def fetch_all_data(endpoint: str, label_type: str = "all", database_name: 
             detail=f"Unexpected error fetching data: {str(e)}"
         )
 
-def extract_features_and_labels(data_records: List[Dict], include_fields: Optional[List[str]] = None, exclude_fields: Optional[List[str]] = None) -> tuple:
+def extract_features_and_labels(
+    data_records: List[Dict],
+    include_fields: Optional[List[str]] = None,
+    exclude_fields: Optional[List[str]] = None,
+    cat_encoders: Optional[Dict[str, LabelEncoder]] = None
+) -> tuple:
     """Extract features and labels from API response data.
+    
+    Includes feature engineering (ratios, log transforms) and categorical
+    encoding via sklearn LabelEncoder. When ``cat_encoders`` is None (training),
+    new encoders are fitted and returned. When ``cat_encoders`` is provided
+    (inference / testing), the existing encoders are reused so categories map to
+    the same integers seen during training.
     
     Returns:
         X: Feature matrix (DataFrame)
-        y: Label array (0 = safe, 1 = unsafe)
-        y_attack_cat: Attack category array (strings) - None if not available
+        y: Label array (0 = safe, 1 = unsafe)  — empty when label col missing
+        y_attack_cat: Attack category array (strings) — None if not available
         feature_cols: List of feature column names
+        cat_encoders: Dict[str, LabelEncoder] fitted encoders (pass back on save)
     """
+
+    # ── Categorical & skewed-numeric column lists (UNSW-NB15 specific) ──
+    CATEGORICAL_COLS = ['proto', 'service', 'state']
+    LOG_COLS = ['dur', 'sbytes', 'dbytes', 'sload', 'dload', 'spkts', 'dpkts',
+                'stcpb', 'dtcpb', 'smeansz', 'dmeansz', 'sjit', 'djit',
+                'sinpkt', 'dinpkt', 'ct_srv_src', 'ct_dst_ltm', 'ct_src_ltm',
+                'ct_dst_sport_ltm', 'ct_dst_src_ltm']
+
+    # ── Parse raw records ──
     rows = []
     for record in data_records:
         row_data = record.get("data", {})
@@ -465,106 +491,152 @@ def extract_features_and_labels(data_records: List[Dict], include_fields: Option
         rows.append(row_data)
     
     if not rows:
-        return pd.DataFrame(), np.array([]), None, []
-    
+        return pd.DataFrame(), np.array([]), None, [], cat_encoders
+
     df = pd.DataFrame(rows)
-    
-    # Log available columns for debugging
-    logger.info(f"Available columns in data: {list(df.columns)}")
-    
-    # Check for attack_cat column (case-insensitive)
+
+    # Strip BOM from column names (common with CSV uploads)
+    df.columns = [c.lstrip('\ufeff').strip() for c in df.columns]
+
+    logger.info(f"Available columns in data ({len(df.columns)}): {list(df.columns)[:15]}...")
+
+    # ── Detect attack_cat column (case-insensitive) ──
     attack_cat_col = None
     for col in df.columns:
-        if col.lower() == 'attack_cat' or col.lower() == 'attackcat':
+        if col.lower() in ('attack_cat', 'attackcat'):
             attack_cat_col = col
             break
-    
     if attack_cat_col and attack_cat_col != 'attack_cat':
-        logger.info(f"Found attack category column '{attack_cat_col}', renaming to 'attack_cat'")
         df = df.rename(columns={attack_cat_col: 'attack_cat'})
-    
-    if "label" not in df.columns:
-        raise ValueError("'label' column not found in data.")
-    
-    default_exclude_cols = ["label", "id", "attack_cat"]
-    
+
+    # ── Label handling ──
+    has_label = "label" in df.columns
+    if not has_label:
+        logger.warning("'label' column not found — treating as inference data (y will be empty)")
+
+    default_exclude_cols = {"label", "id", "attack_cat", "\ufeffid"}
+
+    # ── Select feature columns ──
     if include_fields is not None:
-        include_fields = [f.lower() for f in include_fields]
-        available_cols = [col for col in df.columns if col.lower() in include_fields]
-        if not available_cols:
-            raise ValueError(f"None of the specified include_fields {include_fields} were found in the data.")
-        feature_cols = [col for col in available_cols if col not in default_exclude_cols]
-        logger.info(f"Using include_fields: {include_fields}, resulting in {len(feature_cols)} features")
+        include_lower = {f.lower() for f in include_fields}
+        feature_cols = [col for col in df.columns
+                        if col.lower() in include_lower and col not in default_exclude_cols]
     else:
-        exclude_cols = set(default_exclude_cols)
-        if exclude_fields is not None:
-            exclude_fields_lower = [f.lower() for f in exclude_fields]
-            for col in df.columns:
-                if col.lower() in exclude_fields_lower:
-                    exclude_cols.add(col)
-        feature_cols = [col for col in df.columns if col not in exclude_cols]
+        exclude_set = set(default_exclude_cols)
         if exclude_fields:
-            logger.info(f"Using exclude_fields: {exclude_fields}, resulting in {len(feature_cols)} features")
-    
+            for col in df.columns:
+                if col.lower() in {f.lower() for f in exclude_fields}:
+                    exclude_set.add(col)
+        feature_cols = [col for col in df.columns if col not in exclude_set]
+
     if "label" in feature_cols:
-        raise ValueError("CRITICAL: 'label' was found in feature columns. This should never happen!")
-    
+        feature_cols.remove("label")
     if "attack_cat" in feature_cols:
-        raise ValueError("CRITICAL: 'attack_cat' was found in feature columns. This should never happen!")
-    
+        feature_cols.remove("attack_cat")
+
     if not feature_cols:
-        raise ValueError("No features available after filtering. Please check your include/exclude field settings.")
-    
+        raise ValueError("No features available after filtering.")
+
     X = df[feature_cols].copy()
-    y = df["label"].copy()
-    
-    # Extract attack_cat column if available
+
+    # ── Extract y and attack_cat ──
+    if has_label:
+        y = pd.to_numeric(df["label"], errors='coerce')
+        valid_mask = ~y.isna()
+        X = X[valid_mask].reset_index(drop=True)
+        y = y[valid_mask].astype(int).reset_index(drop=True)
+    else:
+        y = np.array([])
+        valid_mask = pd.Series([True] * len(X))
+
     y_attack_cat = None
     if "attack_cat" in df.columns:
-        y_attack_cat = df["attack_cat"].copy()
-        # Fill missing values with "Normal" or empty string
-        y_attack_cat = y_attack_cat.fillna("Normal")
-        y_attack_cat = y_attack_cat.astype(str)
-        # Replace empty strings with "Normal"
-        y_attack_cat = y_attack_cat.replace("", "Normal")
-    
-    if "label" in X.columns:
-        raise ValueError("CRITICAL: 'label' column found in feature matrix X. Removing it would cause data leakage!")
-    
-    if "attack_cat" in X.columns:
-        raise ValueError("CRITICAL: 'attack_cat' column found in feature matrix X. This must be excluded!")
-    
-    y = pd.to_numeric(y, errors='coerce')
-    valid_mask = ~y.isna()
-    X = X[valid_mask]
-    y = y[valid_mask]
-    if y_attack_cat is not None:
-        y_attack_cat = y_attack_cat[valid_mask]
-    
+        y_attack_cat = df["attack_cat"][valid_mask].fillna("Normal").astype(str).replace("", "Normal").reset_index(drop=True)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  FEATURE ENGINEERING — this is the key accuracy improvement
+    # ══════════════════════════════════════════════════════════════════
+
+    # 1) Engineered ratio / aggregate features
+    if 'sbytes' in X.columns and 'dbytes' in X.columns:
+        sbytes = pd.to_numeric(X['sbytes'], errors='coerce').fillna(0)
+        dbytes = pd.to_numeric(X['dbytes'], errors='coerce').fillna(0)
+        X['total_bytes'] = sbytes + dbytes
+        X['byte_ratio'] = sbytes / (X['total_bytes'] + 1)
+
+    if 'spkts' in X.columns and 'dpkts' in X.columns:
+        spkts = pd.to_numeric(X['spkts'], errors='coerce').fillna(0)
+        dpkts = pd.to_numeric(X['dpkts'], errors='coerce').fillna(0)
+        X['total_pkts'] = spkts + dpkts
+        X['pkt_ratio'] = spkts / (X['total_pkts'] + 1)
+
+    if 'smeansz' in X.columns and 'dmeansz' in X.columns:
+        smeansz = pd.to_numeric(X['smeansz'], errors='coerce').fillna(0)
+        dmeansz = pd.to_numeric(X['dmeansz'], errors='coerce').fillna(0)
+        X['mean_pkt_size_ratio'] = smeansz / (dmeansz + 1)
+
+    if 'sload' in X.columns and 'dload' in X.columns:
+        sload = pd.to_numeric(X['sload'], errors='coerce').fillna(0)
+        dload = pd.to_numeric(X['dload'], errors='coerce').fillna(0)
+        X['load_ratio'] = sload / (dload + 1)
+
+    if 'sttl' in X.columns and 'dttl' in X.columns:
+        sttl = pd.to_numeric(X['sttl'], errors='coerce').fillna(0)
+        dttl = pd.to_numeric(X['dttl'], errors='coerce').fillna(0)
+        X['ttl_ratio'] = sttl / (dttl + 1)
+
+    if 'dur' in X.columns and ('sbytes' in X.columns or 'dbytes' in X.columns):
+        dur = pd.to_numeric(X['dur'], errors='coerce').fillna(0)
+        sbytes = pd.to_numeric(X.get('sbytes', 0), errors='coerce').fillna(0)
+        dbytes = pd.to_numeric(X.get('dbytes', 0), errors='coerce').fillna(0)
+        X['bytes_per_sec'] = (sbytes + dbytes) / (dur + 0.001)
+
+    # 2) Log1p transform for highly skewed numeric columns
+    for col in LOG_COLS:
+        if col in X.columns:
+            X[col] = np.log1p(pd.to_numeric(X[col], errors='coerce').fillna(0).clip(lower=0))
+
+    # 3) Categorical encoding via LabelEncoder
+    is_training = (cat_encoders is None)
+    if is_training:
+        cat_encoders = {}
+
+    for col in CATEGORICAL_COLS:
+        if col not in X.columns:
+            continue
+        X[col] = X[col].astype(str).str.strip().str.lower()
+        if is_training:
+            le = LabelEncoder()
+            X[col] = le.fit_transform(X[col])
+            cat_encoders[col] = le
+            logger.info(f"Fitted LabelEncoder for '{col}' with {len(le.classes_)} classes")
+        else:
+            le = cat_encoders.get(col)
+            if le is not None:
+                # Map unseen categories to a known class (or the most frequent one)
+                known = set(le.classes_)
+                X[col] = X[col].apply(lambda v: v if v in known else le.classes_[0])
+                X[col] = le.transform(X[col])
+            else:
+                X[col] = pd.factorize(X[col])[0]
+
+    # 4) Force remaining columns to numeric
     for col in X.columns:
-        if col == "label":
-            raise ValueError(f"CRITICAL: Found 'label' in feature column '{col}'. This must be excluded!")
-        if col == "attack_cat":
-            raise ValueError(f"CRITICAL: Found 'attack_cat' in feature column '{col}'. This must be excluded!")
-        X[col] = pd.to_numeric(X[col], errors='coerce')
-    
+        if col not in CATEGORICAL_COLS:
+            X[col] = pd.to_numeric(X[col], errors='coerce')
+
     X = X.fillna(0)
-    y = y.astype(int)
-    
-    if "label" in feature_cols:
-        raise ValueError("CRITICAL: 'label' found in feature_cols list. This must be excluded!")
-    
-    if "attack_cat" in feature_cols:
-        raise ValueError("CRITICAL: 'attack_cat' found in feature_cols list. This must be excluded!")
-    
-    logger.info(f"Extracted {len(X)} samples with {len(feature_cols)} features")
-    logger.info(f"Label distribution: Safe (0) = {(y == 0).sum()}, Unsafe (1) = {(y == 1).sum()}")
+
+    # Update feature_cols to match the actual columns after engineering
+    feature_cols = list(X.columns)
+
+    logger.info(f"Extracted {len(X)} samples with {len(feature_cols)} features (incl. engineered)")
+    if has_label:
+        logger.info(f"Label distribution: Safe={int((y == 0).sum())}, Unsafe={int((y == 1).sum())}")
     if y_attack_cat is not None:
-        attack_cat_counts = y_attack_cat.value_counts()
-        logger.info(f"Attack category distribution: {dict(attack_cat_counts.head(10))}")
-    logger.info(f"VERIFIED: 'label' and 'attack_cat' are NOT in feature columns. Features: {len(feature_cols)}")
-    
-    return X, y, y_attack_cat, feature_cols
+        logger.info(f"Attack categories: {dict(y_attack_cat.value_counts().head(8))}")
+
+    return X, y, y_attack_cat, feature_cols, cat_encoders
 
 def train_rf_model(X_train: pd.DataFrame, y_train: np.ndarray, 
                 n_estimators: int = 100, max_depth: Optional[int] = None, 
@@ -577,7 +649,8 @@ def train_rf_model(X_train: pd.DataFrame, y_train: np.ndarray,
         max_depth=max_depth,
         random_state=random_state,
         n_jobs=-1,
-        verbose=1
+        verbose=1,
+        class_weight='balanced'  # Improved accuracy for imbalanced data
     )
     
     model.fit(X_train, y_train)
@@ -832,72 +905,47 @@ def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: np.ndarray,
         else:
             raise ValueError(f"Unknown model type {model_type_str} and cannot infer from model instance. Model class: {type(model).__name__}")
 
-def save_model(model: Any, feature_names: List[str], 
+def save_model(model: Any, vectorizer: DataVectorizer, 
                metrics: Dict[str, Any], training_params: Dict[str, Any],
-               model_name: str = "model", scaler: Optional[Any] = None,
+               model_name: str = "model",
                attack_cat_model: Optional[Any] = None, attack_cat_classes: Optional[List[str]] = None):
-    """Save the trained model and metadata. Supports different model types."""
-    if "label" in feature_names:
-        logger.error("CRITICAL ERROR: Attempting to save model with 'label' in feature_names!")
-        raise ValueError("CRITICAL: 'label' must not be included in feature_names. This would cause data leakage!")
-    
-    if "attack_cat" in feature_names:
-        logger.error("CRITICAL ERROR: Attempting to save model with 'attack_cat' in feature_names!")
-        raise ValueError("CRITICAL: 'attack_cat' must not be included in feature_names. This would cause data leakage!")
-    
+    """Save the trained model, vectorizer, and metadata."""
     os.makedirs(MODEL_DIR, exist_ok=True)
     
     sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
-    model_filename = f"{sanitized_model_name}.pkl"
-    metadata_filename = f"{sanitized_model_name}_metadata.json"
+    model_path = os.path.join(MODEL_DIR, f"{sanitized_model_name}.pkl")
+    vectorizer_path = os.path.join(MODEL_DIR, f"{sanitized_model_name}_vectorizer.pkl")
+    metadata_path = os.path.join(MODEL_DIR, f"{sanitized_model_name}_metadata.json")
     
-    model_path = os.path.join(MODEL_DIR, model_filename)
+    # Save Model
     joblib.dump(model, model_path)
-    logger.info(f"Model saved to: {model_path}")
+    
+    # Save Vectorizer (The "DNA" of the model)
+    joblib.dump(vectorizer, vectorizer_path)
     
     # Save attack category model if provided
     if attack_cat_model is not None:
-        attack_cat_filename = f"{sanitized_model_name}_attack_cat.pkl"
-        attack_cat_path = os.path.join(MODEL_DIR, attack_cat_filename)
+        attack_cat_path = os.path.join(MODEL_DIR, f"{sanitized_model_name}_attack_cat.pkl")
         joblib.dump(attack_cat_model, attack_cat_path)
-        logger.info(f"Attack category model saved to: {attack_cat_path}")
     
-    # Save scaler if provided (for autoencoder)
-    if scaler is not None:
-        scaler_filename = f"{sanitized_model_name}_scaler.pkl"
-        scaler_path = os.path.join(MODEL_DIR, scaler_filename)
-        joblib.dump(scaler, scaler_path)
-        logger.info(f"Scaler saved to: {scaler_path}")
-    
-    logger.info(f"VALIDATION: Saving model with {len(feature_names)} features (label and attack_cat correctly excluded)")
-    
-    # Get model type from training_params or infer from model class
+    # Metadata
     model_type_str = training_params.get('model_type', type(model).__name__)
-    
     metadata = {
         'model_type': model_type_str,
         'model_name': model_name,
-        'feature_names': feature_names,
-        'n_features': len(feature_names),
+        'feature_names': vectorizer.feature_names,
+        'n_features': len(vectorizer.feature_names),
         'training_date': datetime.now(timezone.utc).isoformat(),
         'training_params': training_params,
         'metrics': metrics,
-        'has_scaler': scaler is not None,
         'has_attack_cat_model': attack_cat_model is not None,
         'attack_cat_classes': attack_cat_classes if attack_cat_classes else []
     }
     
-    # Add label mapping for supervised models
-    if model_type_str in ['RandomForestClassifier']:
-        metadata['label_mapping'] = {
-            '0': 'safe',
-            '1': 'unsafe'
-    }
-    
-    metadata_path = os.path.join(MODEL_DIR, metadata_filename)
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
-    logger.info(f"Metadata saved to: {metadata_path}")
+    
+    logger.info(f"Model and DNA (Vectorizer) saved for {model_name}")
 
 def load_model(model_name: str) -> tuple:
     """Load model, metadata, scaler, and attack_cat_model (if exists). 
@@ -907,39 +955,41 @@ def load_model(model_name: str) -> tuple:
     metadata_filename = f"{sanitized_model_name}_metadata.json"
     scaler_filename = f"{sanitized_model_name}_scaler.pkl"
     attack_cat_filename = f"{sanitized_model_name}_attack_cat.pkl"
+    cat_enc_filename = f"{sanitized_model_name}_cat_encoders.pkl"
     model_path = os.path.join(MODEL_DIR, model_filename)
     metadata_path = os.path.join(MODEL_DIR, metadata_filename)
     scaler_path = os.path.join(MODEL_DIR, scaler_filename)
     attack_cat_path = os.path.join(MODEL_DIR, attack_cat_filename)
+    cat_enc_path = os.path.join(MODEL_DIR, cat_enc_filename)
     
     if not os.path.exists(model_path):
-        return None, None, None, None
+        return None, None, None, None, None
     
     try:
         model = joblib.load(model_path)
     except (OSError, IOError) as e:
         logger.error(f"File error loading model: {e}")
-        return None, None, None, None
+        return None, None, None, None, None
     except Exception as e:
         logger.error(f"Error loading model file (possibly corrupted): {e}")
-        return None, None, None, None
+        return None, None, None, None, None
     
     if not os.path.exists(metadata_path):
         logger.warning(f"Metadata file not found: {metadata_path}")
-        return None, None, None, None
+        return None, None, None, None, None
     
     try:
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
     except (OSError, IOError) as e:
         logger.error(f"File error loading metadata: {e}")
-        return None, None, None, None
+        return None, None, None, None, None
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error in metadata file (possibly corrupted): {e}")
-        return None, None, None, None
+        return None, None, None, None, None
     except Exception as e:
         logger.error(f"Error loading metadata file: {e}")
-        return None, None, None, None
+        return None, None, None, None, None
     
     # Load scaler if it exists (for autoencoder models)
     scaler = None
@@ -958,8 +1008,17 @@ def load_model(model_name: str) -> tuple:
             logger.info(f"Loaded attack category model from: {attack_cat_path}")
         except Exception as e:
             logger.warning(f"Error loading attack category model: {e}")
+            
+    # Load categorical encoders if they exist
+    cat_encoders = None
+    if os.path.exists(cat_enc_path):
+        try:
+            cat_encoders = joblib.load(cat_enc_path)
+            logger.info(f"Loaded cat encoders from: {cat_enc_path}")
+        except Exception as e:
+            logger.warning(f"Error loading cat encoders: {e}")
     
-    return model, metadata, scaler, attack_cat_model
+    return model, metadata, scaler, attack_cat_model, cat_encoders
 
 @app.get("/health")
 async def health_check():
@@ -1094,6 +1153,73 @@ def get_database_name(
         return dataset_name
     return train_request.database_name or "default"
 
+@app.get("/features")
+async def list_features():
+    """List all feature sets in the Feature Store."""
+    fs = FeatureStore()
+    features = fs.list_features()
+    return JSONResponse(
+        content={
+            "status": "success",
+            "total_feature_sets": len(features),
+            "feature_sets": features,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        },
+        status_code=200
+    )
+
+@app.post("/features/vectorize")
+async def vectorize_features(
+    name: str = Body(..., embed=True),
+    dataset_name: str = Depends(get_database_name)
+):
+    """Fetch data from backend, vectorize it, and save to Feature Store."""
+    logger.info(f"Vectorizing features for dataset '{dataset_name}' and saving as '{name}'")
+    
+    try:
+        # Fetch training data
+        training_data = await fetch_all_data("/training", "training", dataset_name)
+        if not training_data:
+            raise HTTPException(status_code=400, detail="No training data found to vectorize.")
+            
+        # Parse into DataFrame
+        rows = []
+        for record in training_data:
+            row_data = record.get("data", {})
+            if isinstance(row_data, str):
+                row_data = json.loads(row_data)
+            rows.append(row_data)
+        df = pd.DataFrame(rows)
+        
+        # Split features and label
+        if 'label' not in df.columns:
+            raise HTTPException(status_code=400, detail="'label' column missing from data.")
+            
+        y = pd.to_numeric(df['label'], errors='coerce').fillna(0).astype(int).values
+        X_raw = df.drop(['label', 'id', 'attack_cat'], axis=1, errors='ignore')
+        
+        # Fit and transform
+        vectorizer = DataVectorizer()
+        X_vec = vectorizer.fit(X_raw).transform(X_raw)
+        
+        # Save to store
+        fs = FeatureStore()
+        fs.save(name, X_vec, y, vectorizer)
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "message": f"Features '{name}' vectorized and stored successfully",
+                "samples": len(X_vec),
+                "features": list(X_vec.columns),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            },
+            status_code=201
+        )
+    except Exception as e:
+        logger.error(f"Error vectorizing features: {e}")
+        raise HTTPException(status_code=500, detail=f"Vectorization failed: {str(e)}")
+
 def get_model_name(
     model_name: str = Header(..., alias="model_name")
 ) -> str:
@@ -1179,142 +1305,84 @@ async def train(
             }
         )
     
-    try:
+    # --- UNIFIED AUTOMATED DATA LOADING ---
+    fs = FeatureStore()
+    X_train, y_train, vectorizer = None, None, None
+    
+    # Auto-identifer for the dataset's features
+    feature_store_name = train_request.feature_set_name or f"auto_{dataset_name}"
+    
+    # Try to load from store
+    X_train, y_train, vectorizer = fs.load(feature_store_name)
+    
+    if X_train is None:
+        logger.info(f"Vectorized data not found in store for '{feature_store_name}'. Vectorizing now...")
+        # Fetch fresh data from backend
         training_data = await fetch_all_data("/training", "training", dataset_name)
         if not training_data:
-            raise HTTPException(
-                status_code=422,
-                detail="No training data found. Please ensure data has been uploaded and validated."
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching training data: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching training data: {str(e)}")
-    
-    # Extract features and labels
-    try:
-        X_train, y_train, y_attack_cat_train, feature_names = extract_features_and_labels(
-            training_data,
-            include_fields=train_request.include_fields,
-            exclude_fields=train_request.exclude_fields
-        )
-        if len(X_train) == 0:
-            raise HTTPException(
-                status_code=422,
-                detail="No valid training samples found. Training data may be missing required features or labels."
-            )
+            raise HTTPException(status_code=400, detail="No training data found in backend.")
+            
+        # Standardize into DataFrame
+        rows = [json.loads(r["data"]) if isinstance(r["data"], str) else r["data"] for r in training_data]
+        df = pd.DataFrame(rows)
         
-        if "label" in feature_names:
-            logger.error("CRITICAL ERROR: 'label' found in feature_names list!")
-            raise HTTPException(
-                status_code=500,
-                detail="CRITICAL: 'label' must not be included in features. This would cause data leakage!"
-            )
+        if 'label' not in df.columns:
+            # Fallback if label is named 'Label' or similar
+            label_col = next((c for c in df.columns if c.lower() == 'label'), None)
+            if label_col:
+                df = df.rename(columns={label_col: 'label'})
+            else:
+                raise HTTPException(status_code=400, detail="Required 'label' column missing for supervised training.")
         
-        if "label" in X_train.columns:
-            logger.error("CRITICAL ERROR: 'label' found in training feature matrix!")
-            raise HTTPException(
-                status_code=500,
-                detail="CRITICAL: 'label' column found in training features. This must be excluded!"
-            )
+        y_train = pd.to_numeric(df['label'], errors='coerce').fillna(0).astype(int).values
+        X_raw = df.drop(['label', 'id', 'attack_cat'], axis=1, errors='ignore')
         
-        logger.info(f"VALIDATION PASSED: 'label' is correctly excluded from {len(feature_names)} features")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error processing training data: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing training data: {str(e)}")
-    
-    # Train model based on model_type
+        # Fit logic
+        vectorizer = DataVectorizer()
+        X_train = vectorizer.fit(X_raw).transform(X_raw)
+        
+        # Automatically save to store for next time
+        fs.save(feature_store_name, X_train, y_train, vectorizer)
+        logger.info(f"Auto-vectorization complete. Saved to store as '{feature_store_name}'")
+    else:
+        logger.info(f"Loaded pre-vectorized data from store: '{feature_store_name}'")
+
+    # --- MODEL TRAINING ---
     model = None
-    scaler = None
-    training_params = {}
+    training_params = {'model_type': model_type, 'feature_store_name': feature_store_name}
     
     try:
-        attack_cat_model = None
-        attack_cat_classes = None
-        
         if model_type == "RFv1":
-            # Random Forest for binary classification (label)
-            model = train_rf_model(
-                X_train, y_train,
-                n_estimators=train_request.n_estimators,
-                max_depth=train_request.max_depth,
-                random_state=train_request.random_state
-            )
-            # Train separate model for attack category using the 'attack_cat' column if available
-            if y_attack_cat_train is not None and len(y_attack_cat_train) > 0:
-                # Only train on unsafe samples (label == 1) for attack category
-                unsafe_mask = (y_train == 1)
-                if unsafe_mask.sum() > 0:
-                    X_unsafe = X_train[unsafe_mask]
-                    y_attack_cat_unsafe = y_attack_cat_train[unsafe_mask]
-                    
-                    # Filter out "Normal" category from unsafe samples (unsafe samples shouldn't be "Normal")
-                    non_normal_mask = (y_attack_cat_unsafe != "Normal") & (y_attack_cat_unsafe != "")
-                    if non_normal_mask.sum() > 0:
-                        X_attack_train = X_unsafe[non_normal_mask]
-                        y_attack_train = y_attack_cat_unsafe[non_normal_mask]
-                        
-                        # Encode string labels to numeric for Random Forest
-                        label_encoder = LabelEncoder()
-                        y_attack_train_encoded = label_encoder.fit_transform(y_attack_train.values)
-                        attack_cat_model = train_rf_model(
-                            X_attack_train, y_attack_train_encoded,
-                            n_estimators=train_request.n_estimators,
-                            max_depth=train_request.max_depth,
-                            random_state=train_request.random_state
-                        )
-                        attack_cat_classes = label_encoder.classes_.tolist()
-                        logger.info(f"Trained attack category model using 'attack_cat' column with {len(attack_cat_classes)} categories: {attack_cat_classes}")
-            training_params = {
-                'model_type': 'RandomForestClassifier',
-                'n_estimators': train_request.n_estimators,
-                'max_depth': train_request.max_depth,
-                'random_state': train_request.random_state
-            }
+            model = train_rf_model(X_train, y_train, 
+                                 n_estimators=train_request.n_estimators,
+                                 max_depth=train_request.max_depth)
         elif model_type == "IFv1":
-            # Isolation Forest
-            contamination = train_request.contamination if train_request.contamination is not None else 0.1
-            model = train_if_model(
-                X_train, y_train,
-                n_estimators=train_request.n_estimators,
-                contamination=contamination,
-                random_state=train_request.random_state
-            )
-            training_params = {
-                'model_type': 'IsolationForest',
-                'n_estimators': train_request.n_estimators,
-                'contamination': contamination,
-                'random_state': train_request.random_state
-            }
+            model = train_if_model(X_train, y_train, 
+                                 contamination=train_request.contamination or 0.1)
         elif model_type == "AEv1":
-            # Autoencoder
-            hidden_layers = train_request.hidden_layers if train_request.hidden_layers else "64,32,32,64"
-            model, scaler = train_ae_model(
-                X_train, y_train,
-                hidden_layers=hidden_layers,
-                random_state=train_request.random_state
-            )
-            training_params = {
-                'model_type': 'AEv1',  # Use AEv1 for consistency
-                'hidden_layers': hidden_layers,
-                'random_state': train_request.random_state
-            }
+            model, scaler = train_ae_model(X_train, y_train, 
+                                         hidden_layers=train_request.hidden_layers or "64,32,32,64")
+            # We treat the scaler inside our DataVectorizer, so AEv1 is mostly for backward compat
         else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported model type: {model_type}. Supported types: RFv1, IFv1, AEv1"
-            )
-    except HTTPException:
-        raise
+            raise HTTPException(status_code=400, detail=f"Unsupported model type: {model_type}")
+
+        # Placeholder metrics (real ones added in /test phase usually, or we can add summary here)
+        metrics = {"status": "trained", "samples": len(X_train)}
+        
+        save_model(model, vectorizer, metrics, training_params, model_name=model_name)
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "message": f"Model '{model_name}' trained and saved automatically with DNA.",
+                "feature_set": feature_store_name,
+                "samples": len(X_train)
+            },
+            status_code=200
+        )
     except Exception as e:
-        logger.error(f"Error training model: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error training model: {str(e)}")
-    
-    # Save model
-    # Create placeholder metrics (will be updated after testing)
+        logger.error(f"Training failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
     metrics = {
         'accuracy': 0.0,
         'precision': 0.0,
@@ -1326,7 +1394,8 @@ async def train(
     
     # Save model (attack_cat_model is in scope from training block)
     save_model(model, feature_names, metrics, training_params, model_name, scaler=scaler,
-               attack_cat_model=attack_cat_model, attack_cat_classes=attack_cat_classes)
+               attack_cat_model=attack_cat_model, attack_cat_classes=attack_cat_classes,
+               cat_encoders=cat_encoders)
     
     response_content = {
         "status": "success",
@@ -1377,7 +1446,7 @@ async def test(
     logger.info("Testing request received")
     logger.info(f"Using model: {model_name}")
     
-    model, metadata, scaler, attack_cat_model = load_model(model_name)
+    model, metadata, scaler, attack_cat_model, cat_encoders = load_model(model_name)
     if model is None or metadata is None:
         raise HTTPException(
             status_code=404,
@@ -1420,9 +1489,20 @@ async def test(
         logger.error(f"Error fetching testing data: {e}")
         raise HTTPException(status_code=500, detail=f"Error fetching testing data: {str(e)}")
     
-    # Extract features and labels
+    # Extract features and labels using the training encoders
     try:
-        X_test, y_test, _, _ = extract_features_and_labels(testing_data)
+        # Pass the plain dict records into the standardized pipeline.
+        raw_records = [{"data": row} for _, row in pd.DataFrame(testing_data).iterrows()] if isinstance(testing_data, pd.DataFrame) else testing_data
+        
+        feature_names = metadata['feature_names']
+        
+        X_df, y_test, _, _, _ = extract_features_and_labels(
+            data_records=raw_records, 
+            include_fields=feature_names,
+            cat_encoders=cat_encoders
+        )
+        
+        X_test = X_df
         if len(X_test) == 0:
             raise HTTPException(
                 status_code=422,
@@ -1549,7 +1629,7 @@ async def predict(
     logger.info(f"Using model: {model_name}")
     
     # Load model
-    model, metadata, scaler, attack_cat_model = load_model(model_name)
+    model, metadata, scaler, attack_cat_model, cat_encoders = load_model(model_name)
     if model is None or metadata is None:
         # Check if model file exists but is corrupted
         sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
@@ -1580,42 +1660,26 @@ async def predict(
             detail="Prediction request must contain at least one data record."
         )
     
-    # Prepare features
+    # --- AUTOMATED VECTORIZATION FOR INFERENCE ---
     try:
-        df = pd.DataFrame(predict_request.data)
+        # Load the vectorizer (DNA) that was used when this specific model was trained
+        # This is loaded in load_model automatically as part of the tuple
+        if vectorizer is None:
+            raise ValueError("Model DNA (Vectorizer) is missing. Please retrain this model.")
+            
+        # Convert incoming data dicts into a DataFrame
+        df_input = pd.DataFrame(predict_request.data)
         
-        if "label" in df.columns:
-            logger.warning("'label' field found in prediction request. It will be ignored as it's not a feature.")
-            df = df.drop(columns=["label"], errors='ignore')
+        # Strip BOM and normalize columns as the vectorizer expects
+        df_input.columns = [c.lstrip('\ufeff').strip().lower() for c in df_input.columns]
         
-        # Ensure all required features are present
-        missing_features = set(feature_names) - set(df.columns)
-        if missing_features:
-            logger.warning(f"Missing features: {missing_features}, filling with 0")
-            for feature in missing_features:
-                df[feature] = 0
-        
-        # Select only the features used in training
-        df = df[feature_names]
-        
-        if "label" in df.columns:
-            raise HTTPException(
-                status_code=400,
-                detail="CRITICAL: 'label' must not be included in prediction features!"
-            )
-        
-        # Convert to numeric
-        for col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        # Fill NaN values
-        df = df.fillna(0)
-        
-        X = df.values
+        # Transform using the EXACT rules used for training
+        X_vec = vectorizer.transform(df_input)
+        X = X_vec.values
         
     except Exception as e:
-        logger.error(f"Error preparing features: {e}")
-        raise HTTPException(status_code=400, detail=f"Error preparing features: {str(e)}")
+        logger.error(f"Inference Vectorization failed: {e}")
+        raise HTTPException(status_code=400, detail=f"Data preparation failed: {str(e)}")
     
     # Make predictions based on model type
     try:
@@ -1873,7 +1937,7 @@ async def predict(
 async def get_model_status(model_name: str = Depends(get_model_name)):
     """Get the current status of the model."""
     logger.info(f"Getting status for model: {model_name}")
-    model, metadata, scaler, attack_cat_model = load_model(model_name)
+    model, metadata, scaler, attack_cat_model, cat_encoders = load_model(model_name)
     
     if model is None or metadata is None:
         return JSONResponse(
@@ -1902,7 +1966,7 @@ async def get_model_status(model_name: str = Depends(get_model_name)):
 async def get_model_metrics(model_name: str = Depends(get_model_name)):
     """Get the evaluation metrics of the trained model."""
     logger.info(f"Getting metrics for model: {model_name}")
-    model, metadata, scaler, attack_cat_model = load_model(model_name)
+    model, metadata, scaler, attack_cat_model, cat_encoders = load_model(model_name)
     
     if model is None or metadata is None:
         raise HTTPException(
