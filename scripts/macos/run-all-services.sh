@@ -13,6 +13,10 @@ echo -e "${CYAN}Starting All Services (macOS)${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
 
+# set default data generation mode if not already defined
+: "${DATA_GENERATION_MODE:=random}"
+export DATA_GENERATION_MODE
+
 # Get the script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 

@@ -4,12 +4,36 @@
 
 **Run the backend first**, then the frontend.
 
+> **Note:** the backend’s data generator can be configured via the
+> `DATA_GENERATION_MODE` environment variable.  See below for examples.
+
 1. **Backend** (from repo root):
    ```bash
    cd C-Backend/P1
    uvicorn main:app --reload
    ```
    API runs at http://localhost:8000
+
+   Scripts now default to random mode automatically.  You can still
+override it if you prefer:
+
+```bash
+DATA_GENERATION_MODE=template ./scripts/macos/run-all-services.sh
+# or on Windows powershell
+$env:DATA_GENERATION_MODE = "mixed"; .\scripts\run-all-services.ps1
+```
+
+The three options are:
+
+| mode     | behaviour |
+|----------|-----------|
+| `template` | sample from training set with small perturbations |
+| `random`   | generate heavily‑perturbed records (this is now the implicit default) |
+| `mixed`    | mostly template but occasionally injects an extreme anomaly |
+
+Running the script without setting anything will start in `random` mode
+thanks to the updated wrappers, so you don't need to remember to add the
+environment variable any more.
 
 2. **Frontend** (in a new terminal):
    ```bash

@@ -251,8 +251,8 @@ class TrainRequest(BaseModel):
     include_fields: Optional[List[str]] = None
     exclude_fields: Optional[List[str]] = None
     model_type: Optional[str] = None  # e.g., "RFv1", "IFv1", "AEv1"
-    contamination: Optional[float] = 0.1  # For Isolation Forest
-    hidden_layers: Optional[str] = "64,32,32,64"  # For Autoencoder (comma-separated)
+    contamination: Optional[float] = None  # For Isolation Forest (None = auto-estimate from data)
+    hidden_layers: Optional[str] = "128,64,32,64,128"  # For Autoencoder (comma-separated, deeper by default)
     feature_set_name: Optional[str] = None  # Name of feature set in store to use
 
 class PredictRequest(BaseModel):
@@ -658,17 +658,26 @@ def train_rf_model(X_train: pd.DataFrame, y_train: np.ndarray,
     return model
 
 def train_if_model(X_train: pd.DataFrame, y_train: np.ndarray,
-                   n_estimators: int = 100, contamination: float = 0.1,
+                   n_estimators: int = 100, contamination: float = None,
                    random_state: int = 42) -> IsolationForest:
-    """Train an Isolation Forest model (IFv1)."""
-    logger.info(f"Training Isolation Forest model with n_estimators={n_estimators}, contamination={contamination}")
+    """Train an Isolation Forest model (IFv1).
+    
+    If contamination is None, it's estimated from y_train (supervised hint).
+    This helps IF match the actual anomaly rate in the data.
+    """
+    # Auto-estimate contamination from actual label distribution if not provided
+    if contamination is None:
+        actual_attack_rate = (y_train == 1).sum() / len(y_train)
+        contamination = max(0.01, min(0.99, actual_attack_rate))  # Clamp between 1-99%
+        logger.info(f"Auto-estimating contamination from data: {contamination:.2%} attacks")
+    
+    logger.info(f"Training Isolation Forest model with n_estimators={n_estimators}, contamination={contamination:.2%}")
     
     model = IsolationForest(
         n_estimators=n_estimators,
         contamination=contamination,
         random_state=random_state,
-        n_jobs=-1,
-        verbose=1
+        n_jobs=-1
     )
     
     # Isolation Forest is unsupervised, so we only use X_train
@@ -677,15 +686,32 @@ def train_if_model(X_train: pd.DataFrame, y_train: np.ndarray,
     return model
 
 def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
-                   hidden_layers: str = "64,32,32,64", random_state: int = 42) -> tuple:
-    """Train an Autoencoder model (AEv1). Returns (model, scaler)."""
+                   hidden_layers: str = "128,64,32,64,128", random_state: int = 42) -> tuple:
+    """Train an Autoencoder model (AEv1). Returns (model, scaler).
+    
+    IMPORTANT: For best results, X_train should contain only NORMAL/SAFE samples!
+    The autoencoder learns to reconstruct normal data, so anomalies have high error.
+    """
     logger.info(f"Training Autoencoder model with hidden_layers={hidden_layers}")
+    
+    # Only use normal samples (y_train == 0) for better anomaly detection
+    # This teaches the autoencoder what "normal" looks like
+    if (y_train == 1).sum() > 0:
+        logger.warning(f"AEv1: Training set contains {(y_train==1).sum()} attacks. Using only normal samples for better learning.")
+        X_train_ae = X_train[y_train == 0]
+        if len(X_train_ae) == 0:
+            logger.warning("No normal samples in training set! Using all data (suboptimal).")
+            X_train_ae = X_train
+    else:
+        X_train_ae = X_train
+    
+    logger.info(f"Training on {len(X_train_ae)} normal samples")
     
     # Scale data for neural network
     scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
+    X_train_scaled = scaler.fit_transform(X_train_ae)
     
-    # Parse hidden layers
+    # Parse hidden layers (default is deeper for better feature learning)
     hidden_layer_sizes = tuple(map(int, hidden_layers.split(',')))
     
     # MLPRegressor as autoencoder (input = output)
@@ -693,17 +719,21 @@ def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
         hidden_layer_sizes=hidden_layer_sizes,
         activation='relu',
         solver='adam',
-        alpha=0.0001,
+        alpha=0.00001,  # Lower regularization for better fit on normal data
         batch_size='auto',
-        learning_rate='constant',
+        learning_rate='adaptive',  # Adaptive learning rate
         learning_rate_init=0.001,
-        max_iter=200,
+        max_iter=500,  # More iterations for deeper network
         shuffle=True,
+        early_stopping=True,  # Stop if validation error plateaus
+        validation_fraction=0.1,
+        n_iter_no_change=20,
         random_state=random_state,
-        verbose=True
+        verbose=1
     )
     
     # Train autoencoder: X -> X (reconstruction)
+    logger.info("Training autoencoder to reconstruct normal data...")
     model.fit(X_train_scaled, X_train_scaled)
     logger.info("Autoencoder model training completed")
     return model, scaler
@@ -914,20 +944,27 @@ def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: np.ndarray,
 def save_model(model: Any, vectorizer: DataVectorizer, 
                metrics: Dict[str, Any], training_params: Dict[str, Any],
                model_name: str = "model",
-               attack_cat_model: Optional[Any] = None, attack_cat_classes: Optional[List[str]] = None):
-    """Save the trained model, vectorizer, and metadata."""
+               attack_cat_model: Optional[Any] = None, attack_cat_classes: Optional[List[str]] = None,
+               scaler: Optional[StandardScaler] = None):
+    """Save the trained model, vectorizer, scaler (for AEv1), and metadata."""
     os.makedirs(MODEL_DIR, exist_ok=True)
     
     sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
     model_path = os.path.join(MODEL_DIR, f"{sanitized_model_name}.pkl")
     vectorizer_path = os.path.join(MODEL_DIR, f"{sanitized_model_name}_vectorizer.pkl")
     metadata_path = os.path.join(MODEL_DIR, f"{sanitized_model_name}_metadata.json")
+    scaler_path = os.path.join(MODEL_DIR, f"{sanitized_model_name}_scaler.pkl")
     
     # Save Model
     joblib.dump(model, model_path)
     
     # Save Vectorizer (The "DNA" of the model)
     joblib.dump(vectorizer, vectorizer_path)
+    
+    # Save scaler if provided (for Autoencoder models that need scaling)
+    if scaler is not None:
+        joblib.dump(scaler, scaler_path)
+        logger.info(f"Saved scaler for {model_name} (AEv1 model)")
     
     # Save attack category model if provided
     if attack_cat_model is not None:
@@ -1062,7 +1099,8 @@ async def list_models():
         model_files = []
         if os.path.exists(MODEL_DIR):
             for filename in os.listdir(MODEL_DIR):
-                if filename.endswith('.pkl'):
+                # Skip vectorizer, scaler, and encoder files - only list actual models
+                if filename.endswith('.pkl') and not any(skip in filename for skip in ['_vectorizer.pkl', '_scaler.pkl', '_cat_encoders.pkl', '_attack_cat.pkl']):
                     model_name = filename[:-4]
                     metadata_filename = f"{model_name}_metadata.json"
                     metadata_path = os.path.join(MODEL_DIR, metadata_filename)
@@ -1392,19 +1430,21 @@ async def train(
                                  n_estimators=train_request.n_estimators,
                                  max_depth=train_request.max_depth)
         elif model_type == "IFv1":
+            # Note: if contamination is None, it will auto-estimate from the data
             model = train_if_model(X_train, y_train, 
-                                 contamination=train_request.contamination or 0.1)
+                                 contamination=train_request.contamination)
         elif model_type == "AEv1":
             model, scaler = train_ae_model(X_train, y_train, 
-                                         hidden_layers=train_request.hidden_layers or "64,32,32,64")
-            # We treat the scaler inside our DataVectorizer, so AEv1 is mostly for backward compat
+                                         hidden_layers=train_request.hidden_layers or "128,64,32,64,128")
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported model type: {model_type}")
 
         # Placeholder metrics (real ones added in /test phase usually, or we can add summary here)
         metrics = {"status": "trained", "samples": len(X_train)}
         
-        save_model(model, vectorizer, metrics, training_params, model_name=model_name)
+        # For AEv1, pass the scaler to save_model
+        ae_scaler = scaler if model_type == "AEv1" else None
+        save_model(model, vectorizer, metrics, training_params, model_name=model_name, scaler=ae_scaler)
         
         return JSONResponse(
             content={
@@ -1768,13 +1808,6 @@ async def predict(
             
             UNSAFE_THRESHOLD = 0.6
 
-            def sharpen_prob(p, temperature=0.6):
-                """Temperature scaling to sharpen probability away from 0.5."""
-                if p <= 0.0 or p >= 1.0:
-                    return p
-                log_odds = np.log(p / (1.0 - p))
-                return float(1.0 / (1.0 + np.exp(-log_odds / temperature)))
-
             for i in range(len(predictions)):
                 raw_safe = float(probabilities[i][safe_col])
                 raw_unsafe = float(probabilities[i][unsafe_col])
@@ -1782,8 +1815,9 @@ async def predict(
                 # Use a proper threshold instead of default 0.5
                 pred_binary = 1 if raw_unsafe >= UNSAFE_THRESHOLD else 0
 
-                sharp_unsafe = sharpen_prob(raw_unsafe)
-                sharp_safe = 1.0 - sharp_unsafe
+                # Use raw probabilities for more realistic confidence scores
+                sharp_unsafe = raw_unsafe
+                sharp_safe = raw_safe
                 confidence = max(sharp_safe, sharp_unsafe)
 
                 logger.debug(f"Sample {i}: raw_safe={raw_safe:.4f}, raw_unsafe={raw_unsafe:.4f}, "

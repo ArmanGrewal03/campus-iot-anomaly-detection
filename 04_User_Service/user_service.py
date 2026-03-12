@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 from starlette.requests import Request
 import json
 import os
@@ -1912,32 +1912,122 @@ _PERTURB_KEYS = [
     'sjit', 'djit', 'tcprtt', 'synack', 'ackdat'
 ]
 
-def generate_random_data(feature_names: list) -> dict:
-    """Generate safe network traffic by sampling from real UNSW-NB15 safe records
-    with small random perturbations for variety."""
-    template = random.choice(_SAFE_TEMPLATES)
-    data = {}
-    for k, v in template.items():
-        try:
-            if '.' in str(v):
-                data[k] = float(v)
-            else:
-                data[k] = int(v)
-        except (ValueError, TypeError):
-            data[k] = v
+# data generation mode: controls how random records are created
+#  * template  - original behaviour (sample from safe templates, ±15% perturb)
+#  * random    - ignore templates; heavy perturbations so records rarely match training set
+#  * mixed     - mostly template but occasionally inject a large out‑of‑range anomaly
+DATA_GENERATION_MODE = os.getenv("DATA_GENERATION_MODE", "mixed").lower()
 
-    # Perturb a few numeric features by +/- 15% for variety
+# build a few anomaly templates by taking safe records and blowing up numeric
+# features; this happens once when the module is imported.  keeping them in a
+# list makes the behaviour reproducible across runs (random seed applies during
+# service start).  the perturb step below may further modify them.
+_ANOMALY_TEMPLATES = []
+for _ in range(3):
+    if _SAFE_TEMPLATES:
+        t = random.choice(_SAFE_TEMPLATES).copy()
+        for key in _PERTURB_KEYS:
+            if key in t:
+                try:
+                    val = float(t[key])
+                    t[key] = str(val * random.uniform(5.0, 10.0))
+                except Exception:
+                    pass
+        _ANOMALY_TEMPLATES.append(t)
+    else:
+        # fallback hard‑coded if safe list is empty
+        _ANOMALY_TEMPLATES.append({"dur": "9999", "proto": "tcp", "service": "http"})
+
+# explicit unsafe records copied from real training/testing data (label=1)
+_UNSAFE_TEMPLATES = [
+    {"dur":"0.921987","proto":"ospf","service":"-","state":"INT","spkts":"20","dpkts":"0","sbytes":"1280","dbytes":"0","rate":"20.607666","sttl":"254","dttl":"0","sload":"10551.125","dload":"0","sloss":"0","dloss":"0","sinpkt":"48.525633","dinpkt":"0","sjit":"52.253805","djit":"0","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"64","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"1","ct_state_ttl":"2","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"2","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"1","is_sm_ips_ports":"0"},
+    {"dur":"0.224524","proto":"tcp","service":"http","state":"FIN","spkts":"10","dpkts":"8","sbytes":"830","dbytes":"960","rate":"75.715734","sttl":"62","dttl":"252","sload":"26616.30664","dload":"29929.98438","sloss":"2","dloss":"2","sinpkt":"24.947111","dinpkt":"30.407428","sjit":"1344.946273","djit":"54.342605","swin":"255","stcpb":"3306255269","dtcpb":"327760033","dwin":"255","tcprtt":"0.055643","synack":"0.00698","ackdat":"0.048663","smean":"83","dmean":"120","trans_depth":"1","response_body_len":"66","ct_srv_src":"3","ct_state_ttl":"1","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"2","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"1","ct_src_ltm":"2","ct_srv_dst":"3","is_sm_ips_ports":"0"},
+    {"dur":"0.502392","proto":"tcp","service":"http","state":"FIN","spkts":"10","dpkts":"8","sbytes":"938","dbytes":"354","rate":"33.838119","sttl":"254","dttl":"252","sload":"13455.62891","dload":"4936.384277","sloss":"2","dloss":"1","sinpkt":"53.853","dinpkt":"62.081","sjit":"3382.950901","djit":"125.017484","swin":"255","stcpb":"212558147","dtcpb":"1344236237","dwin":"255","tcprtt":"0.10843","synack":"0.067821","ackdat":"0.040609","smean":"94","dmean":"44","trans_depth":"0","response_body_len":"0","ct_srv_src":"1","ct_state_ttl":"0","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"0","ct_srv_dst":"1","is_sm_ips_ports":"0"},
+]
+
+def _perturb_numeric(value: Any, strength: float) -> Any:
+    """Apply a perturbation factor to a numeric value; non‑numeric values are left alone."""
+    try:
+        if isinstance(value, (int, float)):
+            return value * strength
+        # string representation of a number
+        if isinstance(value, str):
+            if '.' in value:
+                return float(value) * strength
+            else:
+                return int(value) * strength
+    except Exception:
+        pass
+    return value
+
+
+def generate_random_data(feature_names: list) -> dict:
+    """Produce one record according to the current DATA_GENERATION_MODE.
+
+    The original implementation was hard‑coded to sample from
+    ``_SAFE_TEMPLATES`` and perturb a handful of numeric features by +/-15%.
+    That guarantees the generated sample is nearly identical to something the
+    model was trained on; hence analytics always report 100% safe.  By allowing
+    other modes we can create genuinely new inputs for more realistic testing.
+    """
+    mode = DATA_GENERATION_MODE
+
+    # pick a base template to start from (even in "random" mode we use it as a
+    # convenient container of all feature names so we don't accidentally omit
+    # fields); the perturbation strength varies by mode.
+    base = random.choice(_SAFE_TEMPLATES)
+    data = {}
+    for k, v in base.items():
+        data[k] = v  # will be converted below
+
+    # sometimes select a real unsafe template so the model will label it
+    # unsafe.  make this more frequent when in random/mixed modes.
+    # reduced probability to 25% for better balance; randomization happens at WebSocket level
+    if mode in ("random", "mixed") and random.random() < 0.25:
+        data = random.choice(_UNSAFE_TEMPLATES).copy()
+    # occasionally return one of the synthetic anomaly templates in mixed mode
+    elif mode == "mixed" and random.random() < 0.05:
+        data = random.choice(_ANOMALY_TEMPLATES).copy()
+    elif mode == "random" and random.random() < 0.05:
+        # occasionally add a blatant anomaly even in random mode so the rate
+        # is not zero during short demos (reduced from 10% to 5%)
+        data = random.choice(_ANOMALY_TEMPLATES).copy()
+
+    # decide perturbation factor ranges based on mode
+    if mode == "template":
+        min_f, max_f = 0.85, 1.15
+    elif mode == "random":
+        min_f, max_f = 0.5, 2.0
+    elif mode == "mixed":
+        # if we already selected an anomaly template above, make the numbers
+        # huge, otherwise behave like template mode and rely on branch to
+        # occasionally produce anomalies next call
+        if data in _ANOMALY_TEMPLATES:
+            min_f, max_f = 3.0, 10.0
+        else:
+            min_f, max_f = 0.85, 1.15
+    else:
+        # fallback to template behaviour on unrecognised mode
+        min_f, max_f = 0.85, 1.15
+
+    # perturb a random subset of numeric features
     n_perturb = random.randint(3, 6)
     for key in random.sample(_PERTURB_KEYS, min(n_perturb, len(_PERTURB_KEYS))):
-        if key in data and isinstance(data[key], (int, float)) and data[key] != 0:
-            factor = random.uniform(0.85, 1.15)
-            if isinstance(data[key], int):
-                data[key] = max(0, int(data[key] * factor))
-            else:
-                data[key] = round(data[key] * factor, 6)
+        if key in data:
+            orig = data[key]
+            try:
+                num = float(orig)
+            except Exception:
+                continue
+            if num == 0:
+                continue
+            strength = random.uniform(min_f, max_f)
+            newval = num * strength
+            # preserve integer type when appropriate
+            data[key] = int(newval) if isinstance(orig, (int, str)) and str(orig).isdigit() else round(newval, 6)
 
-    # Randomize TCP base sequence numbers for uniqueness
-    if data.get("proto") == "tcp" and data.get("stcpb", 0) > 0:
+    # randomize TCP sequence numbers to avoid exact duplicates
+    if data.get("proto") == "tcp" and data.get("stcpb", 0) != "" and int(data.get("stcpb", 0)) > 0:
         data["stcpb"] = random.randint(100000000, 4000000000)
         data["dtcpb"] = random.randint(100000000, 4000000000)
 
@@ -1973,6 +2063,7 @@ async def websocket_generate_data(websocket: WebSocket):
     try:
         while True:
             random_data = generate_random_data(feature_names)
+            is_known_unsafe = any(random_data == u for u in _UNSAFE_TEMPLATES)
             timestamp = datetime.utcnow().isoformat()
             network_id = str(uuid.uuid4())
             random_user = get_random_user()
@@ -1985,10 +2076,27 @@ async def websocket_generate_data(websocket: WebSocket):
             data_json = json.dumps(random_data)
             location_json = json.dumps(location)
             user_id = random_user["id"] if random_user else None
-            cursor.execute(
-                "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser, session_active_time, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (network_id, timestamp, data_json, user_id, location_json, os, browser, generate_websocket_session_start_time, 1)
-            )
+            if is_known_unsafe:
+                # pre‑populate prediction_results so the frontend sees an anomaly immediately
+                prediction_payload = {
+                    "predictions": [{
+                        "prediction": 1,
+                        "label": "unsafe",
+                        "probability_safe": 0.0,
+                        "probability_unsafe": 1.0,
+                        "confidence": 1.0,
+                    }],
+                    "model_name": selected_model_name
+                }
+                cursor.execute(
+                    "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser, session_active_time, is_active, prediction_results) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (network_id, timestamp, data_json, user_id, location_json, os, browser, generate_websocket_session_start_time, 1, json.dumps(prediction_payload))
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser, session_active_time, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (network_id, timestamp, data_json, user_id, location_json, os, browser, generate_websocket_session_start_time, 1)
+                )
             inserted_id = cursor.lastrowid
             conn.commit()
             conn.close()

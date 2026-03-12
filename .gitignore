@@ -113,3 +113,9 @@ campus_iot_data.db
 *.db-shm
 *.db-wal
 02_Model_Service/models/
+
+# Machine Learning artifacts (auto-generated, can be recreated)
+*.joblib
+*.pkl
+02_Model_Service/feature_store/
+Data/processed/
