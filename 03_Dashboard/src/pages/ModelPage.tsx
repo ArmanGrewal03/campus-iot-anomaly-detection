@@ -57,8 +57,9 @@ const createMockRows = (count: number) =>
 
 const MOCK_INITIAL_ROWS = createMockRows(12);
 
-const API_BASE = 'http://127.0.0.1:8000'; // Data Ingestion Service
-const MODEL_API_BASE = 'http://127.0.0.1:8001'; // Model Service
+const GATEWAY_BASE = 'http://127.0.0.1:8003'; // API Gateway
+const API_BASE = `${GATEWAY_BASE}`; // Data Ingestion Service via Gateway
+const MODEL_API_BASE = `${GATEWAY_BASE}`; // Model Service via Gateway
 
 export default function ModelPage() {
   const [datasetName, setDatasetName] = React.useState('');
@@ -66,11 +67,11 @@ export default function ModelPage() {
   const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
   const [uploading, setUploading] = React.useState(false);
   const [rows, setRows] = React.useState<Record<string, unknown>[]>([]);
-  const [viewLimit, setViewLimit] = React.useState(1000);
   const [viewLoading, setViewLoading] = React.useState(false);
   const [viewTotalRows, setViewTotalRows] = React.useState<number | null>(null);
   const [filterMode, setFilterMode] = React.useState<'all' | 'training' | 'testing'>('all');
   const [searchQuery, setSearchQuery] = React.useState('');
+  const [paginationModel, setPaginationModel] = React.useState({ page: 0, pageSize: 100 });
   const [validating, setValidating] = React.useState(false);
   const [insertText, setInsertText] = React.useState('');
   const [clearConfirmOpen, setClearConfirmOpen] = React.useState(false);
@@ -121,16 +122,16 @@ export default function ModelPage() {
   const [apiHealth, setApiHealth] = React.useState<'healthy' | 'unhealthy' | 'loading' | null>(null);
   const [apiHealthDetail, setApiHealthDetail] = React.useState<{ service?: string; database?: string; timestamp?: string } | null>(null);
 
+  // Client-side search filtering (backend doesn't support search)
+  // Note: This only searches within the current page of data
   const filteredRows = React.useMemo(() => {
-    let result = rows;
-    if (filterMode === 'training') result = result.slice(0, Math.ceil(result.length * 0.8));
-    else if (filterMode === 'testing') result = result.slice(Math.ceil(result.length * 0.8));
-    if (searchQuery) {
+    // For server-side pagination, we don't filter client-side
+    // The search should be handled server-side, but for now we'll only filter if there's a search query
+    // and we'll adjust rowCount accordingly
+    if (!searchQuery) return rows;
       const q = searchQuery.toLowerCase();
-      result = result.filter((r) => Object.values(r).some((v) => String(v).toLowerCase().includes(q)));
-    }
-    return result;
-  }, [rows, filterMode, searchQuery]);
+    return rows.filter((r) => Object.values(r).some((v) => String(v).toLowerCase().includes(q)));
+  }, [rows, searchQuery]);
 
   const columns = React.useMemo(() => {
     if (filteredRows.length === 0) return [];
@@ -171,7 +172,7 @@ export default function ModelPage() {
         setUploading(false);
         return;
       }
-      headers['dataset_name'] = nameToUse;
+      headers['dataset-name'] = nameToUse;
       const res = await fetch(`${API_BASE}/new`, {
         method: 'POST',
         headers,
@@ -201,10 +202,11 @@ export default function ModelPage() {
       }
       setSnackbar({ open: true, message, severity: 'success' });
       setSelectedFile(null);
-      // Refresh dataset list from API (single source of truth) and select the one we just uploaded
+      setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
       await fetchTables();
-      setSelectedDataset(nameToUse);
-      // View data will refetch automatically when selectedDataset updates (useEffect)
+      if (datasetName.trim()) {
+        setSelectedDataset(datasetName.trim());
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Network error. Is the backend running at http://localhost:8000?';
       setSnackbar({ open: true, message, severity: 'error' });
@@ -216,7 +218,7 @@ export default function ModelPage() {
   const fetchTables = React.useCallback(async () => {
     setDatasetsLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/tables`);
+      const res = await fetch(`${API_BASE}/tables?t=${Date.now()}`);
       const json = await res.json() as { status?: string; tables?: string[] };
       if (res.ok && json.status === 'success' && json.tables) {
         // Extract dataset names from table names (format: csv_data_{dataset_name})
@@ -251,9 +253,9 @@ export default function ModelPage() {
     setFieldsLoading(true);
     try {
       const headers: Record<string, string> = {
-        'dataset_name': datasetName.trim(),
+        'dataset-name': datasetName.trim(),
       };
-      const res = await fetch(`${API_BASE}/fields`, { headers });
+      const res = await fetch(`${API_BASE}/fields?t=${Date.now()}`, { headers });
       const json = await res.json() as { status?: string; fields?: string[]; detail?: string };
       if (res.ok && json.status === 'success' && json.fields) {
         // Filter out label, id, attack_cat as they shouldn't be included as features
@@ -294,13 +296,13 @@ export default function ModelPage() {
     setStatsLoading(true);
     try {
       const headers: Record<string, string> = {
-        'dataset_name': datasetName.trim(),
+        'dataset-name': datasetName.trim(),
       };
       
       // Fetch both stats and type-stats in parallel
       const [statsRes, typeStatsRes] = await Promise.all([
-        fetch(`${API_BASE}/stats`, { headers }),
-        fetch(`${API_BASE}/type-stats`, { headers }),
+        fetch(`${API_BASE}/stats?t=${Date.now()}`, { headers }),
+        fetch(`${API_BASE}/type-stats?t=${Date.now()}`, { headers }),
       ]);
 
       const statsJson = await statsRes.json() as any;
@@ -337,7 +339,7 @@ export default function ModelPage() {
   const fetchModels = React.useCallback(async () => {
     setModelsLoading(true);
     try {
-      const res = await fetch(`${MODEL_API_BASE}/models`);
+      const res = await fetch(`${MODEL_API_BASE}/models?t=${Date.now()}`);
       const json = await res.json() as { status?: string; models?: any[]; total_models?: number; detail?: string };
       
       console.log('Models API response:', json);
@@ -378,7 +380,7 @@ export default function ModelPage() {
   const fetchModelTypes = React.useCallback(async () => {
     setModelTypesLoading(true);
     try {
-      const res = await fetch(`${MODEL_API_BASE}/model-types`);
+      const res = await fetch(`${MODEL_API_BASE}/model-types?t=${Date.now()}`);
       const json = await res.json() as { 
         status?: string; 
         model_types?: Array<{ model_type: string; path: string; files: Array<{ name: string; size: number; modified: string }> }>; 
@@ -427,12 +429,12 @@ export default function ModelPage() {
     
     try {
       const headers: Record<string, string> = {
-        'model_name': modelName,
+        'model-name': modelName,
       };
 
       const [statusRes, metricsRes] = await Promise.all([
-        fetch(`${MODEL_API_BASE}/model/status`, { headers }),
-        fetch(`${MODEL_API_BASE}/model/metrics`, { headers }).catch(() => null), // Metrics might not exist
+        fetch(`${MODEL_API_BASE}/model/status?t=${Date.now()}`, { headers }),
+        fetch(`${MODEL_API_BASE}/model/metrics?t=${Date.now()}`, { headers }).catch(() => null),
       ]);
 
       const statusJson = await statusRes.json();
@@ -490,12 +492,12 @@ export default function ModelPage() {
     try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'model_name': selectedTestModel.trim(),
+        'model-name': selectedTestModel.trim(),
       };
 
       // dataset_name is optional for /test endpoint
       if (testDataset) {
-        headers['dataset_name'] = testDataset;
+        headers['dataset-name'] = testDataset;
       }
 
       const res = await fetch(`${MODEL_API_BASE}/test`, {
@@ -531,19 +533,17 @@ export default function ModelPage() {
         return;
       }
       setViewLoading(true);
-      setViewTotalRows(null);
+      // Don't reset total_rows - keep it to maintain pagination state
       try {
-        const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+        const params = new URLSearchParams({ limit: String(limit), offset: String(offset), t: String(Date.now()) });
         const headers: Record<string, string> = {};
-        headers['dataset_name'] = selectedDataset.trim();
+        headers['dataset-name'] = selectedDataset.trim();
         
-        // Determine which endpoint to call based on filterMode
-        // Note: These are GET endpoints from Data Ingestion Service, not POST /train from Model Service
         let endpoint = '/view';
         if (filterMode === 'training') {
-          endpoint = '/training';  // GET endpoint from Data Ingestion Service
+          endpoint = '/training';
         } else if (filterMode === 'testing') {
-          endpoint = '/testing';  // GET endpoint from Data Ingestion Service
+          endpoint = '/testing';
         }
         
         const res = await fetch(`${API_BASE}${endpoint}?${params}`, { headers });
@@ -579,11 +579,49 @@ export default function ModelPage() {
     [selectedDataset, filterMode]
   );
 
+  // Track previous dataset and filter to detect changes (for resetting pagination)
+  const prevDatasetRef = React.useRef<string | null>(null);
+  const prevFilterRef = React.useRef<string | null>(null);
+  
+  // Reset to page 0 ONLY when dataset or filter actually changes (not on pagination changes)
+  React.useEffect(() => {
+    if (!selectedDataset) {
+      // Initialize refs on first render when dataset is not selected
+      if (prevDatasetRef.current === null) {
+        prevDatasetRef.current = '';
+        prevFilterRef.current = 'all';
+      }
+      return;
+    }
+    
+    // Initialize refs on first render with dataset
+    if (prevDatasetRef.current === null) {
+      prevDatasetRef.current = selectedDataset;
+      prevFilterRef.current = filterMode;
+      return; // Don't reset on initial load
+    }
+    
+    const datasetChanged = prevDatasetRef.current !== selectedDataset;
+    const filterChanged = prevFilterRef.current !== filterMode;
+    
+    if (datasetChanged || filterChanged) {
+      prevDatasetRef.current = selectedDataset;
+      prevFilterRef.current = filterMode;
+      // Reset to page 0 when dataset or filter changes
+      setPaginationModel(prev => ({ page: 0, pageSize: prev.pageSize }));
+    }
+  }, [selectedDataset, filterMode]);
+  
+  // Fetch data when pagination, dataset, or filter changes
   React.useEffect(() => {
     if (selectedDataset) {
-      fetchViewData(viewLimit, 0);
+      const offset = paginationModel.page * paginationModel.pageSize;
+      fetchViewData(paginationModel.pageSize, offset);
     }
-  }, [viewLimit, selectedDataset, filterMode, fetchViewData]);
+    // fetchViewData is stable (useCallback with selectedDataset and filterMode dependencies)
+    // We exclude it from deps to avoid unnecessary re-renders, but it will use latest values
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paginationModel.page, paginationModel.pageSize, selectedDataset, filterMode]);
 
   const fetchApiHealth = React.useCallback(async (silent = false) => {
     if (!silent) {
@@ -615,9 +653,7 @@ export default function ModelPage() {
     return () => clearInterval(interval);
   }, [fetchApiHealth]);
 
-  const handleViewLimitChange = (newLimit: number) => {
-    setViewLimit(newLimit);
-  };
+  // Removed handleViewLimitChange - using DataGrid pagination instead
 
   const [validationResult, setValidationResult] = React.useState<{ message: string; severity: 'success' | 'warning' } | null>(null);
 
@@ -631,7 +667,7 @@ export default function ModelPage() {
     setValidationResult(null);
     try {
       const headers: Record<string, string> = {
-        'dataset_name': selectedDataset.trim(),
+        'dataset-name': selectedDataset.trim(),
       };
       
       // Add optional percentage headers if provided
@@ -695,7 +731,7 @@ export default function ModelPage() {
       }
       setValidationResult({ message, severity: 'success' });
       setSnackbar({ open: true, message, severity: 'success' });
-      fetchViewData(viewLimit, 0);
+      setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to validate dataset.';
       setValidationResult({ message: msg, severity: 'warning' });
@@ -714,7 +750,7 @@ export default function ModelPage() {
     setClearLoading(true);
     try {
       const headers: Record<string, string> = {};
-      if (selectedDataset.trim()) headers['dataset_name'] = selectedDataset.trim();
+      if (selectedDataset.trim()) headers['dataset-name'] = selectedDataset.trim();
       const res = await fetch(`${API_BASE}/clear`, { method: 'DELETE', headers });
       const text = await res.text();
       if (!res.ok) {
@@ -743,7 +779,8 @@ export default function ModelPage() {
       setViewTotalRows(0);
       setClearConfirmOpen(false);
       setSnackbar({ open: true, message, severity: 'success' });
-      fetchViewData(viewLimit, 0);
+      setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
+      await fetchTables();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to clear database.';
       setSnackbar({ open: true, message: msg, severity: 'error' });
@@ -789,8 +826,8 @@ export default function ModelPage() {
       // Headers: dataset_name and model_name are required
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'dataset_name': selectedDataset.trim(),
-        'model_name': modelName.trim(),
+        'dataset-name': selectedDataset.trim(),
+        'model-name': modelName.trim(),
       };
 
       const res = await fetch(`${MODEL_API_BASE}/train`, {
@@ -836,7 +873,7 @@ export default function ModelPage() {
         // Fetch testing data from backend
         const params = new URLSearchParams({ limit: '100', offset: '0' });
         const headers: Record<string, string> = {};
-        if (selectedDataset.trim()) headers['dataset_name'] = selectedDataset.trim();
+        if (selectedDataset.trim()) headers['dataset-name'] = selectedDataset.trim();
         const res = await fetch(`${API_BASE}/testing?${params}`, { headers });
         const json = await res.json();
         if (!res.ok) throw new Error(json.detail || 'Failed to fetch testing data');
@@ -869,10 +906,9 @@ export default function ModelPage() {
         data: dataToPredict
       };
 
-      // Headers: model_name is required
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'model_name': modelName.trim(),
+        'model-name': modelName.trim(),
       };
 
       const res = await fetch(`${MODEL_API_BASE}/predict`, {
@@ -884,15 +920,35 @@ export default function ModelPage() {
       const result = await res.json();
       if (!res.ok) throw new Error(result.detail || 'Prediction failed');
 
+      // Debug: log the raw response to see attack_cat
+      console.log('Prediction response:', result);
+      if (result.predictions && result.predictions.length > 0) {
+        console.log('First prediction:', result.predictions[0]);
+        console.log('attack_cat in first prediction:', result.predictions[0]?.attack_cat);
+      }
+
       // Transform backend response to match frontend expectations
-      const transformedResults = (result.predictions || []).map((pred: any, idx: number) => ({
-        index: idx,
-        label: pred.label || (pred.prediction === 0 ? 'normal' : 'anomaly'),
-        confidence: pred.confidence || pred.probability_safe || 0,
-        prediction: pred.prediction,
-        probability_safe: pred.probability_safe,
-        probability_unsafe: pred.probability_unsafe,
-      }));
+      const transformedResults = (result.predictions || []).map((pred: any, idx: number) => {
+        // prediction is now a percentage (0-100), not binary 0/1
+        const riskPercentage = typeof pred.prediction === 'number' ? pred.prediction : (pred.prediction === 1 ? 100 : 0);
+        const isAnomaly = riskPercentage >= 50; // Consider >= 50% as anomaly
+        
+        const transformed = {
+          index: idx,
+          label: pred.label || (isAnomaly ? 'anomaly' : 'normal'),
+          confidence: pred.confidence || pred.probability_safe || 0,
+          prediction: riskPercentage, // Risk percentage (0-100)
+          probability_safe: pred.probability_safe,
+          probability_unsafe: pred.probability_unsafe,
+          attack_cat: pred.attack_cat || null,
+          attack_cat_probabilities: pred.attack_cat_probabilities || {},
+        };
+        // Debug: log attack_cat for anomalies
+        if (isAnomaly) {
+          console.log(`Sample ${idx}: attack_cat =`, transformed.attack_cat);
+        }
+        return transformed;
+      });
       setPredictionResults(transformedResults);
       setSnackbar({ open: true, message: `Successfully generated ${result.results.length} predictions.`, severity: 'success' });
     } catch (err) {
@@ -1128,22 +1184,7 @@ export default function ModelPage() {
                     ))}
                   </Select>
                 </FormControl>
-                <FormControl size="small" sx={{ minWidth: 140 }}>
-                  <InputLabel id="rows-label">Rows to show</InputLabel>
-                  <Select
-                    labelId="rows-label"
-                    value={viewLimit}
-                    label="Rows to show"
-                    onChange={(e) => handleViewLimitChange(Number(e.target.value))}
-                    disabled={viewLoading}
-                  >
-                    <MenuItem value={500}>500</MenuItem>
-                    <MenuItem value={1000}>1000</MenuItem>
-                    <MenuItem value={2000}>2000</MenuItem>
-                    <MenuItem value={5000}>5000</MenuItem>
-                    <MenuItem value={10000}>10,000</MenuItem>
-                  </Select>
-                </FormControl>
+                {/* Removed "Rows to show" dropdown - using DataGrid pagination instead */}
                 <Button
                   size="small"
                   variant="outlined"
@@ -1158,7 +1199,10 @@ export default function ModelPage() {
                   size="small"
                   variant="outlined"
                   startIcon={viewLoading ? <CircularProgress size={14} color="inherit" /> : <RefreshRoundedIcon />}
-                  onClick={() => fetchViewData(viewLimit, 0)}
+                  onClick={() => {
+                    const offset = paginationModel.page * paginationModel.pageSize;
+                    fetchViewData(paginationModel.pageSize, offset);
+                  }}
                   disabled={viewLoading || !selectedDataset}
                 >
                   Refresh Data
@@ -1188,7 +1232,7 @@ export default function ModelPage() {
             </Stack>
             {viewTotalRows != null && (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                Showing {rows.length} of {viewTotalRows} rows from backend
+                Showing {rows.length} of {viewTotalRows} rows (Page {paginationModel.page + 1} of {Math.ceil(viewTotalRows / paginationModel.pageSize)})
               </Typography>
             )}
             <Box sx={{ height: 280, width: '100%', borderRadius: 1, overflow: 'hidden', border: '1px solid', borderColor: 'divider' }}>
@@ -1201,10 +1245,16 @@ export default function ModelPage() {
                 <DataGrid
                   rows={filteredRows}
                   columns={columns}
-                  initialState={{ pagination: { paginationModel: { pageSize: 100 } } }}
-                  pageSizeOptions={[25, 50, 100]}
+                  getRowId={(row) => row.id as string}
+                  paginationModel={paginationModel}
+                  onPaginationModelChange={setPaginationModel}
+                  pageSizeOptions={[25, 50, 100, 200, 500, 1000]}
+                  paginationMode="server"
+                  rowCount={viewTotalRows || 0}
                   disableColumnResize
                   density="compact"
+                  loading={viewLoading}
+                  keepNonExistentRowsSelected
                 />
               ) : (
                 <Stack alignItems="center" justifyContent="center" sx={{ height: '100%', color: 'text.secondary' }}>
@@ -1500,13 +1550,13 @@ export default function ModelPage() {
                   onInputChange={(_, newValue) => setModelName(newValue)}
                   loading={modelTypesLoading}
                   renderInput={(params) => (
-                    <TextField
+                <TextField
                       {...params}
-                      fullWidth
-                      size="small"
-                      label="Model Name"
+                  fullWidth
+                  size="small"
+                  label="Model Name"
                       placeholder="e.g., AEv1, IFv1, RFv1, or custom name"
-                      error={!!modelNameError}
+                  error={!!modelNameError}
                       helperText={modelNameError || 'Required: Unique name for this model. Select from available types or enter custom name.'}
                       InputProps={{
                         ...params.InputProps,
@@ -1526,9 +1576,9 @@ export default function ModelPage() {
                   <Select
                     labelId="model-architecture-label"
                     id="model-architecture-select"
-                    value={modelType}
+                  value={modelType}
                     label="Select Model Architecture"
-                    onChange={(e) => setModelType(e.target.value)}
+                  onChange={(e) => setModelType(e.target.value)}
                     disabled={modelTypesLoading || modelTypes.length === 0}
                   >
                     {modelTypes.length > 0 ? (
@@ -2343,7 +2393,7 @@ export default function ModelPage() {
                   <Typography variant="subtitle2" gutterBottom>Prediction Results (Recent)</Typography>
                   <Stack spacing={1}>
                     {predictionResults.slice(0, 5).map((res, idx) => (
-                      <Stack key={idx} direction="row" justifyContent="space-between" alignItems="center">
+                      <Stack key={idx} direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" spacing={1}>
                         <Typography variant="body2">Sample #{res.index + 1}</Typography>
                         <Chip
                           label={res.label.toUpperCase()}
@@ -2351,8 +2401,32 @@ export default function ModelPage() {
                           color={res.label === 'anomaly' ? 'error' : 'success'}
                           sx={{ fontWeight: 700 }}
                         />
+                        {res.attack_cat && res.attack_cat !== 'Normal' && res.attack_cat !== null && res.attack_cat !== 'Unknown' && (
+                          <Chip
+                            label={`Attack: ${res.attack_cat}`}
+                            size="small"
+                            color="error"
+                            variant="outlined"
+                          />
+                        )}
+                        {res.attack_cat === 'Unknown' && (
+                          <Chip
+                            label="Attack: Unknown"
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                          />
+                        )}
+                        {typeof res.prediction === 'number' && res.prediction >= 50 && !res.attack_cat && (
+                          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+                            (No attack category model)
+                          </Typography>
+                        )}
                         <Typography variant="caption" color="text.secondary">
-                          {(res.confidence * 100).toFixed(1)}% Confidence
+                          Risk: {typeof res.prediction === 'number' ? res.prediction.toFixed(1) : (res.prediction * 100).toFixed(1)}%
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Confidence: {(res.confidence * 100).toFixed(1)}%
                         </Typography>
                       </Stack>
                     ))}

@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  # Data Ingestion Service
+  data-ingestion:
+    build:
+      context: ./01_Data_Ingestion_Service
+      dockerfile: Dockerfile
+    container_name: campus-iot-data-ingestion
+    ports:
+      - "8000:8000"
+      - "50051:50051"  # gRPC port
+    environment:
+      - DB_PATH=/app/data/campus_iot_data.db
+      - GRPC_PORT=50051
+      - ERROR_ONLY_LOGGING=false
+    volumes:
+      - data-ingestion-db:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - campus-iot-network
+    restart: unless-stopped
+
+  # Model Service
+  model-service:
+    build:
+      context: ./02_Model_Service
+      dockerfile: Dockerfile
+    container_name: campus-iot-model-service
+    ports:
+      - "8001:8001"
+      - "50052:50052"  # gRPC port
+    environment:
+      - API_BASE_URL=http://data-ingestion:8000
+      - GRPC_PORT=50052
+      - DATA_INGESTION_GRPC=data-ingestion:50051
+      - ERROR_ONLY_LOGGING=false
+    volumes:
+      - model-models:/app/models
+    depends_on:
+      data-ingestion:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - campus-iot-network
+    restart: unless-stopped
+
+  # User Service
+  user-service:
+    build:
+      context: ./04_User_Service
+      dockerfile: Dockerfile
+    container_name: campus-iot-user-service
+    ports:
+      - "8002:8002"
+    environment:
+      - MODEL_API_URL=http://model-service:8001
+      - MODEL_SERVICE_GRPC=model-service:50052
+      - ERROR_ONLY_LOGGING=false
+    volumes:
+      - user-service-db:/app/data
+    depends_on:
+      model-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8002/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - campus-iot-network
+    restart: unless-stopped
+
+  # API Gateway
+  gateway:
+    build:
+      context: ./05_Gateway_Proxy
+      dockerfile: Dockerfile
+    container_name: campus-iot-gateway
+    ports:
+      - "8003:8003"
+    environment:
+      - DATA_INGESTION_SERVICE=http://data-ingestion:8000
+      - MODEL_SERVICE=http://model-service:8001
+      - USER_SERVICE=http://user-service:8002
+      - ERROR_ONLY_LOGGING=false
+    depends_on:
+      - data-ingestion
+      - model-service
+      - user-service
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8003/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - campus-iot-network
+    restart: unless-stopped
+
+  # Frontend Dashboard
+  dashboard:
+    build:
+      context: ./03_Dashboard
+      dockerfile: Dockerfile
+    container_name: campus-iot-dashboard
+    ports:
+      - "5173:80"
+    depends_on:
+      - gateway
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - campus-iot-network
+    restart: unless-stopped
+
+volumes:
+  data-ingestion-db:
+    driver: local
+  model-models:
+    driver: local
+  user-service-db:
+    driver: local
+
+networks:
+  campus-iot-network:
+    driver: bridge

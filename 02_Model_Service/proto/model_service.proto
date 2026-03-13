@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package model_service;
+
+// Model Service gRPC definitions
+
+service ModelService {
+  // Predict endpoint
+  rpc Predict(PredictRequest) returns (PredictResponse);
+  
+  // Health check
+  rpc HealthCheck(HealthRequest) returns (HealthResponse);
+}
+
+message PredictRequest {
+  repeated DataRecord data = 1;
+  optional string model_name = 2;
+}
+
+message DataRecord {
+  map<string, string> fields = 1;  // Flexible field mapping
+}
+
+message Prediction {
+  int32 prediction = 1;
+  string label = 2;
+  double probability_safe = 3;
+  double probability_unsafe = 4;
+  double confidence = 5;
+}
+
+message PredictResponse {
+  string status = 1;
+  repeated Prediction predictions = 2;
+  optional string message = 3;
+  optional string error = 4;
+}
+
+message HealthRequest {
+}
+
+message HealthResponse {
+  string status = 1;
+  string message = 2;
+}

@@ -6,7 +6,6 @@ import ListItemText from '@mui/material/ListItemText';
 import Stack from '@mui/material/Stack';
 import { NavLink } from 'react-router-dom';
 import HomeRoundedIcon from '@mui/icons-material/HomeRounded';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import PsychologyRoundedIcon from '@mui/icons-material/PsychologyRounded';
 import AnalyticsRoundedIcon from '@mui/icons-material/AnalyticsRounded';
 import PeopleRoundedIcon from '@mui/icons-material/PeopleRounded';
@@ -16,7 +15,6 @@ import InfoRoundedIcon from '@mui/icons-material/InfoRounded';
 
 const mainListItems = [
   { text: 'Home', icon: <HomeRoundedIcon />, path: '/home' },
-  { text: 'Test_2026_feb5', icon: <ContentCopyRoundedIcon />, path: '/test_2026_feb5' },
   { text: 'Model', icon: <PsychologyRoundedIcon />, path: '/model' },
   { text: 'Analytics', icon: <AnalyticsRoundedIcon />, path: '/analytics' },
   { text: 'Clients', icon: <PeopleRoundedIcon />, path: '/clients' },

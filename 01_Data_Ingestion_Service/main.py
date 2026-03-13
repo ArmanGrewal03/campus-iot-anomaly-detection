@@ -1,7 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Header, Depends
+from starlette.requests import Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -15,8 +18,64 @@ import random
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import contextvars
 
 app = FastAPI(title="Campus IoT Anomaly Detection API", version="1.0.0")
+
+# Environment variable to control error-only logging
+ERROR_ONLY_LOGGING = os.getenv("ERROR_ONLY_LOGGING", "false").lower() == "true"
+
+# Context variable to store response status code
+response_status: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar('response_status', default=None)
+
+# Custom logging filter for error-only mode
+class ErrorOnlyFilter(logging.Filter):
+    """Filter to only show 400 and 500 errors when ERROR_ONLY_LOGGING is enabled"""
+    
+    def filter(self, record):
+        if not ERROR_ONLY_LOGGING:
+            return True  # Show all logs when disabled
+        
+        # Always show ERROR level and above
+        if record.levelno >= logging.ERROR:
+            return True
+        
+        # Check if this is an HTTP status code log
+        status = response_status.get(None)
+        if status is not None:
+            # Only show 400 and 500 errors
+            if status >= 400:
+                return True
+            return False
+        
+        # For non-HTTP logs, only show ERROR and above
+        return record.levelno >= logging.ERROR
+
+# Configure logging with filter
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Add filter to root logger
+if ERROR_ONLY_LOGGING:
+    for handler in logging.root.handlers:
+        handler.addFilter(ErrorOnlyFilter())
+    logger.info("ERROR_ONLY_LOGGING enabled - showing only 400 and 500 errors")
+
+# Middleware to capture response status codes
+class StatusCodeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        status = response.status_code
+        response_status.set(status)
+        
+        # Log 400 and 500 errors even in error-only mode
+        if ERROR_ONLY_LOGGING and status >= 400:
+            logger.error(f"{request.method} {request.url.path} - Status: {status}")
+        
+        return response
 
 # Add CORS middleware to allow React frontend connections
 app.add_middleware(
@@ -36,11 +95,110 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Add status code middleware (after CORS)
+app.add_middleware(StatusCodeMiddleware)
+
+
+# Input validation middleware
+class InputValidationMiddleware(BaseHTTPMiddleware):
+    """Validate and sanitize input parameters for Data Ingestion Service"""
+    
+    def validate_integer_param(self, value: str, param_name: str, min_val: Optional[int] = None, max_val: Optional[int] = None) -> Tuple[Optional[int], Optional[str]]:
+        """Validate integer parameter"""
+        try:
+            int_value = int(value)
+            if min_val is not None and int_value < min_val:
+                return None, f"{param_name} must be >= {min_val}"
+            if max_val is not None and int_value > max_val:
+                return None, f"{param_name} must be <= {max_val}"
+            return int_value, None
+        except ValueError:
+            return None, f"{param_name} must be a valid integer"
+    
+    def validate_string_param(self, value: str, param_name: str, min_len: int = 1, max_len: Optional[int] = None) -> Tuple[Optional[str], Optional[str]]:
+        """Validate string parameter"""
+        if not value or len(value.strip()) == 0:
+            return None, f"{param_name} cannot be empty"
+        if max_len and len(value) > max_len:
+            return None, f"{param_name} must be <= {max_len} characters"
+        return value.strip(), None
+    
+    async def dispatch(self, request: Request, call_next):
+        # Skip validation for health checks
+        if request.url.path in ["/health", "/"]:
+            return await call_next(request)
+        
+        validation_errors = []
+        path = request.url.path
+        
+        # Validate query parameters
+        # limit and offset validation
+        if "limit" in request.query_params:
+            limit, error = self.validate_integer_param(request.query_params["limit"], "limit", min_val=1, max_val=10000)
+            if error:
+                validation_errors.append(error)
+        
+        if "offset" in request.query_params:
+            offset, error = self.validate_integer_param(request.query_params["offset"], "offset", min_val=0)
+            if error:
+                validation_errors.append(error)
+        
+        # dataset_name validation
+        if "dataset_name" in request.query_params:
+            name, error = self.validate_string_param(request.query_params["dataset_name"], "dataset_name", max_len=255)
+            if error:
+                validation_errors.append(error)
+        
+        # Validate request body for POST/PUT
+        if request.method in ["POST", "PUT"]:
+            content_type = request.headers.get("content-type", "")
+            
+            if "application/json" in content_type:
+                try:
+                    body = await request.body()
+                    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
+                    if len(body) > MAX_BODY_SIZE:
+                        validation_errors.append(f"Request body too large. Maximum size: {MAX_BODY_SIZE / (1024*1024):.1f}MB")
+                    else:
+                        try:
+                            json_data = json.loads(body.decode('utf-8'))
+                            request.state.validated_json = json_data
+                        except json.JSONDecodeError as e:
+                            validation_errors.append(f"Invalid JSON: {str(e)}")
+                except Exception as e:
+                    validation_errors.append(f"Error reading request body: {str(e)}")
+            elif "multipart/form-data" in content_type:
+                # File upload validation - check Content-Length
+                content_length = request.headers.get("content-length")
+                if content_length:
+                    try:
+                        size = int(content_length)
+                        MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB
+                        if size > MAX_UPLOAD_SIZE:
+                            validation_errors.append(f"Upload too large. Maximum size: {MAX_UPLOAD_SIZE / (1024*1024):.1f}MB")
+                    except ValueError:
+                        pass
+        
+        # Path validation
+        if ".." in path or "//" in path or "\x00" in path:
+            validation_errors.append("Invalid path: path traversal or null byte detected")
+        
+        if validation_errors:
+            logger.warning(f"Validation errors for {request.method} {path}: {validation_errors}")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Validation failed",
+                    "errors": validation_errors,
+                    "path": path
+                }
+            )
+        
+        return await call_next(request)
+
+
+# Add input validation middleware
+app.add_middleware(InputValidationMiddleware)
 
 DEFAULT_DB_NAME = "campus_iot_data.db"
 
@@ -63,28 +221,28 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     
     return await request_validation_exception_handler(request, exc)
 
-def get_dataset_name(dataset_name: str = Header(..., alias="dataset_name")) -> str:
-    sanitized = re.sub(r'[^a-zA-Z0-9_\-]', '', dataset_name)
+def get_dataset_name(dataset_name: str = Header(...)) -> str:
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '', dataset_name.replace('-', '_'))
     
     if not sanitized or len(sanitized) < 1:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid dataset name '{dataset_name}'. Dataset name must contain at least one alphanumeric character, underscore, or hyphen."
+            detail=f"Invalid dataset name '{dataset_name}'. Dataset name must contain at least one alphanumeric character or underscore."
         )
     
     logger.info(f"Using dataset: {sanitized}")
     return sanitized
 
-def get_optional_dataset_name(dataset_name: Optional[str] = Header(None, alias="dataset_name")) -> Optional[str]:
+def get_optional_dataset_name(dataset_name: Optional[str] = Header(None)) -> Optional[str]:
     if dataset_name is None:
         return None
     
-    sanitized = re.sub(r'[^a-zA-Z0-9_\-]', '', dataset_name)
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '', dataset_name.replace('-', '_'))
     
     if not sanitized or len(sanitized) < 1:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid dataset name '{dataset_name}'. Dataset name must contain at least one alphanumeric character, underscore, or hyphen."
+            detail=f"Invalid dataset name '{dataset_name}'. Dataset name must contain at least one alphanumeric character or underscore."
         )
     
     logger.info(f"Using dataset: {sanitized}")
@@ -119,6 +277,12 @@ def init_db(dataset_name: str):
     except sqlite3.OperationalError:
         pass
     
+    # Create indexes for frequently queried columns
+    cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{csv_table}_T ON {csv_table}(T)")
+    cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{csv_table}_upload_timestamp ON {csv_table}(upload_timestamp)")
+    # Composite index for common query: WHERE T = ? ORDER BY id
+    cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{csv_table}_T_id ON {csv_table}(T, id)")
+    
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {inserted_table} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,6 +290,9 @@ def init_db(dataset_name: str):
             data TEXT NOT NULL
         )
     """)
+    
+    # Create index for inserted_data table
+    cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{inserted_table}_created_timestamp ON {inserted_table}(created_timestamp)")
     
     conn.commit()
     conn.close()
@@ -163,7 +330,17 @@ async def get_tables():
             ORDER BY name
         """)
         
-        tables = [row['name'] for row in cursor.fetchall()]
+        all_tables = [row['name'] for row in cursor.fetchall()]
+        
+        tables = []
+        for t in all_tables:
+            try:
+                cursor.execute(f"SELECT COUNT(*) as c FROM [{t}]")
+                if cursor.fetchone()['c'] > 0:
+                    tables.append(t)
+            except Exception:
+                pass
+        
         conn.close()
         
         logger.info(f"Retrieved {len(tables)} tables from database")
@@ -185,8 +362,6 @@ async def get_tables():
 @app.get("/fields")
 async def get_fields(dataset_name: str = Depends(get_dataset_name)):
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -303,14 +478,39 @@ async def upload_csv(
         
         logger.info("Decoding file contents...")
         try:
-            csv_string = contents.decode('utf-8')
+            # use utf-8-sig to automatically handle BOM (from Excel exports)
+            csv_string = contents.decode('utf-8-sig')
             logger.info(f"Decoded CSV string length: {len(csv_string)}")
         except UnicodeDecodeError as e:
             logger.error(f"Unicode decode error: {e}")
-            raise HTTPException(status_code=400, detail="File must be UTF-8 encoded")
+            # Try latin-1 as a fallback for older Excel CSVs
+            try:
+                csv_string = contents.decode('latin-1')
+                logger.warning("Decoded with latin-1 fallback")
+            except:
+                raise HTTPException(status_code=400, detail="File must be UTF-8 or Latin-1 encoded")
         
         logger.info("Parsing CSV...")
-        csv_reader = csv.DictReader(io.StringIO(csv_string))
+        try:
+            # Create a reader to get the fieldnames first
+            f = io.StringIO(csv_string)
+            raw_reader = csv.reader(f)
+            headers = next(raw_reader, None)
+            
+            if not headers:
+                raise HTTPException(status_code=400, detail="CSV file has no headers")
+                
+            # Clean headers: trim whitespace and remove BOM remnants if any
+            clean_headers = [h.strip().lstrip('\ufeff') for h in headers]
+            logger.info(f"Detected {len(clean_headers)} columns: {clean_headers[:5]}...")
+            
+            # Re-read using DictReader with cleaned headers
+            f.seek(0)
+            next(f) # skip raw header line
+            csv_reader = csv.DictReader(f, fieldnames=clean_headers)
+        except Exception as e:
+            logger.error(f"Error parsing CSV: {e}")
+            raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
         
         csv_table = get_table_name("csv_data", dataset_name)
         logger.info(f"Connecting to database: {DEFAULT_DB_NAME}, dataset: {dataset_name}, table: {csv_table}")
@@ -328,12 +528,15 @@ async def upload_csv(
             row_count = cursor.fetchone()['count']
             
             if row_count > 0:
+                logger.info(f"Table {csv_table} already exists with {row_count} rows. Dropping and re-creating for re-upload.")
+                cursor.execute(f"DROP TABLE IF EXISTS {csv_table}")
+                try:
+                    cursor.execute(f"DELETE FROM sqlite_sequence WHERE name='{csv_table}'")
+                except Exception:
+                    pass
+                conn.commit()
                 conn.close()
-                logger.warning(f"Table {csv_table} already exists with {row_count} rows. Upload rejected.")
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Table '{csv_table}' already exists with {row_count} row(s). Cannot add new data. Use DELETE /clear with dataset_name header to remove existing data first."
-                )
+                table_exists = False
         
         if not table_exists:
             init_db(dataset_name)
@@ -344,15 +547,37 @@ async def upload_csv(
         rows_inserted = 0
         
         logger.info("Inserting rows into database...")
-        for row in csv_reader:
-            row_json = json.dumps(row)
-            cursor.execute(
-                f"INSERT INTO {csv_table} (upload_timestamp, row_data) VALUES (?, ?)",
-                (upload_timestamp, row_json)
-            )
-            rows_inserted += 1
+        try:
+            # Prepare batch for executemany
+            batch = []
+            for row in csv_reader:
+                batch.append((upload_timestamp, json.dumps(row)))
+                
+                # Insert in chunks of 5000 to balance speed and memory
+                if len(batch) >= 5000:
+                    cursor.executemany(
+                        f"INSERT INTO {csv_table} (upload_timestamp, row_data) VALUES (?, ?)",
+                        batch
+                    )
+                    batch = []
+                    rows_inserted += 5000
+            
+            # Insert remaining rows
+            if batch:
+                cursor.executemany(
+                    f"INSERT INTO {csv_table} (upload_timestamp, row_data) VALUES (?, ?)",
+                    batch
+                )
+                rows_inserted += len(batch)
+            
+            conn.commit()
+            logger.info(f"Successfully inserted {rows_inserted} rows")
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            logger.error(f"Error inserting rows: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Error inserting rows: {str(e)}")
         
-        conn.commit()
         conn.close()
         
         logger.info(f"Successfully inserted {rows_inserted} rows")
@@ -386,9 +611,10 @@ async def view_data(
     offset: int = 0,
     dataset_name: str = Depends(get_dataset_name)
 ):
+    # Frontend controls limits - backend just validates reasonable bounds
     if limit < 1:
-        limit = 10000
-    if limit > 1000:
+        limit = 100  # Default to 100 if invalid
+    if limit > 10000:  # Cap at reasonable maximum to prevent abuse
         limit = 10000
     if offset < 0:
         offset = 0
@@ -396,11 +622,21 @@ async def view_data(
     logger.info(f"Viewing data: limit={limit}, offset={offset}")
     
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        # Check if table exists
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name=?
+        """, (csv_table,))
+        if cursor.fetchone() is None:
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail=f"Dataset '{dataset_name}' not found. Please upload data first using POST /new"
+            )
         
         cursor.execute(f"SELECT COUNT(*) as total FROM {csv_table}")
         total_count = cursor.fetchone()['total']
@@ -461,6 +697,9 @@ async def view_data(
             status_code=200
         )
     
+    except sqlite3.Error as e:
+        logger.error(f"Database error retrieving data: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         logger.error(f"Error retrieving data: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error retrieving data: {str(e)}")
@@ -472,9 +711,10 @@ async def get_training_data(
     offset: int = 0,
     dataset_name: str = Depends(get_dataset_name)
 ):
+    # Frontend controls limits - backend just validates reasonable bounds
     if limit < 1:
-        limit = 1000
-    if limit > 10000:
+        limit = 100  # Default to 100 if invalid
+    if limit > 10000:  # Cap at reasonable maximum to prevent abuse
         limit = 10000
     if offset < 0:
         offset = 0
@@ -482,8 +722,6 @@ async def get_training_data(
     logger.info(f"Viewing training data: limit={limit}, offset={offset}")
     
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -573,6 +811,9 @@ async def get_training_data(
     
     except HTTPException:
         raise
+    except sqlite3.Error as e:
+        logger.error(f"Database error retrieving training data: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         logger.error(f"Error retrieving training data: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error retrieving training data: {str(e)}")
@@ -584,9 +825,10 @@ async def get_testing_data(
     offset: int = 0,
     dataset_name: str = Depends(get_dataset_name)
 ):
+    # Frontend controls limits - backend just validates reasonable bounds
     if limit < 1:
-        limit = 10000
-    if limit > 10000:
+        limit = 100  # Default to 100 if invalid
+    if limit > 10000:  # Cap at reasonable maximum to prevent abuse
         limit = 10000
     if offset < 0:
         offset = 0
@@ -594,8 +836,6 @@ async def get_testing_data(
     logger.info(f"Viewing testing data: limit={limit}, offset={offset}")
     
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -685,6 +925,9 @@ async def get_testing_data(
     
     except HTTPException:
         raise
+    except sqlite3.Error as e:
+        logger.error(f"Database error retrieving testing data: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         logger.error(f"Error retrieving testing data: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error retrieving testing data: {str(e)}")
@@ -721,8 +964,6 @@ async def validate_data(
         raise HTTPException(status_code=400, detail=f"X-Testing-Percent must be between 0 and 100. Got: {testing_percent}")
     
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -746,15 +987,9 @@ async def validate_data(
         if total_rows == 0:
             logger.warning("No rows found in database")
             conn.close()
-            return JSONResponse(
-                content={
-                    "status": "success",
-                    "message": "No rows to validate",
-                    "total_rows": 0,
-                    "training_rows": 0,
-                    "testing_rows": 0
-                },
-                status_code=200
+            raise HTTPException(
+                status_code=422,
+                detail="No data found in dataset. Cannot perform validation on empty dataset."
             )
         
         # Validate and set training/testing percentages
@@ -809,49 +1044,99 @@ async def validate_data(
         else:
             logger.info(f"Total rows: {total_rows}, Training: {training_count}, Testing: {testing_count} (labels not modified)")
         
-        # Shuffle rows for random assignment
-        row_data_list = [(row['id'], row['row_data']) for row in all_rows]
-        random.shuffle(row_data_list)
+        # Separate rows by existing label for stratified split
+        label_0_rows = []
+        label_1_rows = []
+        label_unknown_rows = []
         
-        # Assign labels if requested
-        if assign_labels:
-            label_0_rows = row_data_list[:label_0_count]
-            label_1_rows = row_data_list[label_0_count:]
+        for row in all_rows:
+            try:
+                row_data = json.loads(row['row_data'])
+                label = row_data.get('label')
+                if label == 0 or label == '0':
+                    label_0_rows.append((row['id'], row['row_data']))
+                elif label == 1 or label == '1':
+                    label_1_rows.append((row['id'], row['row_data']))
+                else:
+                    label_unknown_rows.append((row['id'], row['row_data']))
+            except (json.JSONDecodeError, KeyError):
+                label_unknown_rows.append((row['id'], row['row_data']))
+        
+        # Shuffle each group separately for stratified split
+        random.shuffle(label_0_rows)
+        random.shuffle(label_1_rows)
+        random.shuffle(label_unknown_rows)
+        
+        # Begin transaction for atomic label and training/testing assignment
+        try:
+            cursor.execute("BEGIN TRANSACTION")
             
-            for row_id, row_data_json in label_0_rows:
-                try:
-                    row_data = json.loads(row_data_json)
-                    row_data['label'] = 0
-                    updated_json = json.dumps(row_data)
-                    cursor.execute(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", (updated_json, row_id))
-                except (json.JSONDecodeError, KeyError) as e:
-                    logger.warning(f"Failed to update label for row {row_id}: {e}")
+            # Assign labels if requested
+            if assign_labels:
+                # Combine all rows and shuffle for label assignment
+                all_rows_list = label_0_rows + label_1_rows + label_unknown_rows
+                random.shuffle(all_rows_list)
+                
+                label_0_assigned = all_rows_list[:label_0_count]
+                label_1_assigned = all_rows_list[label_0_count:]
+                
+                # BATCH UPDATE LABELS
+                label_0_updates = []
+                for row_id, row_data_json in label_0_assigned:
+                    try:
+                        row_data = json.loads(row_data_json)
+                        row_data['label'] = 0
+                        label_0_updates.append((json.dumps(row_data), row_id))
+                    except: pass
+                
+                if label_0_updates:
+                    cursor.executemany(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", label_0_updates)
+
+                label_1_updates = []
+                for row_id, row_data_json in label_1_assigned:
+                    try:
+                        row_data = json.loads(row_data_json)
+                        row_data['label'] = 1
+                        label_1_updates.append((json.dumps(row_data), row_id))
+                    except: pass
+                
+                if label_1_updates:
+                    cursor.executemany(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", label_1_updates)
+                
+                # Re-separate for split logic
+                label_0_rows = label_0_assigned
+                label_1_rows = label_1_assigned
+                label_unknown_rows = []
             
-            for row_id, row_data_json in label_1_rows:
-                try:
-                    row_data = json.loads(row_data_json)
-                    row_data['label'] = 1
-                    updated_json = json.dumps(row_data)
-                    cursor.execute(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", (updated_json, row_id))
-                except (json.JSONDecodeError, KeyError) as e:
-                    logger.warning(f"Failed to update label for row {row_id}: {e}")
+            # Stratified split calculations
+            label_0_train_count = int(len(label_0_rows) * train_pct)
+            label_1_train_count = int(len(label_1_rows) * train_pct)
+            unknown_train_count = int(len(label_unknown_rows) * train_pct)
+            
+            training_ids = [r[0] for r in label_0_rows[:label_0_train_count]] + \
+                           [r[0] for r in label_1_rows[:label_1_train_count]] + \
+                           [r[0] for r in label_unknown_rows[:unknown_train_count]]
+            
+            testing_ids = [r[0] for r in label_0_rows[label_0_train_count:]] + \
+                          [r[0] for r in label_1_rows[label_1_train_count:]] + \
+                          [r[0] for r in label_unknown_rows[unknown_train_count:]]
+            
+            # BATCH UPDATE SPLITS
+            if training_ids:
+                cursor.executemany(f"UPDATE {csv_table} SET T = 'training' WHERE id = ?", [(rid,) for rid in training_ids])
+            if testing_ids:
+                cursor.executemany(f"UPDATE {csv_table} SET T = 'testing' WHERE id = ?", [(rid,) for rid in testing_ids])
+            
+            conn.commit()
+            updated_training = len(training_ids)
+            updated_testing = len(testing_ids)
+            logger.info(f"Validation complete: {updated_training} training, {updated_testing} testing")
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            logger.error(f"Error during validation transaction: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Error during validation: {str(e)}")
         
-        # Assign training/testing split
-        training_ids = set([row_id for row_id, _ in row_data_list[:training_count]])
-        testing_ids = set([row_id for row_id, _ in row_data_list[training_count:]])
-        
-        updated_training = 0
-        updated_testing = 0
-        
-        for row_id, _ in row_data_list:
-            if row_id in training_ids:
-                cursor.execute(f"UPDATE {csv_table} SET T = ? WHERE id = ?", ("training", row_id))
-                updated_training += 1
-            else:
-                cursor.execute(f"UPDATE {csv_table} SET T = ? WHERE id = ?", ("testing", row_id))
-                updated_testing += 1
-        
-        conn.commit()
         conn.close()
         
         result = {
@@ -881,7 +1166,16 @@ async def validate_data(
     
     except HTTPException:
         raise
+    except sqlite3.Error as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        logger.error(f"Database error during validation: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
         logger.error(f"Error during validation: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error during validation: {str(e)}")
 
@@ -906,22 +1200,30 @@ async def clear_database(dataset_name: Optional[str] = Depends(get_optional_data
             total_rows_deleted = 0
             deleted_tables = []
             
-            for table_name in all_tables:
-                try:
-                    cursor.execute(f"SELECT COUNT(*) as total FROM {table_name}")
-                    row_count = cursor.fetchone()['total']
-                    
-                    cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-                    cursor.execute(f"DELETE FROM sqlite_sequence WHERE name='{table_name}'")
-                    
-                    total_rows_deleted += row_count
-                    deleted_tables.append(table_name)
-                    logger.info(f"Dropped table {table_name}: {row_count} rows")
-                except Exception as e:
-                    logger.warning(f"Error dropping table {table_name}: {e}")
-                    continue
+            try:
+                cursor.execute("BEGIN TRANSACTION")
+                for table_name in all_tables:
+                    try:
+                        cursor.execute(f"SELECT COUNT(*) as total FROM {table_name}")
+                        row_count = cursor.fetchone()['total']
+                        
+                        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+                        cursor.execute(f"DELETE FROM sqlite_sequence WHERE name='{table_name}'")
+                        
+                        total_rows_deleted += row_count
+                        deleted_tables.append(table_name)
+                        logger.info(f"Dropped table {table_name}: {row_count} rows")
+                    except Exception as e:
+                        logger.warning(f"Error dropping table {table_name}: {e}")
+                        continue
+                
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                conn.close()
+                logger.error(f"Error during clear operation: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Error clearing database: {str(e)}")
             
-            conn.commit()
             conn.close()
             
             logger.info(f"All tables dropped: {total_rows_deleted} total rows from {len(deleted_tables)} tables")
@@ -939,8 +1241,6 @@ async def clear_database(dataset_name: Optional[str] = Depends(get_optional_data
         else:
             logger.warning(f"Dropping dataset {dataset_name} tables - tables will be removed")
             
-            init_db(dataset_name)
-            
             csv_table = get_table_name("csv_data", dataset_name)
             inserted_table = get_table_name("inserted_data", dataset_name)
             
@@ -948,28 +1248,37 @@ async def clear_database(dataset_name: Optional[str] = Depends(get_optional_data
             deleted_tables = []
             
             try:
-                cursor.execute(f"SELECT COUNT(*) as total FROM {csv_table}")
-                csv_rows = cursor.fetchone()['total']
-                cursor.execute(f"DROP TABLE IF EXISTS {csv_table}")
-                cursor.execute(f"DELETE FROM sqlite_sequence WHERE name='{csv_table}'")
-                total_rows_deleted += csv_rows
-                deleted_tables.append(csv_table)
-                logger.info(f"Dropped table {csv_table}: {csv_rows} rows")
-            except sqlite3.OperationalError:
-                logger.info(f"Table {csv_table} does not exist, skipping")
+                cursor.execute("BEGIN TRANSACTION")
+                
+                try:
+                    cursor.execute(f"SELECT COUNT(*) as total FROM {csv_table}")
+                    csv_rows = cursor.fetchone()['total']
+                    cursor.execute(f"DROP TABLE IF EXISTS {csv_table}")
+                    cursor.execute(f"DELETE FROM sqlite_sequence WHERE name='{csv_table}'")
+                    total_rows_deleted += csv_rows
+                    deleted_tables.append(csv_table)
+                    logger.info(f"Dropped table {csv_table}: {csv_rows} rows")
+                except sqlite3.OperationalError:
+                    logger.info(f"Table {csv_table} does not exist, skipping")
+                
+                try:
+                    cursor.execute(f"SELECT COUNT(*) as total FROM {inserted_table}")
+                    inserted_rows = cursor.fetchone()['total']
+                    cursor.execute(f"DROP TABLE IF EXISTS {inserted_table}")
+                    cursor.execute(f"DELETE FROM sqlite_sequence WHERE name='{inserted_table}'")
+                    total_rows_deleted += inserted_rows
+                    deleted_tables.append(inserted_table)
+                    logger.info(f"Dropped table {inserted_table}: {inserted_rows} rows")
+                except sqlite3.OperationalError:
+                    logger.info(f"Table {inserted_table} does not exist, skipping")
+                
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                conn.close()
+                logger.error(f"Error during clear operation: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Error clearing database: {str(e)}")
             
-            try:
-                cursor.execute(f"SELECT COUNT(*) as total FROM {inserted_table}")
-                inserted_rows = cursor.fetchone()['total']
-                cursor.execute(f"DROP TABLE IF EXISTS {inserted_table}")
-                cursor.execute(f"DELETE FROM sqlite_sequence WHERE name='{inserted_table}'")
-                total_rows_deleted += inserted_rows
-                deleted_tables.append(inserted_table)
-                logger.info(f"Dropped table {inserted_table}: {inserted_rows} rows")
-            except sqlite3.OperationalError:
-                logger.info(f"Table {inserted_table} does not exist, skipping")
-            
-            conn.commit()
             conn.close()
             
             logger.info(f"Dataset {dataset_name} tables dropped: {total_rows_deleted} rows from {len(deleted_tables)} tables")
@@ -986,10 +1295,17 @@ async def clear_database(dataset_name: Optional[str] = Depends(get_optional_data
             )
     
     except HTTPException:
-        conn.close()
+        if 'conn' in locals():
+            conn.close()
         raise
+    except sqlite3.Error as e:
+        if 'conn' in locals():
+            conn.close()
+        logger.error(f"Database error clearing data: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
-        conn.close()
+        if 'conn' in locals():
+            conn.close()
         logger.error(f"Error clearing database: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error clearing database: {str(e)}")
 
@@ -998,7 +1314,6 @@ async def clear_database(dataset_name: Optional[str] = Depends(get_optional_data
 async def get_stats(dataset_name: str = Depends(get_dataset_name)):
     """Get aggregated statistics for KPI display"""
     try:
-        init_db(dataset_name)
         stats = {}
         
         csv_table = get_table_name("csv_data", dataset_name)
@@ -1172,8 +1487,6 @@ def fetch_chunk_data(dataset_name, offset, limit):
 async def get_type_stats(dataset_name: str = Depends(get_dataset_name)):
     """Get type distribution statistics - processes all rows to find all types"""
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()

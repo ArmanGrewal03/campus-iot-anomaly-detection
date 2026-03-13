@@ -196,10 +196,13 @@ def main():
     parser.add_argument('--out_dir', default='.', help='Directory to save model artifacts')
     
     # Hyperparameters
+    # max_depth reduced to 15 to prevent overfitting to training patterns
+    # min_samples_split increased to 5 to force generalization
+    # These changes help the model recognize diverse/random logs better instead of relying on exact training data similarity
     parser.add_argument('--n_estimators', type=int, default=200)
-    parser.add_argument('--max_depth', type=int, default=20)
-    parser.add_argument('--min_samples_split', type=int, default=2)
-    parser.add_argument('--class_weight', default='balanced')
+    parser.add_argument('--max_depth', type=int, default=15)
+    parser.add_argument('--min_samples_split', type=int, default=5)
+    parser.add_argument('--class_weight', default='balanced_subsample')
     parser.add_argument('--random_state', type=int, default=42)
     parser.add_argument('--n_jobs', type=int, default=-1)
     
