@@ -221,28 +221,28 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     
     return await request_validation_exception_handler(request, exc)
 
-def get_dataset_name(dataset_name: str = Header(..., alias="dataset_name")) -> str:
-    sanitized = re.sub(r'[^a-zA-Z0-9_\-]', '', dataset_name)
+def get_dataset_name(dataset_name: str = Header(...)) -> str:
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '', dataset_name.replace('-', '_'))
     
     if not sanitized or len(sanitized) < 1:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid dataset name '{dataset_name}'. Dataset name must contain at least one alphanumeric character, underscore, or hyphen."
+            detail=f"Invalid dataset name '{dataset_name}'. Dataset name must contain at least one alphanumeric character or underscore."
         )
     
     logger.info(f"Using dataset: {sanitized}")
     return sanitized
 
-def get_optional_dataset_name(dataset_name: Optional[str] = Header(None, alias="dataset_name")) -> Optional[str]:
+def get_optional_dataset_name(dataset_name: Optional[str] = Header(None)) -> Optional[str]:
     if dataset_name is None:
         return None
     
-    sanitized = re.sub(r'[^a-zA-Z0-9_\-]', '', dataset_name)
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '', dataset_name.replace('-', '_'))
     
     if not sanitized or len(sanitized) < 1:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid dataset name '{dataset_name}'. Dataset name must contain at least one alphanumeric character, underscore, or hyphen."
+            detail=f"Invalid dataset name '{dataset_name}'. Dataset name must contain at least one alphanumeric character or underscore."
         )
     
     logger.info(f"Using dataset: {sanitized}")
@@ -330,7 +330,17 @@ async def get_tables():
             ORDER BY name
         """)
         
-        tables = [row['name'] for row in cursor.fetchall()]
+        all_tables = [row['name'] for row in cursor.fetchall()]
+        
+        tables = []
+        for t in all_tables:
+            try:
+                cursor.execute(f"SELECT COUNT(*) as c FROM [{t}]")
+                if cursor.fetchone()['c'] > 0:
+                    tables.append(t)
+            except Exception:
+                pass
+        
         conn.close()
         
         logger.info(f"Retrieved {len(tables)} tables from database")
@@ -352,8 +362,6 @@ async def get_tables():
 @app.get("/fields")
 async def get_fields(dataset_name: str = Depends(get_dataset_name)):
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -470,14 +478,39 @@ async def upload_csv(
         
         logger.info("Decoding file contents...")
         try:
-            csv_string = contents.decode('utf-8')
+            # use utf-8-sig to automatically handle BOM (from Excel exports)
+            csv_string = contents.decode('utf-8-sig')
             logger.info(f"Decoded CSV string length: {len(csv_string)}")
         except UnicodeDecodeError as e:
             logger.error(f"Unicode decode error: {e}")
-            raise HTTPException(status_code=400, detail="File must be UTF-8 encoded")
+            # Try latin-1 as a fallback for older Excel CSVs
+            try:
+                csv_string = contents.decode('latin-1')
+                logger.warning("Decoded with latin-1 fallback")
+            except:
+                raise HTTPException(status_code=400, detail="File must be UTF-8 or Latin-1 encoded")
         
         logger.info("Parsing CSV...")
-        csv_reader = csv.DictReader(io.StringIO(csv_string))
+        try:
+            # Create a reader to get the fieldnames first
+            f = io.StringIO(csv_string)
+            raw_reader = csv.reader(f)
+            headers = next(raw_reader, None)
+            
+            if not headers:
+                raise HTTPException(status_code=400, detail="CSV file has no headers")
+                
+            # Clean headers: trim whitespace and remove BOM remnants if any
+            clean_headers = [h.strip().lstrip('\ufeff') for h in headers]
+            logger.info(f"Detected {len(clean_headers)} columns: {clean_headers[:5]}...")
+            
+            # Re-read using DictReader with cleaned headers
+            f.seek(0)
+            next(f) # skip raw header line
+            csv_reader = csv.DictReader(f, fieldnames=clean_headers)
+        except Exception as e:
+            logger.error(f"Error parsing CSV: {e}")
+            raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
         
         csv_table = get_table_name("csv_data", dataset_name)
         logger.info(f"Connecting to database: {DEFAULT_DB_NAME}, dataset: {dataset_name}, table: {csv_table}")
@@ -495,12 +528,15 @@ async def upload_csv(
             row_count = cursor.fetchone()['count']
             
             if row_count > 0:
+                logger.info(f"Table {csv_table} already exists with {row_count} rows. Dropping and re-creating for re-upload.")
+                cursor.execute(f"DROP TABLE IF EXISTS {csv_table}")
+                try:
+                    cursor.execute(f"DELETE FROM sqlite_sequence WHERE name='{csv_table}'")
+                except Exception:
+                    pass
+                conn.commit()
                 conn.close()
-                logger.warning(f"Table {csv_table} already exists with {row_count} rows. Upload rejected.")
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Table '{csv_table}' already exists with {row_count} row(s). Cannot add new data. Use DELETE /clear with dataset_name header to remove existing data first."
-                )
+                table_exists = False
         
         if not table_exists:
             init_db(dataset_name)
@@ -512,15 +548,27 @@ async def upload_csv(
         
         logger.info("Inserting rows into database...")
         try:
-            # Begin transaction for atomic bulk insert
-            cursor.execute("BEGIN TRANSACTION")
+            # Prepare batch for executemany
+            batch = []
             for row in csv_reader:
-                row_json = json.dumps(row)
-                cursor.execute(
+                batch.append((upload_timestamp, json.dumps(row)))
+                
+                # Insert in chunks of 5000 to balance speed and memory
+                if len(batch) >= 5000:
+                    cursor.executemany(
+                        f"INSERT INTO {csv_table} (upload_timestamp, row_data) VALUES (?, ?)",
+                        batch
+                    )
+                    batch = []
+                    rows_inserted += 5000
+            
+            # Insert remaining rows
+            if batch:
+                cursor.executemany(
                     f"INSERT INTO {csv_table} (upload_timestamp, row_data) VALUES (?, ?)",
-                    (upload_timestamp, row_json)
+                    batch
                 )
-                rows_inserted += 1
+                rows_inserted += len(batch)
             
             conn.commit()
             logger.info(f"Successfully inserted {rows_inserted} rows")
@@ -574,8 +622,6 @@ async def view_data(
     logger.info(f"Viewing data: limit={limit}, offset={offset}")
     
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -676,8 +722,6 @@ async def get_training_data(
     logger.info(f"Viewing training data: limit={limit}, offset={offset}")
     
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -792,8 +836,6 @@ async def get_testing_data(
     logger.info(f"Viewing testing data: limit={limit}, offset={offset}")
     
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -922,8 +964,6 @@ async def validate_data(
         raise HTTPException(status_code=400, detail=f"X-Testing-Percent must be between 0 and 100. Got: {testing_percent}")
     
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1040,59 +1080,56 @@ async def validate_data(
                 label_0_assigned = all_rows_list[:label_0_count]
                 label_1_assigned = all_rows_list[label_0_count:]
                 
+                # BATCH UPDATE LABELS
+                label_0_updates = []
                 for row_id, row_data_json in label_0_assigned:
                     try:
                         row_data = json.loads(row_data_json)
                         row_data['label'] = 0
-                        updated_json = json.dumps(row_data)
-                        cursor.execute(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", (updated_json, row_id))
-                    except (json.JSONDecodeError, KeyError) as e:
-                        logger.warning(f"Failed to update label for row {row_id}: {e}")
+                        label_0_updates.append((json.dumps(row_data), row_id))
+                    except: pass
                 
+                if label_0_updates:
+                    cursor.executemany(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", label_0_updates)
+
+                label_1_updates = []
                 for row_id, row_data_json in label_1_assigned:
                     try:
                         row_data = json.loads(row_data_json)
                         row_data['label'] = 1
-                        updated_json = json.dumps(row_data)
-                        cursor.execute(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", (updated_json, row_id))
-                    except (json.JSONDecodeError, KeyError) as e:
-                        logger.warning(f"Failed to update label for row {row_id}: {e}")
+                        label_1_updates.append((json.dumps(row_data), row_id))
+                    except: pass
                 
-                # Re-separate by newly assigned labels for stratified split
+                if label_1_updates:
+                    cursor.executemany(f"UPDATE {csv_table} SET row_data = ? WHERE id = ?", label_1_updates)
+                
+                # Re-separate for split logic
                 label_0_rows = label_0_assigned
                 label_1_rows = label_1_assigned
                 label_unknown_rows = []
             
-            # Stratified split: ensure both classes are in both training and testing
-            # Calculate how many of each label should go to training
+            # Stratified split calculations
             label_0_train_count = int(len(label_0_rows) * train_pct)
             label_1_train_count = int(len(label_1_rows) * train_pct)
             unknown_train_count = int(len(label_unknown_rows) * train_pct)
             
-            # Split each label group
-            label_0_training = label_0_rows[:label_0_train_count]
-            label_0_testing = label_0_rows[label_0_train_count:]
-            label_1_training = label_1_rows[:label_1_train_count]
-            label_1_testing = label_1_rows[label_1_train_count:]
-            unknown_training = label_unknown_rows[:unknown_train_count]
-            unknown_testing = label_unknown_rows[unknown_train_count:]
+            training_ids = [r[0] for r in label_0_rows[:label_0_train_count]] + \
+                           [r[0] for r in label_1_rows[:label_1_train_count]] + \
+                           [r[0] for r in label_unknown_rows[:unknown_train_count]]
             
-            # Combine training and testing sets
-            training_ids = set([row_id for row_id, _ in label_0_training + label_1_training + unknown_training])
-            testing_ids = set([row_id for row_id, _ in label_0_testing + label_1_testing + unknown_testing])
+            testing_ids = [r[0] for r in label_0_rows[label_0_train_count:]] + \
+                          [r[0] for r in label_1_rows[label_1_train_count:]] + \
+                          [r[0] for r in label_unknown_rows[unknown_train_count:]]
             
-            updated_training = 0
-            updated_testing = 0
-            
-            for row_id, _ in row_data_list:
-                if row_id in training_ids:
-                    cursor.execute(f"UPDATE {csv_table} SET T = ? WHERE id = ?", ("training", row_id))
-                    updated_training += 1
-                else:
-                    cursor.execute(f"UPDATE {csv_table} SET T = ? WHERE id = ?", ("testing", row_id))
-                    updated_testing += 1
+            # BATCH UPDATE SPLITS
+            if training_ids:
+                cursor.executemany(f"UPDATE {csv_table} SET T = 'training' WHERE id = ?", [(rid,) for rid in training_ids])
+            if testing_ids:
+                cursor.executemany(f"UPDATE {csv_table} SET T = 'testing' WHERE id = ?", [(rid,) for rid in testing_ids])
             
             conn.commit()
+            updated_training = len(training_ids)
+            updated_testing = len(testing_ids)
             logger.info(f"Validation complete: {updated_training} training, {updated_testing} testing")
         except Exception as e:
             conn.rollback()
@@ -1204,8 +1241,6 @@ async def clear_database(dataset_name: Optional[str] = Depends(get_optional_data
         else:
             logger.warning(f"Dropping dataset {dataset_name} tables - tables will be removed")
             
-            init_db(dataset_name)
-            
             csv_table = get_table_name("csv_data", dataset_name)
             inserted_table = get_table_name("inserted_data", dataset_name)
             
@@ -1279,7 +1314,6 @@ async def clear_database(dataset_name: Optional[str] = Depends(get_optional_data
 async def get_stats(dataset_name: str = Depends(get_dataset_name)):
     """Get aggregated statistics for KPI display"""
     try:
-        init_db(dataset_name)
         stats = {}
         
         csv_table = get_table_name("csv_data", dataset_name)
@@ -1453,8 +1487,6 @@ def fetch_chunk_data(dataset_name, offset, limit):
 async def get_type_stats(dataset_name: str = Depends(get_dataset_name)):
     """Get type distribution statistics - processes all rows to find all types"""
     try:
-        init_db(dataset_name)
-        
         csv_table = get_table_name("csv_data", dataset_name)
         conn = get_db_connection()
         cursor = conn.cursor()

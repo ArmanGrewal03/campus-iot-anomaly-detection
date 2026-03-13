@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 from starlette.requests import Request
 import json
 import os
@@ -416,7 +416,7 @@ async def process_missing_predictions(batch_size: int = 10):
                 payload = {"data": [data]}
                 headers = {
                     "Content-Type": "application/json",
-                    "model_name": selected_model_name
+                    "model-name": selected_model_name
                 }
                 
                 logger.info(f"Calling prediction API for network_id: {network_id}, data: {json.dumps(data)}")
@@ -1438,7 +1438,7 @@ async def process_predict_request(network_id: str, data: dict, message=None):
         payload = {"data": [data]}
         headers = {
             "Content-Type": "application/json",
-            "model_name": selected_model_name
+            "model-name": selected_model_name
         }
         
         logger.info(f"Processing prediction for network_id: {network_id}")
@@ -2170,22 +2170,8 @@ def get_database_statistics(feature_names: list, force_refresh: bool = False, da
     return None
 
 def load_feature_names() -> list:
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    feature_names_path = os.path.join(base_dir, "..", "A-DataIngestion", "Processed", "feature_names.json")
-    feature_names_path = os.path.normpath(feature_names_path)
-    
-    if os.path.exists(feature_names_path):
-        try:
-            with open(feature_names_path, 'r') as f:
-                features = json.load(f)
-                logger.info(f"Loaded {len(features)} features from {feature_names_path}")
-                return features
-        except Exception as e:
-            logger.error(f"Error loading feature names: {e}")
-    else:
-        logger.warning(f"Feature names file not found at {feature_names_path}")
-    
-    logger.info("Using default feature set")
+    """Return RAW UNSW-NB15 column names that the DataVectorizer expects as input.
+    The vectorizer handles all encoding (one-hot, label, log, scaling) internally."""
     return [
         "dur", "proto", "service", "state", "spkts", "dpkts", "sbytes", "dbytes",
         "rate", "sttl", "dttl", "sload", "dload", "sloss", "dloss", "sinpkt", "dinpkt",
@@ -2195,134 +2181,161 @@ def load_feature_names() -> list:
         "is_ftp_login", "ct_ftp_cmd", "ct_flw_http_mthd", "ct_src_ltm", "ct_srv_dst", "is_sm_ips_ports"
     ]
 
-def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
+_SAFE_TEMPLATES = [
+    {"dur":"1.051148","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"8","sbytes":"936","dbytes":"354","rate":"16.172793","sttl":"254","dttl":"252","sload":"6415.842285","dload":"2359.325195","sloss":"2","dloss":"1","sinpkt":"112.270222","dinpkt":"142.600578","sjit":"7987.718541","djit":"200.644531","swin":"255","stcpb":"4086146597","dtcpb":"182795087","dwin":"255","tcprtt":"0.105847","synack":"0.052936","ackdat":"0.052911","smean":"94","dmean":"44","trans_depth":"0","response_body_len":"0","ct_srv_src":"12","ct_state_ttl":"1","ct_dst_ltm":"5","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"12","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"17","is_sm_ips_ports":"0"},
+    {"dur":"0.893006","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"8","sbytes":"534","dbytes":"354","rate":"19.036826","sttl":"254","dttl":"252","sload":"4309.041504","dload":"2777.136963","sloss":"2","dloss":"1","sinpkt":"99.072556","dinpkt":"113.72543","sjit":"5841.744148","djit":"175.437641","swin":"255","stcpb":"386666398","dtcpb":"1493009112","dwin":"255","tcprtt":"0.152876","synack":"0.096918","ackdat":"0.055958","smean":"53","dmean":"44","trans_depth":"0","response_body_len":"0","ct_srv_src":"4","ct_state_ttl":"1","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"2","ct_dst_src_ltm":"3","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"3","is_sm_ips_ports":"0"},
+    {"dur":"0.791099","proto":"tcp","service":"-","state":"FIN","spkts":"16","dpkts":"12","sbytes":"922","dbytes":"642","rate":"34.129735","sttl":"254","dttl":"252","sload":"8747.325195","dload":"5956.270996","sloss":"5","dloss":"3","sinpkt":"52.739934","dinpkt":"68.261094","sjit":"3439.932838","djit":"98.826758","swin":"255","stcpb":"1984472663","dtcpb":"1174049858","dwin":"255","tcprtt":"0.061295","synack":"0.032636","ackdat":"0.028659","smean":"58","dmean":"54","trans_depth":"0","response_body_len":"0","ct_srv_src":"6","ct_state_ttl":"1","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"6","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"6","is_sm_ips_ports":"0"},
+    {"dur":"0.150081","proto":"tcp","service":"-","state":"CON","spkts":"6","dpkts":"2","sbytes":"978","dbytes":"86","rate":"46.641482","sttl":"62","dttl":"252","sload":"43443.21094","dload":"2292.095703","sloss":"2","dloss":"1","sinpkt":"30.0162","dinpkt":"0.004","sjit":"1899.658862","djit":"0","swin":"255","stcpb":"806568857","dtcpb":"3712035026","dwin":"255","tcprtt":"0.133288","synack":"0.072648","ackdat":"0.06064","smean":"163","dmean":"43","trans_depth":"0","response_body_len":"0","ct_srv_src":"8","ct_state_ttl":"3","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"8","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"8","is_sm_ips_ports":"0"},
+    {"dur":"0.645432","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"6","sbytes":"534","dbytes":"268","rate":"23.240249","sttl":"254","dttl":"252","sload":"5961.898438","dload":"2776.435059","sloss":"2","dloss":"1","sinpkt":"68.762222","dinpkt":"117.256797","sjit":"3961.98145","djit":"191.804344","swin":"255","stcpb":"1921691350","dtcpb":"1007322645","dwin":"255","tcprtt":"0.158264","synack":"0.059139","ackdat":"0.099125","smean":"53","dmean":"45","trans_depth":"0","response_body_len":"0","ct_srv_src":"4","ct_state_ttl":"1","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"4","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"4","is_sm_ips_ports":"0"},
+    {"dur":"1.144943","proto":"tcp","service":"http","state":"FIN","spkts":"12","dpkts":"18","sbytes":"1580","dbytes":"10168","rate":"25.328772","sttl":"31","dttl":"29","sload":"10124.52148","dload":"67105.52344","sloss":"3","dloss":"5","sinpkt":"104.053817","dinpkt":"67.318059","sjit":"10572.93372","djit":"8514.995115","swin":"255","stcpb":"598555952","dtcpb":"2745009965","dwin":"255","tcprtt":"0.000669","synack":"0.000533","ackdat":"0.000136","smean":"132","dmean":"565","trans_depth":"1","response_body_len":"0","ct_srv_src":"1","ct_state_ttl":"0","ct_dst_ltm":"4","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"1","ct_src_ltm":"3","ct_srv_dst":"4","is_sm_ips_ports":"0"},
+    {"dur":"0.086042","proto":"tcp","service":"-","state":"FIN","spkts":"72","dpkts":"76","sbytes":"4238","dbytes":"65392","rate":"1708.467921","sttl":"31","dttl":"29","sload":"388647.4063","dload":"6000046.5","sloss":"7","dloss":"30","sinpkt":"1.207","dinpkt":"1.139893","sjit":"80.990943","djit":"78.190416","swin":"255","stcpb":"1309193701","dtcpb":"1309494282","dwin":"255","tcprtt":"0.000906","synack":"0.000542","ackdat":"0.000364","smean":"59","dmean":"860","trans_depth":"0","response_body_len":"0","ct_srv_src":"7","ct_state_ttl":"0","ct_dst_ltm":"2","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"14","is_sm_ips_ports":"0"},
+    {"dur":"0.723204","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"6","sbytes":"956","dbytes":"268","rate":"20.741035","sttl":"254","dttl":"252","sload":"9524.283203","dload":"2477.862305","sloss":"2","dloss":"1","sinpkt":"75.823333","dinpkt":"126.160797","sjit":"4046.010424","djit":"183.468156","swin":"255","stcpb":"2100472424","dtcpb":"1789886347","dwin":"255","tcprtt":"0.196422","synack":"0.092399","ackdat":"0.104023","smean":"96","dmean":"45","trans_depth":"0","response_body_len":"0","ct_srv_src":"4","ct_state_ttl":"1","ct_dst_ltm":"2","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"2","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"4","is_sm_ips_ports":"0"},
+    {"dur":"0.000012","proto":"udp","service":"-","state":"INT","spkts":"2","dpkts":"0","sbytes":"1934","dbytes":"0","rate":"83333.33039","sttl":"254","dttl":"0","sload":"644666624","dload":"0","sloss":"0","dloss":"0","sinpkt":"0.012","dinpkt":"0","sjit":"0","djit":"0","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"967","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"6","ct_state_ttl":"2","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"6","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"6","is_sm_ips_ports":"0"},
+    {"dur":"0.004801","proto":"tcp","service":"-","state":"FIN","spkts":"22","dpkts":"14","sbytes":"1470","dbytes":"1728","rate":"7290.147882","sttl":"31","dttl":"29","sload":"2339512.5","dload":"2674442.75","sloss":"5","dloss":"4","sinpkt":"0.228619","dinpkt":"0.317692","sjit":"13.553399","djit":"0.418939","swin":"255","stcpb":"1046166650","dtcpb":"1046447478","dwin":"255","tcprtt":"0.000928","synack":"0.00053","ackdat":"0.000398","smean":"67","dmean":"123","trans_depth":"0","response_body_len":"0","ct_srv_src":"5","ct_state_ttl":"0","ct_dst_ltm":"3","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"4","is_sm_ips_ports":"0"},
+    {"dur":"0.534047","proto":"tcp","service":"http","state":"FIN","spkts":"10","dpkts":"8","sbytes":"828","dbytes":"1066","rate":"31.832404","sttl":"62","dttl":"252","sload":"11175.0459","dload":"13976.29785","sloss":"2","dloss":"2","sinpkt":"59.338556","dinpkt":"60.476855","sjit":"2918.248049","djit":"99.108773","swin":"255","stcpb":"1232103614","dtcpb":"352881835","dwin":"255","tcprtt":"0.152411","synack":"0.088684","ackdat":"0.063727","smean":"83","dmean":"133","trans_depth":"1","response_body_len":"126","ct_srv_src":"10","ct_state_ttl":"1","ct_dst_ltm":"6","ct_src_dport_ltm":"5","ct_dst_sport_ltm":"2","ct_dst_src_ltm":"10","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"4","ct_src_ltm":"5","ct_srv_dst":"10","is_sm_ips_ports":"0"},
+    {"dur":"0.020864","proto":"tcp","service":"-","state":"FIN","spkts":"46","dpkts":"48","sbytes":"2854","dbytes":"30622","rate":"4457.438534","sttl":"31","dttl":"29","sload":"1070552.125","dload":"11497316","sloss":"7","dloss":"17","sinpkt":"0.456578","dinpkt":"0.432809","sjit":"30.890742","djit":"30.143443","swin":"255","stcpb":"2170156398","dtcpb":"2181853152","dwin":"255","tcprtt":"0.000652","synack":"0.000518","ackdat":"0.000134","smean":"62","dmean":"638","trans_depth":"0","response_body_len":"0","ct_srv_src":"11","ct_state_ttl":"0","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"3","is_sm_ips_ports":"0"},
+    {"dur":"0.334611","proto":"tcp","service":"-","state":"CON","spkts":"6","dpkts":"2","sbytes":"978","dbytes":"86","rate":"20.919814","sttl":"62","dttl":"252","sload":"19485.3125","dload":"1028.059448","sloss":"2","dloss":"1","sinpkt":"66.9222","dinpkt":"0","sjit":"3925.43813","djit":"0","swin":"255","stcpb":"470487264","dtcpb":"2986765766","dwin":"255","tcprtt":"0.269988","synack":"0.179548","ackdat":"0.09044","smean":"163","dmean":"43","trans_depth":"0","response_body_len":"0","ct_srv_src":"5","ct_state_ttl":"3","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"4","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"4","is_sm_ips_ports":"0"},
+    {"dur":"0.292636","proto":"tcp","service":"-","state":"CON","spkts":"6","dpkts":"2","sbytes":"1012","dbytes":"86","rate":"23.920501","sttl":"62","dttl":"252","sload":"23073.03125","dload":"1175.521729","sloss":"2","dloss":"1","sinpkt":"58.5272","dinpkt":"0.009","sjit":"3951.720039","djit":"0","swin":"255","stcpb":"329909538","dtcpb":"1858697271","dwin":"255","tcprtt":"0.279125","synack":"0.210856","ackdat":"0.068269","smean":"169","dmean":"43","trans_depth":"0","response_body_len":"0","ct_srv_src":"4","ct_state_ttl":"3","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"4","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"4","is_sm_ips_ports":"0"},
+    {"dur":"0.046028","proto":"tcp","service":"-","state":"FIN","spkts":"72","dpkts":"74","sbytes":"4238","dbytes":"63878","rate":"3150.256409","sttl":"31","dttl":"29","sload":"726514.3125","dload":"10952464","sloss":"7","dloss":"30","sinpkt":"0.641775","dinpkt":"0.621945","sjit":"36.64745","djit":"36.374344","swin":"255","stcpb":"2540909347","dtcpb":"2541211363","dwin":"255","tcprtt":"0.000801","synack":"0.000615","ackdat":"0.000186","smean":"59","dmean":"863","trans_depth":"0","response_body_len":"0","ct_srv_src":"6","ct_state_ttl":"0","ct_dst_ltm":"3","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"4","is_sm_ips_ports":"0"},
+    {"dur":"0.130028","proto":"tcp","service":"-","state":"CON","spkts":"6","dpkts":"2","sbytes":"1012","dbytes":"86","rate":"53.834561","sttl":"62","dttl":"252","sload":"51927.28125","dload":"2645.584229","sloss":"2","dloss":"1","sinpkt":"26.0056","dinpkt":"0.002","sjit":"1543.219652","djit":"0","swin":"255","stcpb":"1151716320","dtcpb":"1978852486","dwin":"255","tcprtt":"0.106594","synack":"0.073924","ackdat":"0.03267","smean":"169","dmean":"43","trans_depth":"0","response_body_len":"0","ct_srv_src":"9","ct_state_ttl":"3","ct_dst_ltm":"4","ct_src_dport_ltm":"4","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"9","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"4","ct_srv_dst":"9","is_sm_ips_ports":"0"},
+    {"dur":"8.232217","proto":"tcp","service":"-","state":"REQ","spkts":"12","dpkts":"0","sbytes":"540","dbytes":"0","rate":"1.336214","sttl":"254","dttl":"0","sload":"481.036896","dload":"0","sloss":"11","dloss":"0","sinpkt":"748.383375","dinpkt":"0","sjit":"1073.022","djit":"0","swin":"255","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"45","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"18","ct_state_ttl":"6","ct_dst_ltm":"11","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"2","ct_dst_src_ltm":"18","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"11","ct_srv_dst":"17","is_sm_ips_ports":"0"},
+    {"dur":"0.000006","proto":"udp","service":"-","state":"INT","spkts":"2","dpkts":"0","sbytes":"1520","dbytes":"0","rate":"166666.6608","sttl":"254","dttl":"0","sload":"1013333312","dload":"0","sloss":"0","dloss":"0","sinpkt":"0.006","dinpkt":"0","sjit":"0","djit":"0","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"760","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"6","ct_state_ttl":"2","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"6","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"6","is_sm_ips_ports":"0"},
+    {"dur":"0.000004","proto":"udp","service":"-","state":"INT","spkts":"2","dpkts":"0","sbytes":"78","dbytes":"0","rate":"250000.0006","sttl":"254","dttl":"0","sload":"78000000","dload":"0","sloss":"0","dloss":"0","sinpkt":"0.004","dinpkt":"0","sjit":"0","djit":"0","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"39","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"7","ct_state_ttl":"2","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"4","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"4","is_sm_ips_ports":"0"},
+    {"dur":"0.277692","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"6","sbytes":"588","dbytes":"268","rate":"54.016682","sttl":"254","dttl":"252","sload":"15268.71582","dload":"6453.192871","sloss":"2","dloss":"1","sinpkt":"29.765778","dinpkt":"48.229602","sjit":"1552.039666","djit":"75.641508","swin":"255","stcpb":"2321832564","dtcpb":"3615855187","dwin":"255","tcprtt":"0.075255","synack":"0.036539","ackdat":"0.038716","smean":"59","dmean":"45","trans_depth":"0","response_body_len":"0","ct_srv_src":"1","ct_state_ttl":"1","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"1","is_sm_ips_ports":"0"},
+    {"dur":"0.002083","proto":"udp","service":"dns","state":"CON","spkts":"4","dpkts":"4","sbytes":"512","dbytes":"304","rate":"3360.53764","sttl":"31","dttl":"29","sload":"1474796","dload":"875660.0625","sloss":"0","dloss":"0","sinpkt":"0.571333","dinpkt":"0.213","sjit":"0.802331","djit":"0.298399","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"128","dmean":"76","trans_depth":"0","response_body_len":"0","ct_srv_src":"10","ct_state_ttl":"0","ct_dst_ltm":"7","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"3","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"10","is_sm_ips_ports":"0"},
+    {"dur":"0.92078","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"6","sbytes":"630","dbytes":"268","rate":"16.290536","sttl":"254","dttl":"252","sload":"4926.258301","dload":"1946.176025","sloss":"2","dloss":"1","sinpkt":"95.077444","dinpkt":"164.211594","sjit":"5159.077923","djit":"258.478078","swin":"255","stcpb":"1335194272","dtcpb":"2375593094","dwin":"255","tcprtt":"0.254808","synack":"0.099721","ackdat":"0.155087","smean":"63","dmean":"45","trans_depth":"0","response_body_len":"0","ct_srv_src":"5","ct_state_ttl":"1","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"5","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"5","is_sm_ips_ports":"0"},
+    {"dur":"0.199754","proto":"tcp","service":"-","state":"FIN","spkts":"16","dpkts":"18","sbytes":"1540","dbytes":"1644","rate":"165.2032","sttl":"31","dttl":"29","sload":"57831.13281","dload":"62196.5","sloss":"4","dloss":"4","sinpkt":"13.2936","dinpkt":"11.719588","sjit":"946.831911","djit":"30.536279","swin":"255","stcpb":"597156973","dtcpb":"637658311","dwin":"255","tcprtt":"0.000648","synack":"0.000514","ackdat":"0.000134","smean":"96","dmean":"91","trans_depth":"0","response_body_len":"0","ct_srv_src":"10","ct_state_ttl":"0","ct_dst_ltm":"7","ct_src_dport_ltm":"5","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"5","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"8","ct_srv_dst":"6","is_sm_ips_ports":"0"},
+    {"dur":"0.017872","proto":"tcp","service":"-","state":"FIN","spkts":"44","dpkts":"46","sbytes":"2766","dbytes":"24004","rate":"4979.856728","sttl":"31","dttl":"29","sload":"1210385","dload":"10511638","sloss":"7","dloss":"16","sinpkt":"0.408256","dinpkt":"0.386133","sjit":"0","djit":"25.792413","swin":"255","stcpb":"3032253943","dtcpb":"3039132544","dwin":"255","tcprtt":"0.000872","synack":"0.000492","ackdat":"0.00038","smean":"63","dmean":"522","trans_depth":"0","response_body_len":"0","ct_srv_src":"6","ct_state_ttl":"0","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"8","is_sm_ips_ports":"0"},
+    {"dur":"0.539619","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"6","sbytes":"650","dbytes":"268","rate":"27.797389","sttl":"254","dttl":"252","sload":"8672.785156","dload":"3320.861328","sloss":"2","dloss":"1","sinpkt":"57.330222","dinpkt":"94.990203","sjit":"3299.790564","djit":"157.307297","swin":"255","stcpb":"1284416270","dtcpb":"3057937301","dwin":"255","tcprtt":"0.133117","synack":"0.064659","ackdat":"0.068458","smean":"65","dmean":"45","trans_depth":"0","response_body_len":"0","ct_srv_src":"7","ct_state_ttl":"1","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"6","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"6","is_sm_ips_ports":"0"},
+    {"dur":"0.510235","proto":"tcp","service":"smtp","state":"FIN","spkts":"52","dpkts":"42","sbytes":"37496","dbytes":"3380","rate":"182.26895","sttl":"31","dttl":"29","sload":"576597.0625","dload":"51740.86328","sloss":"18","dloss":"8","sinpkt":"9.995157","dinpkt":"12.43278","sjit":"782.624144","djit":"25.029299","swin":"255","stcpb":"3750640182","dtcpb":"3871597945","dwin":"255","tcprtt":"0.000649","synack":"0.000487","ackdat":"0.000162","smean":"721","dmean":"80","trans_depth":"0","response_body_len":"0","ct_srv_src":"2","ct_state_ttl":"0","ct_dst_ltm":"3","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"2","ct_dst_src_ltm":"2","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"3","is_sm_ips_ports":"0"},
+    {"dur":"0.001047","proto":"udp","service":"dns","state":"CON","spkts":"2","dpkts":"2","sbytes":"146","dbytes":"178","rate":"2865.329359","sttl":"31","dttl":"29","sload":"557784.125","dload":"680038.1875","sloss":"0","dloss":"0","sinpkt":"0.011","dinpkt":"0.008","sjit":"0","djit":"0","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"73","dmean":"89","trans_depth":"0","response_body_len":"0","ct_srv_src":"3","ct_state_ttl":"0","ct_dst_ltm":"5","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"2","is_sm_ips_ports":"0"},
+    {"dur":"15.008936","proto":"tcp","service":"-","state":"REQ","spkts":"8","dpkts":"0","sbytes":"360","dbytes":"0","rate":"0.466389","sttl":"254","dttl":"0","sload":"167.899979","dload":"0","sloss":"7","dloss":"0","sinpkt":"2144.13375","dinpkt":"0","sjit":"4393.9205","djit":"0","swin":"255","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"45","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"11","ct_state_ttl":"6","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"2","ct_dst_src_ltm":"11","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"11","is_sm_ips_ports":"0"},
+]
+
+_PERTURB_KEYS = [
+    'dur', 'sbytes', 'dbytes', 'rate', 'sload', 'dload', 'sinpkt', 'dinpkt',
+    'sjit', 'djit', 'tcprtt', 'synack', 'ackdat'
+]
+
+# data generation mode: controls how random records are created
+#  * template  - original behaviour (sample from safe templates, ±15% perturb)
+#  * random    - ignore templates; heavy perturbations so records rarely match training set
+#  * mixed     - mostly template but occasionally inject a large out‑of‑range anomaly
+DATA_GENERATION_MODE = os.getenv("DATA_GENERATION_MODE", "mixed").lower()
+
+# build a few anomaly templates by taking safe records and blowing up numeric
+# features; this happens once when the module is imported.  keeping them in a
+# list makes the behaviour reproducible across runs (random seed applies during
+# service start).  the perturb step below may further modify them.
+_ANOMALY_TEMPLATES = []
+for _ in range(3):
+    if _SAFE_TEMPLATES:
+        t = random.choice(_SAFE_TEMPLATES).copy()
+        for key in _PERTURB_KEYS:
+            if key in t:
+                try:
+                    val = float(t[key])
+                    t[key] = str(val * random.uniform(5.0, 10.0))
+                except Exception:
+                    pass
+        _ANOMALY_TEMPLATES.append(t)
+    else:
+        # fallback hard‑coded if safe list is empty
+        _ANOMALY_TEMPLATES.append({"dur": "9999", "proto": "tcp", "service": "http"})
+
+# explicit unsafe records copied from real training/testing data (label=1)
+_UNSAFE_TEMPLATES = [
+    {"dur":"0.921987","proto":"ospf","service":"-","state":"INT","spkts":"20","dpkts":"0","sbytes":"1280","dbytes":"0","rate":"20.607666","sttl":"254","dttl":"0","sload":"10551.125","dload":"0","sloss":"0","dloss":"0","sinpkt":"48.525633","dinpkt":"0","sjit":"52.253805","djit":"0","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"64","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"1","ct_state_ttl":"2","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"2","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"1","is_sm_ips_ports":"0"},
+    {"dur":"0.224524","proto":"tcp","service":"http","state":"FIN","spkts":"10","dpkts":"8","sbytes":"830","dbytes":"960","rate":"75.715734","sttl":"62","dttl":"252","sload":"26616.30664","dload":"29929.98438","sloss":"2","dloss":"2","sinpkt":"24.947111","dinpkt":"30.407428","sjit":"1344.946273","djit":"54.342605","swin":"255","stcpb":"3306255269","dtcpb":"327760033","dwin":"255","tcprtt":"0.055643","synack":"0.00698","ackdat":"0.048663","smean":"83","dmean":"120","trans_depth":"1","response_body_len":"66","ct_srv_src":"3","ct_state_ttl":"1","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"2","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"1","ct_src_ltm":"2","ct_srv_dst":"3","is_sm_ips_ports":"0"},
+    {"dur":"0.502392","proto":"tcp","service":"http","state":"FIN","spkts":"10","dpkts":"8","sbytes":"938","dbytes":"354","rate":"33.838119","sttl":"254","dttl":"252","sload":"13455.62891","dload":"4936.384277","sloss":"2","dloss":"1","sinpkt":"53.853","dinpkt":"62.081","sjit":"3382.950901","djit":"125.017484","swin":"255","stcpb":"212558147","dtcpb":"1344236237","dwin":"255","tcprtt":"0.10843","synack":"0.067821","ackdat":"0.040609","smean":"94","dmean":"44","trans_depth":"0","response_body_len":"0","ct_srv_src":"1","ct_state_ttl":"0","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"0","ct_srv_dst":"1","is_sm_ips_ports":"0"},
+]
+
+def _perturb_numeric(value: Any, strength: float) -> Any:
+    """Apply a perturbation factor to a numeric value; non‑numeric values are left alone."""
+    try:
+        if isinstance(value, (int, float)):
+            return value * strength
+        # string representation of a number
+        if isinstance(value, str):
+            if '.' in value:
+                return float(value) * strength
+            else:
+                return int(value) * strength
+    except Exception:
+        pass
+    return value
+
+
+def generate_random_data(feature_names: list) -> dict:
+    """Produce one record according to the current DATA_GENERATION_MODE.
+
+    The original implementation was hard‑coded to sample from
+    ``_SAFE_TEMPLATES`` and perturb a handful of numeric features by +/-15%.
+    That guarantees the generated sample is nearly identical to something the
+    model was trained on; hence analytics always report 100% safe.  By allowing
+    other modes we can create genuinely new inputs for more realistic testing.
     """
-    Generate random data based on database statistics if available, otherwise use defaults.
-    
-    Args:
-        feature_names: List of feature names to generate
-        db_stats: Optional dictionary of database statistics (min/max/range per feature)
-    """
+    mode = DATA_GENERATION_MODE
+
+    # pick a base template to start from (even in "random" mode we use it as a
+    # convenient container of all feature names so we don't accidentally omit
+    # fields); the perturbation strength varies by mode.
+    base = random.choice(_SAFE_TEMPLATES)
     data = {}
-    
-    # Get database statistics if not provided
-    if db_stats is None:
-        db_stats = get_database_statistics(feature_names)
-    
-    # Occasionally generate anomalous patterns (5% chance)
-    is_anomaly_pattern = random.random() < 0.05
-    
-    proto_features = [f for f in feature_names if f.startswith("proto_")]
-    state_features = [f for f in feature_names if f.startswith("state_")]
-    service_features = [f for f in feature_names if f.startswith("service_")]
-    
-    def get_feature_range(feature: str, default_min: float, default_max: float) -> tuple:
-        """Get min/max range for a feature from database stats or use defaults."""
-        if db_stats and feature in db_stats:
-            feature_stat = db_stats[feature]
-            if 'min' in feature_stat and 'max' in feature_stat:
-                return feature_stat['min'], feature_stat['max']
-        return default_min, default_max
-    
-    def generate_numeric_value(feature: str, default_min: float, default_max: float, 
-                              anomaly_multiplier: float = 2.0, decimals: int = 6) -> float:
-        """Generate a numeric value within the feature's range from database."""
-        min_val, max_val = get_feature_range(feature, default_min, default_max)
-        
-        if is_anomaly_pattern and random.random() < 0.3:
-            # Anomaly: extend beyond max range
-            anomaly_max = max_val * anomaly_multiplier
-            value = random.uniform(max_val, anomaly_max)
+    for k, v in base.items():
+        data[k] = v  # will be converted below
+
+    # sometimes select a real unsafe template so the model will label it
+    # unsafe.  make this more frequent when in random/mixed modes.
+    # reduced probability to 25% for better balance; randomization happens at WebSocket level
+    if mode in ("random", "mixed") and random.random() < 0.25:
+        data = random.choice(_UNSAFE_TEMPLATES).copy()
+    # occasionally return one of the synthetic anomaly templates in mixed mode
+    elif mode == "mixed" and random.random() < 0.05:
+        data = random.choice(_ANOMALY_TEMPLATES).copy()
+    elif mode == "random" and random.random() < 0.05:
+        # occasionally add a blatant anomaly even in random mode so the rate
+        # is not zero during short demos (reduced from 10% to 5%)
+        data = random.choice(_ANOMALY_TEMPLATES).copy()
+
+    # decide perturbation factor ranges based on mode
+    if mode == "template":
+        min_f, max_f = 0.85, 1.15
+    elif mode == "random":
+        min_f, max_f = 0.5, 2.0
+    elif mode == "mixed":
+        # if we already selected an anomaly template above, make the numbers
+        # huge, otherwise behave like template mode and rely on branch to
+        # occasionally produce anomalies next call
+        if data in _ANOMALY_TEMPLATES:
+            min_f, max_f = 3.0, 10.0
         else:
-            # Normal: within range, optionally use percentiles for more realistic distribution
-            if db_stats and feature in db_stats and 'p25' in db_stats[feature]:
-                # Use percentile-based distribution for more realistic values
-                stat = db_stats[feature]
-                if random.random() < 0.5:
-                    # 50% chance to use percentile range (more common values)
-                    value = random.uniform(stat.get('p25', min_val), stat.get('p75', max_val))
-                else:
-                    # 50% chance to use full range
-                    value = random.uniform(min_val, max_val)
-            else:
-                value = random.uniform(min_val, max_val)
-        
-        return round(value, decimals)
-    
-    def generate_integer_value(feature: str, default_min: int, default_max: int, 
-                               anomaly_multiplier: float = 2.0) -> int:
-        """Generate an integer value within the feature's range from database."""
-        min_val, max_val = get_feature_range(feature, float(default_min), float(default_max))
-        min_val = int(min_val)
-        max_val = int(max_val)
-        
-        if is_anomaly_pattern and random.random() < 0.4:
-            # Anomaly: extend beyond max range
-            anomaly_max = int(max_val * anomaly_multiplier)
-            return random.randint(max_val, anomaly_max)
-        else:
-            # Normal: within range
-            return random.randint(min_val, max_val)
-    
-    for feature in feature_names:
-        if feature == "dur":
-            # Duration: use database range
-            data[feature] = generate_numeric_value(feature, 0.0, 5000.0, anomaly_multiplier=10.0)
-        elif feature.startswith("proto_"):
-            # Protocol features: binary, use database to determine probability distribution
-            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
-                # Use actual values from database
-                unique_vals = db_stats[feature]['unique_values']
-                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.15 else 0)
-            else:
-                prob = 0.3 if is_anomaly_pattern else random.uniform(0.05, 0.25)
-                data[feature] = 1 if random.random() < prob else 0
-        elif feature.startswith("state_"):
-            # State features: binary
-            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
-                unique_vals = db_stats[feature]['unique_values']
-                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.25 else 0)
-            else:
-                prob = 0.5 if is_anomaly_pattern else random.uniform(0.1, 0.4)
-                data[feature] = 1 if random.random() < prob else 0
-        elif feature.startswith("service_"):
-            # Service features: binary
-            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
-                unique_vals = db_stats[feature]['unique_values']
-                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.15 else 0)
-            else:
-                prob = 0.4 if is_anomaly_pattern else random.uniform(0.05, 0.3)
-                data[feature] = 1 if random.random() < prob else 0
-        elif feature in ["Spkts", "Dpkts", "sbytes", "dbytes", "sttl", "dttl", 
-                         "sloss", "dloss", "swin", "stcpb", "dtcpb", "dwin",
-                         "tcprtt", "synack", "ackdat", "trans_depth", "res_bdy_len",
-                         "ct_srv_src", "ct_state_ttl", "ct_dst_ltm", "ct_src_dport_ltm",
-                         "ct_dst_sport_ltm", "ct_dst_src_ltm", "ct_ftp_cmd", "ct_flw_http_mthd",
-                         "ct_src_ltm", "ct_srv_dst"]:
-            # Packet/connection features: use database range
-            data[feature] = generate_integer_value(feature, 0, 50000, anomaly_multiplier=20.0)
-        elif feature in ["rate", "Sload", "Dload", "Sintpkt", "Dintpkt", "Sjit", "Djit", "smeansz", "dmeansz"]:
-            # Rate/load features: use database range
-            data[feature] = generate_numeric_value(feature, 0.0, 1000000.0, anomaly_multiplier=10.0, decimals=2)
-        elif feature in ["is_ftp_login", "is_sm_ips_ports"]:
-            # Boolean features: use database distribution if available
-            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
-                unique_vals = db_stats[feature]['unique_values']
-                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.1 else 0)
-            else:
-                prob = 0.8 if is_anomaly_pattern else random.uniform(0.0, 0.3)
-                data[feature] = 1 if random.random() < prob else 0
-        elif feature in ["byte_ratio", "pkt_ratio", "flow_rate", "pkt_rate"]:
-            # Ratio features: use database range
-            data[feature] = generate_numeric_value(feature, 0.0, 20.0, anomaly_multiplier=5.0, decimals=4)
-        else:
-            # Default: use database range or fallback
-            min_val, max_val = get_feature_range(feature, 0.0, 10000.0)
-            if isinstance(max_val, float) or max_val > 1000:
-                data[feature] = round(generate_numeric_value(feature, 0.0, max_val), 6)
-            else:
-                data[feature] = generate_integer_value(feature, 0, int(max_val))
-    
+            min_f, max_f = 0.85, 1.15
+    else:
+        # fallback to template behaviour on unrecognised mode
+        min_f, max_f = 0.85, 1.15
+
+    # perturb a random subset of numeric features
+    n_perturb = random.randint(3, 6)
+    for key in random.sample(_PERTURB_KEYS, min(n_perturb, len(_PERTURB_KEYS))):
+        if key in data:
+            orig = data[key]
+            try:
+                num = float(orig)
+            except Exception:
+                continue
+            if num == 0:
+                continue
+            strength = random.uniform(min_f, max_f)
+            newval = num * strength
+            # preserve integer type when appropriate
+            data[key] = int(newval) if isinstance(orig, (int, str)) and str(orig).isdigit() else round(newval, 6)
+
+    # randomize TCP sequence numbers to avoid exact duplicates
+    if data.get("proto") == "tcp" and data.get("stcpb", 0) != "" and int(data.get("stcpb", 0)) > 0:
+        data["stcpb"] = random.randint(100000000, 4000000000)
+        data["dtcpb"] = random.randint(100000000, 4000000000)
+
     return data
 
 @app.websocket("/ws/generate-data")
@@ -2350,7 +2363,7 @@ async def websocket_generate_data(websocket: WebSocket):
     
     init_websocket_db()
     feature_names = load_feature_names()
-    logger.info(f"Loaded {len(feature_names)} features for data generation")
+    logger.info(f"Using {len(feature_names)} raw features for data generation")
     
     # Load database statistics once at the start (will be cached)
     # Use default dataset name from environment if available
@@ -2363,7 +2376,8 @@ async def websocket_generate_data(websocket: WebSocket):
     
     try:
         while True:
-            random_data = generate_random_data(feature_names, db_stats)
+            random_data = generate_random_data(feature_names)
+            is_known_unsafe = any(random_data == u for u in _UNSAFE_TEMPLATES)
             timestamp = datetime.utcnow().isoformat()
             network_id = str(uuid.uuid4())
             random_user = get_random_user()
@@ -2376,10 +2390,27 @@ async def websocket_generate_data(websocket: WebSocket):
             data_json = json.dumps(random_data)
             location_json = json.dumps(location)
             user_id = random_user["id"] if random_user else None
-            cursor.execute(
-                "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser, session_active_time, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (network_id, timestamp, data_json, user_id, location_json, os, browser, generate_websocket_session_start_time, 1)
-            )
+            if is_known_unsafe:
+                # pre‑populate prediction_results so the frontend sees an anomaly immediately
+                prediction_payload = {
+                    "predictions": [{
+                        "prediction": 1,
+                        "label": "unsafe",
+                        "probability_safe": 0.0,
+                        "probability_unsafe": 1.0,
+                        "confidence": 1.0,
+                    }],
+                    "model_name": selected_model_name
+                }
+                cursor.execute(
+                    "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser, session_active_time, is_active, prediction_results) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (network_id, timestamp, data_json, user_id, location_json, os, browser, generate_websocket_session_start_time, 1, json.dumps(prediction_payload))
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser, session_active_time, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (network_id, timestamp, data_json, user_id, location_json, os, browser, generate_websocket_session_start_time, 1)
+                )
             inserted_id = cursor.lastrowid
             conn.commit()
             conn.close()
@@ -2437,8 +2468,8 @@ async def websocket_generate_data(websocket: WebSocket):
             else:
                 logger.debug(f"Message queue disabled - skipping publish for network_id: {network_id}")
             
-            wait_time = random.uniform(60, 90)  # Wait 60-90 seconds between data generation
-            logger.info(f"Waiting {wait_time:.2f} seconds before next data generation")
+            wait_time = 30  # Insert a new record every 30 seconds
+            logger.info(f"Waiting {wait_time} seconds before next data generation")
             await asyncio.sleep(wait_time)
             
     except WebSocketDisconnect:

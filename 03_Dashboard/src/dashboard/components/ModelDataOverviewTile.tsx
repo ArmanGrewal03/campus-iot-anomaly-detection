@@ -46,7 +46,7 @@ export default function ModelDataOverviewTile() {
     const fetchOverview = async () => {
       try {
         setError(null);
-        const modelsRes = await fetch(`${GATEWAY_BASE}/models`);
+        const modelsRes = await fetch(`${GATEWAY_BASE}/models?t=${Date.now()}`);
         const modelsJson = await modelsRes.json() as { status?: string; models?: ModelInfo[]; detail?: string };
         if (cancelled) return;
         if (!modelsRes.ok || modelsJson.status !== 'success' || !Array.isArray(modelsJson.models) || modelsJson.models.length === 0) {
@@ -57,10 +57,10 @@ export default function ModelDataOverviewTile() {
         }
         const first = modelsJson.models[0];
         setModel(first);
-        const headers: Record<string, string> = { model_name: first.model_name };
+        const headers: Record<string, string> = { 'model-name': first.model_name };
         const [statusRes, metricsRes] = await Promise.all([
-          fetch(`${GATEWAY_BASE}/model/status`, { headers }),
-          fetch(`${GATEWAY_BASE}/model/metrics`, { headers }).catch(() => null),
+          fetch(`${GATEWAY_BASE}/model/status?t=${Date.now()}`, { headers }),
+          fetch(`${GATEWAY_BASE}/model/metrics?t=${Date.now()}`, { headers }).catch(() => null),
         ]);
         if (cancelled) return;
         if (statusRes.ok) {
