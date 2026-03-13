@@ -15,6 +15,8 @@ import random
 import uuid
 import httpx
 import contextvars
+from aio_pika import connect_robust, Message, DeliveryMode, ExchangeType
+from aio_pika.abc import AbstractConnection, AbstractChannel, AbstractQueue
 
 def load_env_file():
     env_path = os.path.join(os.path.dirname(__file__), ".env")
@@ -241,9 +243,22 @@ app.add_middleware(InputValidationMiddleware)
 
 NETWORK_LOGS_DB = "network_logs.db"
 USERS_DB = "users.db"
-MESSAGE_QUEUE_DB = "message_queue.db"
+MESSAGE_QUEUE_DB = "message_queue.db"  # Kept for backward compatibility but not used
 MODEL_API_URL = os.getenv("MODEL_API_URL", "http://127.0.0.1:8001")
+DATA_INGESTION_SERVICE_URL = os.getenv("DATA_INGESTION_SERVICE_URL", "http://127.0.0.1:8000")
 DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL_NAME", "A")
+DEFAULT_DATASET_NAME = os.getenv("DEFAULT_DATASET_NAME", None)  # Optional default dataset name for statistics
+
+# RabbitMQ configuration
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+RABBITMQ_QUEUE_NAME = os.getenv("RABBITMQ_QUEUE_NAME", "prediction_queue")
+RABBITMQ_EXCHANGE_NAME = os.getenv("RABBITMQ_EXCHANGE_NAME", "predictions")
+RABBITMQ_ROUTING_KEY = os.getenv("RABBITMQ_ROUTING_KEY", "prediction.request")
+
+# RabbitMQ connection and channel (will be initialized on startup)
+rabbitmq_connection: Optional[AbstractConnection] = None
+rabbitmq_channel: Optional[AbstractChannel] = None
+rabbitmq_queue: Optional[AbstractQueue] = None
 
 # Singleton WebSocket connection tracking for data generation
 active_generate_websocket: Optional[WebSocket] = None
@@ -1130,34 +1145,93 @@ async def block_user(user_id: int = Path(..., description="User ID to block"), b
         status_code=200
     )
 
+async def init_rabbitmq():
+    """Initialize RabbitMQ connection, channel, exchange, and queue"""
+    global rabbitmq_connection, rabbitmq_channel, rabbitmq_queue
+    
+    try:
+        if rabbitmq_connection is None or rabbitmq_connection.is_closed:
+            logger.info(f"Connecting to RabbitMQ at {RABBITMQ_URL}")
+            rabbitmq_connection = await connect_robust(RABBITMQ_URL)
+            logger.info("RabbitMQ connection established")
+        
+        if rabbitmq_channel is None or rabbitmq_channel.is_closed:
+            rabbitmq_channel = await rabbitmq_connection.channel()
+            # Set prefetch count to process one message at a time
+            await rabbitmq_channel.set_qos(prefetch_count=1)
+            logger.info("RabbitMQ channel created")
+        
+        # Declare exchange
+        exchange = await rabbitmq_channel.declare_exchange(
+            RABBITMQ_EXCHANGE_NAME,
+            ExchangeType.DIRECT,
+            durable=True
+        )
+        
+        # Declare queue
+        rabbitmq_queue = await rabbitmq_channel.declare_queue(
+            RABBITMQ_QUEUE_NAME,
+            durable=True
+        )
+        
+        # Bind queue to exchange
+        await rabbitmq_queue.bind(exchange, RABBITMQ_ROUTING_KEY)
+        logger.info(f"RabbitMQ queue '{RABBITMQ_QUEUE_NAME}' declared and bound to exchange '{RABBITMQ_EXCHANGE_NAME}'")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error initializing RabbitMQ: {e}", exc_info=True)
+        return False
+
 @app.post("/publish")
 async def publish_to_queue(publish_request: PublishRequest):
-    init_message_queue_db()
-    conn = sqlite3.connect(MESSAGE_QUEUE_DB)
-    cursor = conn.cursor()
-    data_json = json.dumps(publish_request.data)
-    timestamp = datetime.utcnow().isoformat()
+    if not MESSAGE_QUEUE_ENABLED:
+        return JSONResponse(
+            content={"status": "error", "message": "Message queue is disabled"},
+            status_code=503
+        )
     
-    cursor.execute("""
-        INSERT INTO message_queue (network_id, data, status, created_at)
-        VALUES (?, ?, 'pending', ?)
-    """, (publish_request.network_id, data_json, timestamp))
-    
-    message_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    
-    logger.info(f"Published message {message_id} for network_id: {publish_request.network_id}")
-    
-    return JSONResponse(
-        content={
-            "status": "success",
-            "message": "Message published to queue",
-            "message_id": message_id,
-            "network_id": publish_request.network_id
-        },
-        status_code=200
-    )
+    try:
+        # Ensure RabbitMQ is initialized
+        if rabbitmq_connection is None or rabbitmq_connection.is_closed:
+            if not await init_rabbitmq():
+                raise HTTPException(status_code=503, detail="RabbitMQ connection failed")
+        
+        # Prepare message payload
+        message_payload = {
+            "network_id": publish_request.network_id,
+            "data": publish_request.data,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        
+        # Create message
+        message = Message(
+            json.dumps(message_payload).encode(),
+            delivery_mode=DeliveryMode.PERSISTENT,
+            headers={
+                "network_id": publish_request.network_id,
+                "created_at": message_payload["created_at"]
+            }
+        )
+        
+        # Publish to exchange
+        exchange = await rabbitmq_channel.get_exchange(RABBITMQ_EXCHANGE_NAME)
+        await exchange.publish(message, routing_key=RABBITMQ_ROUTING_KEY)
+        
+        logger.info(f"Published message to RabbitMQ for network_id: {publish_request.network_id}")
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "message": "Message published to RabbitMQ queue",
+                "network_id": publish_request.network_id,
+                "queue": RABBITMQ_QUEUE_NAME
+            },
+            status_code=200
+        )
+    except Exception as e:
+        logger.error(f"Error publishing to RabbitMQ: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to publish message: {str(e)}")
 
 @app.post("/set-model")
 async def set_model(request: SetModelRequest):
@@ -1357,7 +1431,8 @@ async def _make_http_request(url: str, data: dict, headers: dict):
         logger.error(f"Unexpected error in HTTP request: {e}")
         raise
 
-async def process_predict_request(message_id: int, network_id: str, data: dict):
+async def process_predict_request(network_id: str, data: dict, message=None):
+    """Process a prediction request and acknowledge/nack the RabbitMQ message"""
     try:
         url = f"{MODEL_API_URL}/predict"
         payload = {"data": [data]}
@@ -1366,32 +1441,13 @@ async def process_predict_request(message_id: int, network_id: str, data: dict):
             "model_name": selected_model_name
         }
         
-        logger.info(f"Calling prediction API for network_id: {network_id}, data: {json.dumps(data)}")
+        logger.info(f"Processing prediction for network_id: {network_id}")
         
         status_code, result = await _make_http_request(url, payload, headers)
         
         if status_code == 200:
-            processed_at = datetime.utcnow().isoformat()
-            
-            # Update message queue status
-            conn = sqlite3.connect(MESSAGE_QUEUE_DB)
-            cursor = conn.cursor()
-            try:
-                cursor.execute("BEGIN TRANSACTION")
-                cursor.execute("""
-                    UPDATE message_queue 
-                    SET status = 'completed', processed_at = ?
-                    WHERE id = ?
-                """, (processed_at, message_id))
-                conn.commit()
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Error updating message queue for message_id {message_id}: {e}")
-            finally:
-                conn.close()
-            
             prediction = result.get('predictions', [{}])[0] if result.get('predictions') else {}
-            logger.info(f"Prediction successful for network_id: {network_id}, result: {prediction}")
+            logger.info(f"Prediction successful for network_id: {network_id}")
             
             # Update websocket_data with prediction results (include model name)
             if isinstance(result, dict):
@@ -1400,6 +1456,7 @@ async def process_predict_request(message_id: int, network_id: str, data: dict):
                 prediction_payload = {"result": result}
             prediction_payload["model_name"] = selected_model_name
             prediction_results_json = json.dumps(prediction_payload)
+            
             conn = sqlite3.connect(NETWORK_LOGS_DB)
             cursor = conn.cursor()
             try:
@@ -1416,136 +1473,122 @@ async def process_predict_request(message_id: int, network_id: str, data: dict):
                 logger.error(f"Error updating websocket_data for network_id {network_id}: {e}")
             finally:
                 conn.close()
+            
+            # Acknowledge message on success
+            if message:
+                await message.ack()
+                logger.debug(f"Acknowledged RabbitMQ message for network_id: {network_id}")
+            
+            return True
         else:
             error_msg = result.get('error', f"HTTP {status_code}")[:500] if isinstance(result, dict) else f"HTTP {status_code}"
             logger.error(f"Prediction failed for network_id: {network_id}, status: {status_code}, error: {error_msg}")
             
-        conn = sqlite3.connect(MESSAGE_QUEUE_DB)
-        cursor = conn.cursor()
-        try:
-            cursor.execute("BEGIN TRANSACTION")
-            cursor.execute("SELECT retry_count FROM message_queue WHERE id = ?", (message_id,))
-            row = cursor.fetchone()
-            retry_count = (row[0] if row else 0) + 1
+            # Check retry count from message headers or redelivery flag
+            retry_count = 0
+            if message:
+                if message.headers:
+                    retry_count = message.headers.get('x-retry-count', 0)
+                # Check if message was redelivered (RabbitMQ tracks this)
+                if hasattr(message, 'redelivered') and message.redelivered:
+                    retry_count = max(retry_count, 1)
             
             if retry_count < 3:
-                cursor.execute("""
-                    UPDATE message_queue 
-                    SET status = 'pending', retry_count = ?
-                    WHERE id = ?
-                """, (retry_count, message_id))
-                logger.info(f"Retrying message {message_id} (attempt {retry_count})")
+                # Reject and requeue for retry (RabbitMQ will increment redelivered flag)
+                if message:
+                    await message.nack(requeue=True)
+                    logger.info(f"Requeued message for network_id: {network_id} (attempt {retry_count + 1})")
+                return False
             else:
-                cursor.execute("""
-                    UPDATE message_queue 
-                    SET status = 'failed', processed_at = ?, error_message = ?
-                    WHERE id = ?
-                """, (datetime.utcnow().isoformat(), error_msg, message_id))
-                logger.error(f"Message {message_id} failed after {retry_count} attempts")
-            
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Error updating message queue status for message_id {message_id}: {e}")
-        finally:
-            conn.close()
+                # Reject without requeue after max retries
+                if message:
+                    await message.nack(requeue=False)
+                    logger.error(f"Message for network_id: {network_id} failed after {retry_count} attempts, not requeued")
+                return False
                 
     except Exception as e:
         error_msg = str(e)[:500]
         logger.error(f"Error processing predict request for network_id: {network_id}: {error_msg}", exc_info=True)
         
-        conn = sqlite3.connect(MESSAGE_QUEUE_DB)
-        cursor = conn.cursor()
-        try:
-            cursor.execute("BEGIN TRANSACTION")
-            cursor.execute("SELECT retry_count FROM message_queue WHERE id = ?", (message_id,))
-            row = cursor.fetchone()
-            retry_count = (row[0] if row else 0) + 1
-            
-            if retry_count < 3:
-                cursor.execute("""
-                    UPDATE message_queue 
-                    SET status = 'pending', retry_count = ?
-                    WHERE id = ?
-                """, (retry_count, message_id))
-                logger.info(f"Retrying message {message_id} (attempt {retry_count})")
-            else:
-                cursor.execute("""
-                    UPDATE message_queue 
-                    SET status = 'failed', processed_at = ?, error_message = ?
-                    WHERE id = ?
-                """, (datetime.utcnow().isoformat(), error_msg, message_id))
-                logger.error(f"Message {message_id} failed after {retry_count} attempts")
-            
-            conn.commit()
-        except Exception as e2:
-            conn.rollback()
-            logger.error(f"Error updating message queue status for message_id {message_id}: {e2}")
-        finally:
-            conn.close()
+        # Check retry count
+        retry_count = 0
+        if message:
+            if message.headers:
+                retry_count = message.headers.get('x-retry-count', 0)
+            if hasattr(message, 'redelivered') and message.redelivered:
+                retry_count = max(retry_count, 1)
+        
+        if retry_count < 3:
+            # Reject and requeue for retry
+            if message:
+                await message.nack(requeue=True)
+                logger.info(f"Requeued message for network_id: {network_id} after exception (attempt {retry_count + 1})")
+        else:
+            # Reject without requeue after max retries
+            if message:
+                await message.nack(requeue=False)
+                logger.error(f"Message for network_id: {network_id} failed after {retry_count} attempts, not requeued")
+        
+        return False
 
-async def process_message_queue():
-    init_message_queue_db()
-    conn = sqlite3.connect(MESSAGE_QUEUE_DB)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    # Get queue size
-    cursor.execute("SELECT COUNT(*) as count FROM message_queue WHERE status = 'pending'")
-    queue_size = cursor.fetchone()["count"]
-    logger.info(f"Message queue check: {queue_size} items in queue")
-    
-    cursor.execute("""
-        SELECT id, network_id, data 
-        FROM message_queue 
-        WHERE status = 'pending' 
-        ORDER BY created_at ASC 
-        LIMIT 1
-    """)
-    
-    row = cursor.fetchone()
-    
-    if row:
-        message_id = row["id"]
-        network_id = row["network_id"]
-        data_json = row["data"]
+async def process_rabbitmq_messages():
+    """Consume messages from RabbitMQ queue"""
+    try:
+        # Ensure RabbitMQ is initialized
+        if rabbitmq_connection is None or rabbitmq_connection.is_closed:
+            if not await init_rabbitmq():
+                logger.error("Failed to initialize RabbitMQ, cannot process messages")
+                return
         
-        try:
-            cursor.execute("BEGIN TRANSACTION")
-            cursor.execute("""
-                UPDATE message_queue 
-                SET status = 'processing' 
-                WHERE id = ?
-            """, (message_id,))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Error updating message queue status to processing for message_id {message_id}: {e}")
-        finally:
-            conn.close()
+        if rabbitmq_queue is None:
+            logger.error("RabbitMQ queue not initialized")
+            return
         
-        try:
-            data = json.loads(data_json)
-            await process_predict_request(message_id, network_id, data)
-        except json.JSONDecodeError as e:
-            logger.error(f"Error decoding message data: {e}")
-            conn = sqlite3.connect(MESSAGE_QUEUE_DB)
-            cursor = conn.cursor()
+        logger.info(f"Starting to consume messages from RabbitMQ queue: {RABBITMQ_QUEUE_NAME}")
+        
+        # Consume messages (manual acknowledgment)
+        async for message in rabbitmq_queue:
             try:
-                cursor.execute("BEGIN TRANSACTION")
-                cursor.execute("""
-                    UPDATE message_queue 
-                    SET status = 'failed', error_message = ?
-                    WHERE id = ?
-                """, (str(e)[:500], message_id))
-                conn.commit()
-            except Exception as e2:
-                conn.rollback()
-                logger.error(f"Error updating message queue status to failed for message_id {message_id}: {e2}")
-            finally:
-                conn.close()
-    else:
-        conn.close()
+                # Parse message body
+                message_body = json.loads(message.body.decode())
+                network_id = message_body.get("network_id")
+                data = message_body.get("data")
+                
+                if not network_id or not data:
+                    logger.error(f"Invalid message format: missing network_id or data")
+                    await message.nack(requeue=False)  # Don't requeue invalid messages
+                    continue
+                
+                # Get retry count from headers or redelivery flag
+                retry_count = 0
+                if message.headers:
+                    retry_count = message.headers.get('x-retry-count', 0)
+                if hasattr(message, 'redelivered') and message.redelivered:
+                    retry_count = max(retry_count, 1)  # At least 1 if redelivered
+                
+                logger.info(f"Processing message for network_id: {network_id} (retry: {retry_count})")
+                
+                # Process prediction (will handle ack/nack)
+                success = await process_predict_request(network_id, data, message)
+                
+                if not success and retry_count >= 3:
+                    logger.error(f"Message for network_id: {network_id} exceeded max retries")
+                    
+            except json.JSONDecodeError as e:
+                logger.error(f"Error decoding RabbitMQ message: {e}")
+                # Nack message without requeue if JSON is invalid
+                await message.nack(requeue=False)
+            except Exception as e:
+                logger.error(f"Error processing RabbitMQ message: {e}", exc_info=True)
+                # Nack with requeue for unexpected errors (up to retry limit)
+                retry_count = message.headers.get('x-retry-count', 0) if message.headers else 0
+                if retry_count < 3:
+                    await message.nack(requeue=True)
+                else:
+                    await message.nack(requeue=False)
+                    
+    except Exception as e:
+        logger.error(f"Error in RabbitMQ message consumer: {e}", exc_info=True)
 
 async def missing_predictions_worker():
     """Background worker to process records without predictions"""
@@ -1553,14 +1596,14 @@ async def missing_predictions_worker():
     while True:
         try:
             if MESSAGE_QUEUE_ENABLED:
-                # Get queue size before processing
-                init_message_queue_db()
-                conn = sqlite3.connect(MESSAGE_QUEUE_DB)
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) as count FROM message_queue WHERE status = 'pending'")
-                queue_size = cursor.fetchone()[0]
-                conn.close()
-                logger.info(f"Missing predictions worker check: {queue_size} items in queue")
+                # Check RabbitMQ queue size if available
+                try:
+                    if rabbitmq_queue is not None:
+                        # Note: Getting queue info requires admin access, so we'll skip this check
+                        # Queue size monitoring can be done via RabbitMQ management UI
+                        pass
+                except:
+                    pass  # Ignore if queue info not available
                 
                 await process_missing_predictions(batch_size=5)  # Process 5 at a time
         except Exception as e:
@@ -1569,14 +1612,16 @@ async def missing_predictions_worker():
         await asyncio.sleep(120)  # Check every 120 seconds (2 minutes)
 
 async def message_queue_worker():
-    logger.info("Message queue worker started - checking queue every 180 seconds")
+    """RabbitMQ message consumer worker - runs continuously"""
+    logger.info("RabbitMQ message queue worker starting...")
+    
     while True:
         try:
-            await process_message_queue()
+            await process_rabbitmq_messages()
         except Exception as e:
-            logger.error(f"Error in message queue worker: {e}", exc_info=True)
-        
-        await asyncio.sleep(180)  # Check every 180 seconds (3 minutes)
+            logger.error(f"Error in RabbitMQ message queue worker: {e}", exc_info=True)
+            # Wait before retrying connection
+            await asyncio.sleep(10)
 
 def is_user_blocked(user_id: int) -> bool:
     conn = sqlite3.connect(USERS_DB)
@@ -1864,6 +1909,266 @@ async def demo_users_worker():
         except Exception as e:
             logger.exception("Demo users batch failed: %s", e)
 
+# Cache for database statistics
+_db_statistics_cache = None
+_db_statistics_cache_time = None
+_db_statistics_cache_ttl = 300  # Cache for 5 minutes
+
+def fetch_view_data_from_ingestion_service(dataset_name: str = None, limit: int = 10000, max_samples: int = 10000) -> list:
+    """
+    Fetch data from the Data Ingestion Service /view endpoint.
+    
+    Args:
+        dataset_name: Optional dataset name (if None, will try to fetch without it)
+        limit: Number of records to fetch per request
+        max_samples: Maximum total samples to collect
+        
+    Returns:
+        List of data dictionaries from the /view endpoint
+    """
+    all_data = []
+    offset = 0
+    
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            while len(all_data) < max_samples:
+                # Build URL with query parameters
+                url = f"{DATA_INGESTION_SERVICE_URL}/view"
+                params = {"limit": min(limit, max_samples - len(all_data)), "offset": offset}
+                headers = {}
+                
+                # Add dataset_name header if provided
+                if dataset_name:
+                    headers["dataset_name"] = dataset_name
+                
+                try:
+                    response = client.get(url, params=params, headers=headers)
+                    response.raise_for_status()
+                    
+                    result = response.json()
+                    if result.get("status") != "success":
+                        logger.warning(f"Data Ingestion Service returned non-success status: {result.get('status')}")
+                        break
+                    
+                    data = result.get("data", [])
+                    if not data:
+                        # No more data available
+                        break
+                    
+                    # Extract the actual data dictionaries
+                    for item in data:
+                        if "data" in item and isinstance(item["data"], dict):
+                            all_data.append(item["data"])
+                    
+                    # Check if there's more data
+                    if not result.get("has_more", False):
+                        break
+                    
+                    offset += len(data)
+                    
+                    # If we got fewer records than requested, we've reached the end
+                    if len(data) < limit:
+                        break
+                        
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 404:
+                        logger.info(f"Dataset '{dataset_name}' not found in Data Ingestion Service, skipping")
+                    else:
+                        logger.warning(f"HTTP error fetching data from Data Ingestion Service: {e}")
+                    break
+                except httpx.RequestError as e:
+                    logger.warning(f"Request error fetching data from Data Ingestion Service: {e}")
+                    break
+                except Exception as e:
+                    logger.warning(f"Error fetching data from Data Ingestion Service: {e}")
+                    break
+                    
+    except Exception as e:
+        logger.error(f"Unexpected error fetching data from Data Ingestion Service: {e}", exc_info=True)
+    
+    logger.info(f"Fetched {len(all_data)} samples from Data Ingestion Service /view endpoint")
+    return all_data
+
+def calculate_statistics_from_data(data_samples: list, feature_names: list) -> dict:
+    """
+    Calculate statistics (min, max, range, types) from a list of data samples.
+    
+    Args:
+        data_samples: List of data dictionaries
+        feature_names: List of feature names to analyze
+        
+    Returns:
+        Dictionary with statistics for each feature
+    """
+    if not data_samples:
+        return {}
+    
+    # Initialize statistics dictionary
+    stats = {}
+    for feature in feature_names:
+        stats[feature] = {
+            'min': None,
+            'max': None,
+            'values': [],
+            'types': set()
+        }
+    
+    # Collect values for each feature
+    sample_count = 0
+    for data_dict in data_samples:
+        if not isinstance(data_dict, dict):
+            continue
+        
+        sample_count += 1
+        for feature in feature_names:
+            if feature in data_dict:
+                value = data_dict[feature]
+                
+                # Track the type of this value
+                value_type = type(value).__name__
+                stats[feature]['types'].add(value_type)
+                
+                # Process numeric values
+                if isinstance(value, (int, float)):
+                    if stats[feature]['min'] is None or value < stats[feature]['min']:
+                        stats[feature]['min'] = value
+                    if stats[feature]['max'] is None or value > stats[feature]['max']:
+                        stats[feature]['max'] = value
+                    stats[feature]['values'].append(value)
+                # For binary/categorical features, track unique values
+                elif isinstance(value, (str, bool)):
+                    if 'unique_values' not in stats[feature]:
+                        stats[feature]['unique_values'] = set()
+                    stats[feature]['unique_values'].add(value)
+    
+    # Calculate final statistics
+    final_stats = {}
+    for feature in feature_names:
+        feature_stats = stats[feature]
+        
+        # Determine primary data type
+        types_list = list(feature_stats['types'])
+        primary_type = types_list[0] if types_list else 'unknown'
+        
+        if feature_stats['min'] is not None and feature_stats['max'] is not None:
+            # Numeric feature
+            final_stats[feature] = {
+                'min': feature_stats['min'],
+                'max': feature_stats['max'],
+                'range': feature_stats['max'] - feature_stats['min'],
+                'sample_count': len(feature_stats['values']),
+                'type': primary_type,
+                'types': types_list
+            }
+            # Calculate percentiles for better distribution
+            if feature_stats['values']:
+                sorted_values = sorted(feature_stats['values'])
+                n = len(sorted_values)
+                final_stats[feature]['p25'] = sorted_values[n // 4] if n > 0 else None
+                final_stats[feature]['p50'] = sorted_values[n // 2] if n > 0 else None
+                final_stats[feature]['p75'] = sorted_values[3 * n // 4] if n > 0 else None
+        elif 'unique_values' in feature_stats:
+            # Categorical/binary feature
+            final_stats[feature] = {
+                'unique_values': list(feature_stats['unique_values']),
+                'sample_count': sample_count,
+                'type': primary_type,
+                'types': types_list
+            }
+        elif sample_count > 0:
+            # Feature exists but no values collected (might be None/null)
+            final_stats[feature] = {
+                'sample_count': 0,
+                'type': primary_type,
+                'types': types_list
+            }
+    
+    return final_stats
+
+def get_database_statistics(feature_names: list, force_refresh: bool = False, dataset_name: str = None) -> dict:
+    """
+    Analyze sample data from the Data Ingestion Service /view endpoint to get min/max/range statistics for each feature.
+    Falls back to websocket_data table if Data Ingestion Service is unavailable.
+    Returns a dictionary with feature statistics or None if no data is available.
+    """
+    global _db_statistics_cache, _db_statistics_cache_time
+    
+    # Check cache
+    if not force_refresh and _db_statistics_cache is not None and _db_statistics_cache_time is not None:
+        cache_age = (datetime.now() - _db_statistics_cache_time).total_seconds()
+        if cache_age < _db_statistics_cache_ttl:
+            return _db_statistics_cache
+    
+    # Try to fetch data from Data Ingestion Service /view endpoint first
+    try:
+        view_data_samples = fetch_view_data_from_ingestion_service(dataset_name)
+        
+        if view_data_samples:
+            # Calculate statistics from Data Ingestion Service data
+            final_stats = calculate_statistics_from_data(view_data_samples, feature_names)
+            
+            if final_stats:
+                # Cache the results
+                _db_statistics_cache = final_stats
+                _db_statistics_cache_time = datetime.now()
+                
+                logger.info(f"Calculated statistics for {len(final_stats)} features from {len(view_data_samples)} samples from Data Ingestion Service")
+                return final_stats
+    except Exception as e:
+        logger.warning(f"Could not fetch data from Data Ingestion Service, falling back to websocket_data: {e}")
+    
+    # Fallback: Use websocket_data table
+    try:
+        init_websocket_db()
+        conn = sqlite3.connect(NETWORK_LOGS_DB)
+        cursor = conn.cursor()
+        
+        # Get a sample of data from the database (limit to 10000 records for performance)
+        cursor.execute("""
+            SELECT data FROM websocket_data 
+            WHERE data IS NOT NULL AND data != ''
+            ORDER BY id DESC
+            LIMIT 10000
+        """)
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        if not rows:
+            logger.warning("No sample data found in database for statistics calculation")
+            return None
+        
+        # Convert rows to data samples format
+        data_samples = []
+        for row in rows:
+            try:
+                data_json = json.loads(row[0])
+                if isinstance(data_json, dict):
+                    data_samples.append(data_json)
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                logger.debug(f"Error parsing data row: {e}")
+                continue
+        
+        if not data_samples:
+            logger.warning("No valid sample data found in database")
+            return None
+        
+        # Calculate statistics using the same function
+        final_stats = calculate_statistics_from_data(data_samples, feature_names)
+        
+        if final_stats:
+            # Cache the results
+            _db_statistics_cache = final_stats
+            _db_statistics_cache_time = datetime.now()
+            
+            logger.info(f"Calculated statistics for {len(final_stats)} features from {len(data_samples)} samples from websocket_data table")
+            return final_stats
+        
+    except Exception as e:
+        logger.error(f"Error calculating database statistics: {e}", exc_info=True)
+    
+    return None
+
 def load_feature_names() -> list:
     base_dir = os.path.dirname(os.path.abspath(__file__))
     feature_names_path = os.path.join(base_dir, "..", "A-DataIngestion", "Processed", "feature_names.json")
@@ -1890,8 +2195,19 @@ def load_feature_names() -> list:
         "is_ftp_login", "ct_ftp_cmd", "ct_flw_http_mthd", "ct_src_ltm", "ct_srv_dst", "is_sm_ips_ports"
     ]
 
-def generate_random_data(feature_names: list) -> dict:
+def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
+    """
+    Generate random data based on database statistics if available, otherwise use defaults.
+    
+    Args:
+        feature_names: List of feature names to generate
+        db_stats: Optional dictionary of database statistics (min/max/range per feature)
+    """
     data = {}
+    
+    # Get database statistics if not provided
+    if db_stats is None:
+        db_stats = get_database_statistics(feature_names)
     
     # Occasionally generate anomalous patterns (5% chance)
     is_anomaly_pattern = random.random() < 0.05
@@ -1900,65 +2216,112 @@ def generate_random_data(feature_names: list) -> dict:
     state_features = [f for f in feature_names if f.startswith("state_")]
     service_features = [f for f in feature_names if f.startswith("service_")]
     
+    def get_feature_range(feature: str, default_min: float, default_max: float) -> tuple:
+        """Get min/max range for a feature from database stats or use defaults."""
+        if db_stats and feature in db_stats:
+            feature_stat = db_stats[feature]
+            if 'min' in feature_stat and 'max' in feature_stat:
+                return feature_stat['min'], feature_stat['max']
+        return default_min, default_max
+    
+    def generate_numeric_value(feature: str, default_min: float, default_max: float, 
+                              anomaly_multiplier: float = 2.0, decimals: int = 6) -> float:
+        """Generate a numeric value within the feature's range from database."""
+        min_val, max_val = get_feature_range(feature, default_min, default_max)
+        
+        if is_anomaly_pattern and random.random() < 0.3:
+            # Anomaly: extend beyond max range
+            anomaly_max = max_val * anomaly_multiplier
+            value = random.uniform(max_val, anomaly_max)
+        else:
+            # Normal: within range, optionally use percentiles for more realistic distribution
+            if db_stats and feature in db_stats and 'p25' in db_stats[feature]:
+                # Use percentile-based distribution for more realistic values
+                stat = db_stats[feature]
+                if random.random() < 0.5:
+                    # 50% chance to use percentile range (more common values)
+                    value = random.uniform(stat.get('p25', min_val), stat.get('p75', max_val))
+                else:
+                    # 50% chance to use full range
+                    value = random.uniform(min_val, max_val)
+            else:
+                value = random.uniform(min_val, max_val)
+        
+        return round(value, decimals)
+    
+    def generate_integer_value(feature: str, default_min: int, default_max: int, 
+                               anomaly_multiplier: float = 2.0) -> int:
+        """Generate an integer value within the feature's range from database."""
+        min_val, max_val = get_feature_range(feature, float(default_min), float(default_max))
+        min_val = int(min_val)
+        max_val = int(max_val)
+        
+        if is_anomaly_pattern and random.random() < 0.4:
+            # Anomaly: extend beyond max range
+            anomaly_max = int(max_val * anomaly_multiplier)
+            return random.randint(max_val, anomaly_max)
+        else:
+            # Normal: within range
+            return random.randint(min_val, max_val)
+    
     for feature in feature_names:
         if feature == "dur":
-            # Duration: vary from 0 to 10000, with occasional very long durations
-            if is_anomaly_pattern and random.random() < 0.3:
-                data[feature] = round(random.uniform(5000.0, 50000.0), 6)
-            else:
-                data[feature] = round(random.uniform(0.0, 5000.0), 6)
+            # Duration: use database range
+            data[feature] = generate_numeric_value(feature, 0.0, 5000.0, anomaly_multiplier=10.0)
         elif feature.startswith("proto_"):
-            # Protocol features: vary probability based on pattern
-            prob = 0.3 if is_anomaly_pattern else random.uniform(0.05, 0.25)
-            data[feature] = 1 if random.random() < prob else 0
+            # Protocol features: binary, use database to determine probability distribution
+            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
+                # Use actual values from database
+                unique_vals = db_stats[feature]['unique_values']
+                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.15 else 0)
+            else:
+                prob = 0.3 if is_anomaly_pattern else random.uniform(0.05, 0.25)
+                data[feature] = 1 if random.random() < prob else 0
         elif feature.startswith("state_"):
-            # State features: vary probability
-            prob = 0.5 if is_anomaly_pattern else random.uniform(0.1, 0.4)
-            data[feature] = 1 if random.random() < prob else 0
+            # State features: binary
+            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
+                unique_vals = db_stats[feature]['unique_values']
+                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.25 else 0)
+            else:
+                prob = 0.5 if is_anomaly_pattern else random.uniform(0.1, 0.4)
+                data[feature] = 1 if random.random() < prob else 0
         elif feature.startswith("service_"):
-            # Service features: vary probability
-            prob = 0.4 if is_anomaly_pattern else random.uniform(0.05, 0.3)
-            data[feature] = 1 if random.random() < prob else 0
+            # Service features: binary
+            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
+                unique_vals = db_stats[feature]['unique_values']
+                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.15 else 0)
+            else:
+                prob = 0.4 if is_anomaly_pattern else random.uniform(0.05, 0.3)
+                data[feature] = 1 if random.random() < prob else 0
         elif feature in ["Spkts", "Dpkts", "sbytes", "dbytes", "sttl", "dttl", 
                          "sloss", "dloss", "swin", "stcpb", "dtcpb", "dwin",
                          "tcprtt", "synack", "ackdat", "trans_depth", "res_bdy_len",
                          "ct_srv_src", "ct_state_ttl", "ct_dst_ltm", "ct_src_dport_ltm",
                          "ct_dst_sport_ltm", "ct_dst_src_ltm", "ct_ftp_cmd", "ct_flw_http_mthd",
                          "ct_src_ltm", "ct_srv_dst"]:
-            # Packet/connection features: wide range with occasional extremes
-            if is_anomaly_pattern and random.random() < 0.4:
-                # Anomaly: very high values
-                data[feature] = random.randint(50000, 1000000)
-            else:
-                # Normal: varied range
-                max_val = random.choice([1000, 5000, 10000, 50000])
-                data[feature] = random.randint(0, max_val)
+            # Packet/connection features: use database range
+            data[feature] = generate_integer_value(feature, 0, 50000, anomaly_multiplier=20.0)
         elif feature in ["rate", "Sload", "Dload", "Sintpkt", "Dintpkt", "Sjit", "Djit", "smeansz", "dmeansz"]:
-            # Rate/load features: vary ranges significantly
-            if is_anomaly_pattern and random.random() < 0.3:
-                # Anomaly: extreme values
-                data[feature] = round(random.uniform(1000000.0, 10000000.0), 2)
-            else:
-                # Normal: varied ranges
-                max_val = random.choice([1000.0, 10000.0, 100000.0, 1000000.0])
-                data[feature] = round(random.uniform(0.0, max_val), 2)
+            # Rate/load features: use database range
+            data[feature] = generate_numeric_value(feature, 0.0, 1000000.0, anomaly_multiplier=10.0, decimals=2)
         elif feature in ["is_ftp_login", "is_sm_ips_ports"]:
-            # Boolean features: vary probability
-            prob = 0.8 if is_anomaly_pattern else random.uniform(0.0, 0.3)
-            data[feature] = 1 if random.random() < prob else 0
-        elif feature in ["byte_ratio", "pkt_ratio", "flow_rate", "pkt_rate"]:
-            # Ratio features: vary ranges
-            if is_anomaly_pattern:
-                # Anomaly: extreme ratios
-                data[feature] = round(random.uniform(10.0, 100.0), 4)
+            # Boolean features: use database distribution if available
+            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
+                unique_vals = db_stats[feature]['unique_values']
+                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.1 else 0)
             else:
-                # Normal: varied ratios
-                max_ratio = random.choice([1.0, 5.0, 10.0, 20.0])
-                data[feature] = round(random.uniform(0.0, max_ratio), 4)
+                prob = 0.8 if is_anomaly_pattern else random.uniform(0.0, 0.3)
+                data[feature] = 1 if random.random() < prob else 0
+        elif feature in ["byte_ratio", "pkt_ratio", "flow_rate", "pkt_rate"]:
+            # Ratio features: use database range
+            data[feature] = generate_numeric_value(feature, 0.0, 20.0, anomaly_multiplier=5.0, decimals=4)
         else:
-            # Default: vary the range
-            max_val = random.choice([100, 500, 1000, 5000, 10000])
-            data[feature] = random.randint(0, max_val)
+            # Default: use database range or fallback
+            min_val, max_val = get_feature_range(feature, 0.0, 10000.0)
+            if isinstance(max_val, float) or max_val > 1000:
+                data[feature] = round(generate_numeric_value(feature, 0.0, max_val), 6)
+            else:
+                data[feature] = generate_integer_value(feature, 0, int(max_val))
     
     return data
 
@@ -1989,9 +2352,18 @@ async def websocket_generate_data(websocket: WebSocket):
     feature_names = load_feature_names()
     logger.info(f"Loaded {len(feature_names)} features for data generation")
     
+    # Load database statistics once at the start (will be cached)
+    # Use default dataset name from environment if available
+    dataset_name = DEFAULT_DATASET_NAME
+    db_stats = get_database_statistics(feature_names, dataset_name=dataset_name)
+    if db_stats:
+        logger.info(f"Using database statistics for {len(db_stats)} features (dataset: {dataset_name or 'default'})")
+    else:
+        logger.info("No database statistics available, using default ranges")
+    
     try:
         while True:
-            random_data = generate_random_data(feature_names)
+            random_data = generate_random_data(feature_names, db_stats)
             timestamp = datetime.utcnow().isoformat()
             network_id = str(uuid.uuid4())
             random_user = get_random_user()
@@ -2238,11 +2610,16 @@ async def startup_event():
     logger.info("Demo users: seeded 80 users, background worker adding 1–7 every 30s")
 
     init_websocket_db()
+    # Keep init_message_queue_db for backward compatibility but it's not used with RabbitMQ
     init_message_queue_db()
 
     if MESSAGE_QUEUE_ENABLED:
-        asyncio.create_task(message_queue_worker())
-        logger.info("Message queue worker started")
+        # Initialize RabbitMQ connection
+        if await init_rabbitmq():
+            asyncio.create_task(message_queue_worker())
+            logger.info("RabbitMQ message queue worker started")
+        else:
+            logger.error("Failed to initialize RabbitMQ, message queue worker not started")
     else:
         logger.info("Message queue worker disabled in configuration")
 
@@ -2254,6 +2631,16 @@ async def startup_event():
         logger.info("WebSocket endpoint enabled")
     else:
         logger.info("WebSocket endpoint disabled in configuration")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up RabbitMQ connections on shutdown"""
+    global rabbitmq_connection, rabbitmq_channel
+    
+    if rabbitmq_connection and not rabbitmq_connection.is_closed:
+        logger.info("Closing RabbitMQ connection...")
+        await rabbitmq_connection.close()
+        logger.info("RabbitMQ connection closed")
 
 if __name__ == "__main__":
     import uvicorn
