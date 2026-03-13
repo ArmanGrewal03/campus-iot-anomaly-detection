@@ -738,6 +738,70 @@ def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
     logger.info("Autoencoder model training completed")
     return model, scaler
 
+def train_attack_category_model(X_train: pd.DataFrame, y_train: np.ndarray, 
+                                y_attack_cat: np.ndarray) -> Tuple[RandomForestClassifier, List[str]]:
+    """Train classifier to categorize attack types (ONLY on attack samples).
+    
+    Args:
+        X_train: Feature matrix
+        y_train: Binary labels (0=normal, 1=attack)
+        y_attack_cat: Attack category labels (string names like 'DoS', 'Exploits', etc.)
+    
+    Returns:
+        (trained_model, list_of_attack_category_names)
+    """
+    
+    # Ensure y_attack_cat is a pandas Series or convert it
+    if isinstance(y_attack_cat, np.ndarray):
+        y_attack_cat_series = pd.Series(y_attack_cat)
+    else:
+        y_attack_cat_series = y_attack_cat
+    
+    # Filter to only attack samples (y_train == 1)
+    attack_mask = y_train == 1
+    if attack_mask.sum() == 0:
+        logger.warning("No attack samples in training data - skipping attack category classifier")
+        return None, []
+    
+    # Handle both DataFrame and numpy array inputs
+    if isinstance(X_train, pd.DataFrame):
+        X_attacks = X_train[attack_mask].reset_index(drop=True)
+    else:
+        X_attacks = pd.DataFrame(X_train[attack_mask]).reset_index(drop=True)
+    
+    # Filter y_attack_cat - handle StringArray by converting to list first
+    filtered = y_attack_cat_series[attack_mask]
+    if hasattr(filtered, 'tolist'):  # StringArray or array-like
+        y_attacks = pd.Series(filtered.tolist()).reset_index(drop=True)
+    elif isinstance(filtered, pd.Series):
+        y_attacks = filtered.reset_index(drop=True)
+    else:
+        y_attacks = pd.Series(list(filtered)).reset_index(drop=True)
+    
+    logger.info(f"Training attack category classifier on {len(X_attacks)} attack samples")
+    attack_dist = dict(pd.Series(y_attacks).value_counts())
+    logger.info(f"Attack categories distribution: {attack_dist}")
+    
+    # Convert attack category strings to integers
+    le_attack = LabelEncoder()
+    y_attacks_encoded = le_attack.fit_transform(y_attacks)
+    
+    # Train Random Forest for attack categorization
+    attack_cat_model = RandomForestClassifier(
+        n_estimators=100,
+        max_depth=10,
+        random_state=42,
+        n_jobs=-1,
+        class_weight='balanced'  # Balanced here too - rare attack types matter
+    )
+    
+    attack_cat_model.fit(X_attacks, y_attacks_encoded)
+    
+    attack_classes = le_attack.classes_.tolist()
+    logger.info(f"Attack category classifier trained. Classes: {attack_classes}")
+    
+    return attack_cat_model, attack_classes
+
 def evaluate_rf_model(model: RandomForestClassifier, X_test: Any, 
                    y_test: np.ndarray) -> Dict[str, Any]:
     """Evaluate Random Forest model and return metrics."""
@@ -1375,6 +1439,7 @@ async def train(
     # --- UNIFIED AUTOMATED DATA LOADING ---
     fs = FeatureStore()
     X_train, y_train, vectorizer = None, None, None
+    y_attack_cat = None  # Initialize here so it's always defined
     
     # Auto-identifer for the dataset's features
     feature_store_name = train_request.feature_set_name or f"auto_{dataset_name}"
@@ -1403,6 +1468,11 @@ async def train(
         
         y_train = pd.to_numeric(df['label'], errors='coerce').fillna(0).astype(int).values
         
+        # Extract attack_cat for multi-class classification (if present)
+        if 'attack_cat' in df.columns:
+            y_attack_cat = df['attack_cat'].values
+            logger.info(f"Extracted {len(np.unique(y_attack_cat))} unique attack categories")
+        
         # EXTREMELY IMPORTANT: Drop columns that would cause data leakage or noise
         # 1. No IDs/UUIDs (they are unique per row and confuse the model)
         # 2. No target columns (label, attack_cat)
@@ -1422,6 +1492,8 @@ async def train(
 
     # --- MODEL TRAINING ---
     model = None
+    attack_cat_model = None
+    attack_cat_classes = None
     training_params = {'model_type': model_type, 'feature_store_name': feature_store_name}
     
     try:
@@ -1439,12 +1511,21 @@ async def train(
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported model type: {model_type}")
 
+        # Train attack category classifier if attack_cat data is available
+        if y_attack_cat is not None:
+            attack_cat_model, attack_cat_classes = train_attack_category_model(X_train, y_train, y_attack_cat)
+            if attack_cat_model is not None:
+                logger.info(f"Attack category classifier trained with classes: {attack_cat_classes}")
+            else:
+                logger.warning("No attack samples found for attack category classifier training")
+
         # Placeholder metrics (real ones added in /test phase usually, or we can add summary here)
         metrics = {"status": "trained", "samples": len(X_train)}
         
         # For AEv1, pass the scaler to save_model
         ae_scaler = scaler if model_type == "AEv1" else None
-        save_model(model, vectorizer, metrics, training_params, model_name=model_name, scaler=ae_scaler)
+        save_model(model, vectorizer, metrics, training_params, model_name=model_name, 
+                  scaler=ae_scaler, attack_cat_model=attack_cat_model, attack_cat_classes=attack_cat_classes)
         
         return JSONResponse(
             content={
@@ -1879,21 +1960,78 @@ async def predict(
             else:
                 normalized_scores = np.zeros_like(scores)
             
+            # Predict attack categories for unsafe samples if attack_cat_model is available
+            attack_cat_predictions = None
+            attack_cat_probabilities = None
+            unsafe_indices = None
+            if attack_cat_model is not None:
+                logger.info("Attack category model found for IFv1, attempting to predict attack categories for unsafe samples")
+                unsafe_indices = np.where(predictions == 1)[0]
+                logger.info(f"Found {len(unsafe_indices)} unsafe samples out of {len(predictions)} total")
+                if len(unsafe_indices) > 0:
+                    X_unsafe = X[unsafe_indices]
+                    attack_cat_predictions_raw = attack_cat_model.predict(X_unsafe)
+                    attack_cat_probabilities_raw = attack_cat_model.predict_proba(X_unsafe)
+                    attack_cat_classes = metadata.get('attack_cat_classes', [])
+                    if len(attack_cat_classes) == 0:
+                        if hasattr(attack_cat_model, 'classes_'):
+                            attack_cat_classes = attack_cat_model.classes_.tolist()
+                            logger.info(f"Using attack_cat_classes from model: {attack_cat_classes}")
+                        else:
+                            logger.warning("attack_cat_classes not found in metadata and model has no classes_ attribute")
+                    
+                    if len(attack_cat_classes) > 0:
+                        attack_cat_predictions = [attack_cat_classes[int(pred)] for pred in attack_cat_predictions_raw]
+                        attack_cat_probabilities = []
+                        for probs in attack_cat_probabilities_raw:
+                            prob_dict = {attack_cat_classes[i]: float(probs[i]) for i in range(len(attack_cat_classes))}
+                            attack_cat_probabilities.append(prob_dict)
+                        logger.info(f"Successfully predicted {len(attack_cat_predictions)} attack categories for IFv1")
+                    else:
+                        logger.warning("attack_cat_classes is empty, cannot map predictions to category names")
+                else:
+                    logger.info("No unsafe samples found, skipping attack category prediction")
+            else:
+                logger.info("No attack category model found for this IFv1 model")
+            
             for i in range(len(predictions)):
                 pred_binary = int(predictions[i])
                 prob_unsafe = float(normalized_scores[i])
                 prob_safe = 1.0 - prob_unsafe
                 # Calculate risk percentage (0-100) based on probability_unsafe
                 risk_percentage = round(prob_unsafe * 100, 2)
-                results.append({
+                
+                result = {
                     'prediction': risk_percentage,  # Risk percentage (0-100)
                     'label': 'unsafe' if pred_binary == 1 else 'safe',
                     'probability_safe': prob_safe,
                     'probability_unsafe': prob_unsafe,
-                    'confidence': max(prob_safe, prob_unsafe),
-                    'attack_cat': None,  # Isolation Forest doesn't predict attack categories
-                    'attack_cat_probabilities': {}
-                })
+                    'confidence': max(prob_safe, prob_unsafe)
+                }
+                
+                # Add attack category if available and sample is unsafe
+                if pred_binary == 1 and attack_cat_model is not None:
+                    if attack_cat_predictions is not None and unsafe_indices is not None:
+                        pos_in_unsafe = np.where(unsafe_indices == i)[0]
+                        if len(pos_in_unsafe) > 0:
+                            idx = pos_in_unsafe[0]
+                            result['attack_cat'] = attack_cat_predictions[idx]
+                            result['attack_cat_probabilities'] = attack_cat_probabilities[idx] if attack_cat_probabilities else {}
+                        else:
+                            result['attack_cat'] = 'Unknown'
+                            result['attack_cat_probabilities'] = {}
+                    else:
+                        result['attack_cat'] = 'Unknown'
+                        result['attack_cat_probabilities'] = {}
+                elif pred_binary == 0:
+                    # Safe samples don't have attack categories
+                    result['attack_cat'] = 'Normal'
+                    result['attack_cat_probabilities'] = {}
+                else:
+                    result['attack_cat'] = None
+                    result['attack_cat_probabilities'] = {}
+                
+                results.append(result)
         
         elif model_type == 'AEv1':
             # Autoencoder: unsupervised model using reconstruction error
@@ -1923,19 +2061,78 @@ async def predict(
             else:
                 normalized_errors = np.zeros_like(mse)
             
+            # Predict attack categories for unsafe samples if attack_cat_model is available
+            attack_cat_predictions = None
+            attack_cat_probabilities = None
+            unsafe_indices = None
+            if attack_cat_model is not None:
+                logger.info("Attack category model found for AEv1, attempting to predict attack categories for unsafe samples")
+                unsafe_indices = np.where(predictions == 1)[0]
+                logger.info(f"Found {len(unsafe_indices)} unsafe samples out of {len(predictions)} total")
+                if len(unsafe_indices) > 0:
+                    X_unsafe = X[unsafe_indices]
+                    attack_cat_predictions_raw = attack_cat_model.predict(X_unsafe)
+                    attack_cat_probabilities_raw = attack_cat_model.predict_proba(X_unsafe)
+                    attack_cat_classes = metadata.get('attack_cat_classes', [])
+                    if len(attack_cat_classes) == 0:
+                        if hasattr(attack_cat_model, 'classes_'):
+                            attack_cat_classes = attack_cat_model.classes_.tolist()
+                            logger.info(f"Using attack_cat_classes from model: {attack_cat_classes}")
+                        else:
+                            logger.warning("attack_cat_classes not found in metadata and model has no classes_ attribute")
+                    
+                    if len(attack_cat_classes) > 0:
+                        attack_cat_predictions = [attack_cat_classes[int(pred)] for pred in attack_cat_predictions_raw]
+                        attack_cat_probabilities = []
+                        for probs in attack_cat_probabilities_raw:
+                            prob_dict = {attack_cat_classes[i]: float(probs[i]) for i in range(len(attack_cat_classes))}
+                            attack_cat_probabilities.append(prob_dict)
+                        logger.info(f"Successfully predicted {len(attack_cat_predictions)} attack categories for AEv1")
+                    else:
+                        logger.warning("attack_cat_classes is empty, cannot map predictions to category names")
+                else:
+                    logger.info("No unsafe samples found, skipping attack category prediction")
+            else:
+                logger.info("No attack category model found for this AEv1 model")
+            
             for i in range(len(predictions)):
                 pred_binary = int(predictions[i])
                 prob_unsafe = float(normalized_errors[i])
                 prob_safe = 1.0 - prob_unsafe
                 # Calculate risk percentage (0-100) based on probability_unsafe
                 risk_percentage = round(prob_unsafe * 100, 2)
-                results.append({
+                
+                result = {
                     'prediction': risk_percentage,  # Risk percentage (0-100)
                     'label': 'unsafe' if pred_binary == 1 else 'safe',
                     'probability_safe': prob_safe,
                     'probability_unsafe': prob_unsafe,
                     'confidence': max(prob_safe, prob_unsafe)
-                })
+                }
+                
+                # Add attack category if available and sample is unsafe
+                if pred_binary == 1 and attack_cat_model is not None:
+                    if attack_cat_predictions is not None and unsafe_indices is not None:
+                        pos_in_unsafe = np.where(unsafe_indices == i)[0]
+                        if len(pos_in_unsafe) > 0:
+                            idx = pos_in_unsafe[0]
+                            result['attack_cat'] = attack_cat_predictions[idx]
+                            result['attack_cat_probabilities'] = attack_cat_probabilities[idx] if attack_cat_probabilities else {}
+                        else:
+                            result['attack_cat'] = 'Unknown'
+                            result['attack_cat_probabilities'] = {}
+                    else:
+                        result['attack_cat'] = 'Unknown'
+                        result['attack_cat_probabilities'] = {}
+                elif pred_binary == 0:
+                    # Safe samples don't have attack categories
+                    result['attack_cat'] = 'Normal'
+                    result['attack_cat_probabilities'] = {}
+                else:
+                    result['attack_cat'] = None
+                    result['attack_cat_probabilities'] = {}
+                
+                results.append(result)
         
         else:
             raise ValueError(f"Unknown model type: {model_type}")
