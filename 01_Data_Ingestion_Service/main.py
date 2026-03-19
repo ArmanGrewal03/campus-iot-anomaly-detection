@@ -891,6 +891,119 @@ async def get_testing_data(
         raise HTTPException(status_code=500, detail=f"Error retrieving testing data: {str(e)}")
 
 
+@app.get("/random-test")
+async def get_random_test_data(
+    dataset_name: str = Depends(get_dataset_name)
+):
+    """
+    Get a single random test data record using ORDER BY RANDOM() LIMIT 1.
+    This is more efficient than using offset pagination for random selection.
+    """
+    logger.info(f"/random-test endpoint called with dataset_name: {dataset_name}")
+    try:
+        init_db(dataset_name)
+        logger.info(f"Database initialized for dataset: {dataset_name}")
+        
+        csv_table = get_table_name("csv_data", dataset_name)
+        logger.info(f"Using table: {csv_table}")
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(f"PRAGMA table_info({csv_table})")
+        columns = [col[1] for col in cursor.fetchall()]
+        logger.info(f"Table columns: {columns}")
+        
+        if 'T' not in columns:
+            conn.close()
+            logger.error(f"T column does not exist in table {csv_table}. Columns found: {columns}")
+            raise HTTPException(
+                status_code=400, 
+                detail="T column does not exist. Please call PUT /validate first to assign training/testing labels."
+            )
+        
+        # Check total count of testing records
+        cursor.execute(f"SELECT COUNT(*) as total FROM {csv_table} WHERE T = ?", ("testing",))
+        total_testing = cursor.fetchone()['total']
+        logger.info(f"Total testing records in database: {total_testing}")
+        
+        if total_testing == 0:
+            # Also check total records and what T values exist
+            cursor.execute(f"SELECT COUNT(*) as total FROM {csv_table}")
+            total_all = cursor.fetchone()['total']
+            logger.warning(f"No testing records found. Total records in table: {total_all}")
+            
+            # Check what T values exist
+            cursor.execute(f"SELECT DISTINCT T FROM {csv_table}")
+            t_values = [row['T'] for row in cursor.fetchall()]
+            logger.warning(f"Existing T column values: {t_values}")
+            
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail=f"No testing data found in the database. Total records: {total_all}, T values: {t_values}"
+            )
+        
+        # Get a random test record using ORDER BY RANDOM() LIMIT 1
+        logger.info(f"Querying for random test record from {total_testing} testing records...")
+        cursor.execute(f"""
+            SELECT id, upload_timestamp, row_data, T 
+            FROM {csv_table} 
+            WHERE T = ?
+            ORDER BY RANDOM()
+            LIMIT 1
+        """, ("testing",))
+        
+        row = cursor.fetchone()
+        logger.info(f"Query executed, row fetched: {row is not None}")
+        
+        if not row:
+            conn.close()
+            logger.error("Query returned no row despite COUNT showing testing records exist")
+            raise HTTPException(
+                status_code=404,
+                detail="No testing data found in the database."
+            )
+        
+        logger.info(f"Successfully retrieved random test record with id: {row['id']}")
+        conn.close()
+        
+        try:
+            row_data = json.loads(row['row_data'])
+            data = {
+                "id": row['id'],
+                "upload_timestamp": row['upload_timestamp'],
+                "T": row['T'],
+                "data": row_data
+            }
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse JSON for row {row['id']}: {e}")
+            data = {
+                "id": row['id'],
+                "upload_timestamp": row['upload_timestamp'],
+                "T": row['T'],
+                "data": {"error": "Failed to parse row data", "raw": row['row_data']}
+            }
+        
+        logger.info(f"Retrieved random test record (id: {row['id']}) from database")
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "data": data
+            },
+            status_code=200
+        )
+    
+    except HTTPException:
+        raise
+    except sqlite3.Error as e:
+        logger.error(f"Database error retrieving random test data: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error retrieving random test data: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error retrieving random test data: {str(e)}")
+
 @app.put("/validate")
 async def validate_data(
     dataset_name: str = Depends(get_dataset_name),

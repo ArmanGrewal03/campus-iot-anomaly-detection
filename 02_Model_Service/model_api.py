@@ -34,7 +34,8 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     roc_auc_score,
-    average_precision_score
+    average_precision_score,
+    matthews_corrcoef
 )
 import joblib
 import json
@@ -605,7 +606,7 @@ def train_if_model(X_train: pd.DataFrame, y_train: np.ndarray,
 
 def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
                    hidden_layers: str = "64,32,32,64", random_state: int = 42) -> tuple:
-    """Train an Autoencoder model (AEv1). Returns (model, scaler)."""
+    """Train an Autoencoder model (AEv1). Returns (model, scaler, loss_history)."""
     logger.info(f"Training Autoencoder model with hidden_layers={hidden_layers}")
     
     # Scale data for neural network
@@ -616,6 +617,7 @@ def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
     hidden_layer_sizes = tuple(map(int, hidden_layers.split(',')))
     
     # MLPRegressor as autoencoder (input = output)
+    # Use warm_start to track loss over iterations
     model = MLPRegressor(
         hidden_layer_sizes=hidden_layer_sizes,
         activation='relu',
@@ -624,16 +626,35 @@ def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
         batch_size='auto',
         learning_rate='constant',
         learning_rate_init=0.001,
-        max_iter=200,
+        max_iter=1,  # Train one iteration at a time
         shuffle=True,
         random_state=random_state,
-        verbose=True
+        warm_start=True,  # Enable incremental training
+        verbose=False
     )
     
-    # Train autoencoder: X -> X (reconstruction)
-    model.fit(X_train_scaled, X_train_scaled)
-    logger.info("Autoencoder model training completed")
-    return model, scaler
+    # Track loss history by training in iterations
+    loss_history = []
+    max_iterations = 200
+    iterations_per_log = 10  # Log loss every 10 iterations
+    
+    logger.info(f"Training autoencoder for {max_iterations} iterations...")
+    for iteration in range(max_iterations):
+        model.fit(X_train_scaled, X_train_scaled)
+        
+        # Calculate loss (mean squared error) every few iterations
+        if (iteration + 1) % iterations_per_log == 0 or iteration == 0:
+            X_pred = model.predict(X_train_scaled)
+            mse = np.mean(np.power(X_train_scaled - X_pred, 2))
+            loss_history.append({
+                'iteration': iteration + 1,
+                'loss': float(mse)
+            })
+            if (iteration + 1) % 50 == 0:
+                logger.info(f"Iteration {iteration + 1}/{max_iterations}, Loss: {mse:.6f}")
+    
+    logger.info(f"Autoencoder model training completed. Final loss: {loss_history[-1]['loss']:.6f}")
+    return model, scaler, loss_history
 
 def evaluate_rf_model(model: RandomForestClassifier, X_test: pd.DataFrame, 
                    y_test: np.ndarray) -> Dict[str, Any]:
@@ -714,6 +735,18 @@ def evaluate_if_model(model: IsolationForest, X_test: pd.DataFrame,
     f1 = f1_score(y_test, y_pred, zero_division=0)
     cm = confusion_matrix(y_test, y_pred)
     
+    # Calculate additional metrics from confusion matrix
+    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0  # True Negative Rate
+    sensitivity = recall  # Same as recall (True Positive Rate)
+    npv = tn / (tn + fn) if (tn + fn) > 0 else 0.0  # Negative Predictive Value
+    
+    # Matthews Correlation Coefficient
+    try:
+        mcc = matthews_corrcoef(y_test, y_pred)
+    except:
+        mcc = 0.0
+    
     # AUC metrics using scores
     try:
         roc_auc = roc_auc_score(y_test, scores)
@@ -722,14 +755,32 @@ def evaluate_if_model(model: IsolationForest, X_test: pd.DataFrame,
         roc_auc = 0.0
         pr_auc = 0.0
     
+    # Get classification report for support (sample counts)
+    try:
+        report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+        support_0 = report.get('0', {}).get('support', 0) if '0' in report else 0
+        support_1 = report.get('1', {}).get('support', 0) if '1' in report else 0
+        total_support = report.get('macro avg', {}).get('support', len(y_test))
+    except:
+        support_0 = int(np.sum(y_test == 0))
+        support_1 = int(np.sum(y_test == 1))
+        total_support = len(y_test)
+    
     metrics = {
         'accuracy': float(accuracy),
         'precision': float(precision),
         'recall': float(recall),
         'f1_score': float(f1),
+        'specificity': float(specificity),
+        'sensitivity': float(sensitivity),
+        'npv': float(npv),  # Negative Predictive Value
+        'mcc': float(mcc),  # Matthews Correlation Coefficient
         'confusion_matrix': cm.tolist(),
         'roc_auc': float(roc_auc),
         'pr_auc': float(pr_auc),
+        'support_0': int(support_0),  # Number of class 0 samples
+        'support_1': int(support_1),  # Number of class 1 samples
+        'total_support': int(total_support),
         'feature_importance': []  # Isolation Forest doesn't have feature importance
     }
     
@@ -758,6 +809,18 @@ def evaluate_ae_model(model: MLPRegressor, scaler: StandardScaler, X_test: pd.Da
     f1 = f1_score(y_test, y_pred, zero_division=0)
     cm = confusion_matrix(y_test, y_pred)
     
+    # Calculate additional metrics from confusion matrix
+    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0  # True Negative Rate
+    sensitivity = recall  # Same as recall (True Positive Rate)
+    npv = tn / (tn + fn) if (tn + fn) > 0 else 0.0  # Negative Predictive Value
+    
+    # Matthews Correlation Coefficient
+    try:
+        mcc = matthews_corrcoef(y_test, y_pred)
+    except:
+        mcc = 0.0
+    
     # AUC metrics using MSE scores
     try:
         roc_auc = roc_auc_score(y_test, mse)
@@ -766,15 +829,33 @@ def evaluate_ae_model(model: MLPRegressor, scaler: StandardScaler, X_test: pd.Da
         roc_auc = 0.0
         pr_auc = 0.0
     
+    # Get classification report for support (sample counts)
+    try:
+        report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+        support_0 = report.get('0', {}).get('support', 0) if '0' in report else 0
+        support_1 = report.get('1', {}).get('support', 0) if '1' in report else 0
+        total_support = report.get('macro avg', {}).get('support', len(y_test))
+    except:
+        support_0 = int(np.sum(y_test == 0))
+        support_1 = int(np.sum(y_test == 1))
+        total_support = len(y_test)
+    
     metrics = {
         'accuracy': float(accuracy),
         'precision': float(precision),
         'recall': float(recall),
         'f1_score': float(f1),
+        'specificity': float(specificity),
+        'sensitivity': float(sensitivity),
+        'npv': float(npv),  # Negative Predictive Value
+        'mcc': float(mcc),  # Matthews Correlation Coefficient
         'confusion_matrix': cm.tolist(),
         'roc_auc': float(roc_auc),
         'pr_auc': float(pr_auc),
         'threshold': float(threshold),
+        'support_0': int(support_0),  # Number of class 0 samples
+        'support_1': int(support_1),  # Number of class 1 samples
+        'total_support': int(total_support),
         'feature_importance': []  # Autoencoder doesn't have feature importance
     }
     
@@ -1027,6 +1108,110 @@ async def list_models():
     except Exception as e:
         logger.error(f"Error listing models: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error listing models: {str(e)}")
+
+@app.delete("/models/{model_name}")
+async def delete_model(model_name: str):
+    """
+    Delete a model and all its associated files (model, metadata, scaler, attack_cat_model).
+    
+    Args:
+        model_name: Name of the model to delete
+        
+    Returns:
+        Success message with list of deleted files
+    """
+    try:
+        # Sanitize model name to prevent directory traversal
+        sanitized_model_name = model_name.replace('/', '_').replace('\\', '_').replace('..', '_')
+        
+        # Define all possible files associated with the model
+        model_filename = f"{sanitized_model_name}.pkl"
+        metadata_filename = f"{sanitized_model_name}_metadata.json"
+        scaler_filename = f"{sanitized_model_name}_scaler.pkl"
+        attack_cat_filename = f"{sanitized_model_name}_attack_cat.pkl"
+        
+        model_path = os.path.join(MODEL_DIR, model_filename)
+        metadata_path = os.path.join(MODEL_DIR, metadata_filename)
+        scaler_path = os.path.join(MODEL_DIR, scaler_filename)
+        attack_cat_path = os.path.join(MODEL_DIR, attack_cat_filename)
+        
+        deleted_files = []
+        errors = []
+        
+        # Delete model file
+        if os.path.exists(model_path):
+            try:
+                os.remove(model_path)
+                deleted_files.append(model_filename)
+                logger.info(f"Deleted model file: {model_path}")
+            except Exception as e:
+                errors.append(f"Error deleting model file: {str(e)}")
+                logger.error(f"Error deleting model file {model_path}: {e}")
+        else:
+            # If model file doesn't exist, return error
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model '{model_name}' not found. Model file does not exist."
+            )
+        
+        # Delete metadata file
+        if os.path.exists(metadata_path):
+            try:
+                os.remove(metadata_path)
+                deleted_files.append(metadata_filename)
+                logger.info(f"Deleted metadata file: {metadata_path}")
+            except Exception as e:
+                errors.append(f"Error deleting metadata file: {str(e)}")
+                logger.error(f"Error deleting metadata file {metadata_path}: {e}")
+        
+        # Delete scaler file if it exists
+        if os.path.exists(scaler_path):
+            try:
+                os.remove(scaler_path)
+                deleted_files.append(scaler_filename)
+                logger.info(f"Deleted scaler file: {scaler_path}")
+            except Exception as e:
+                errors.append(f"Error deleting scaler file: {str(e)}")
+                logger.error(f"Error deleting scaler file {scaler_path}: {e}")
+        
+        # Delete attack category model file if it exists
+        if os.path.exists(attack_cat_path):
+            try:
+                os.remove(attack_cat_path)
+                deleted_files.append(attack_cat_filename)
+                logger.info(f"Deleted attack category model file: {attack_cat_path}")
+            except Exception as e:
+                errors.append(f"Error deleting attack category model file: {str(e)}")
+                logger.error(f"Error deleting attack category model file {attack_cat_path}: {e}")
+        
+        if errors:
+            logger.warning(f"Some errors occurred while deleting model '{model_name}': {errors}")
+            return JSONResponse(
+                content={
+                    "status": "partial_success",
+                    "message": f"Model '{model_name}' deleted, but some errors occurred",
+                    "deleted_files": deleted_files,
+                    "errors": errors
+                },
+                status_code=207  # Multi-Status
+            )
+        
+        logger.info(f"Successfully deleted model '{model_name}' and {len(deleted_files)} associated file(s)")
+        return JSONResponse(
+            content={
+                "status": "success",
+                "message": f"Model '{model_name}' deleted successfully",
+                "deleted_files": deleted_files,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            },
+            status_code=200
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting model '{model_name}': {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error deleting model: {str(e)}")
 
 @app.get("/model-types")
 async def list_model_types():
@@ -1292,7 +1477,7 @@ async def train(
         elif model_type == "AEv1":
             # Autoencoder
             hidden_layers = train_request.hidden_layers if train_request.hidden_layers else "64,32,32,64"
-            model, scaler = train_ae_model(
+            model, scaler, loss_history = train_ae_model(
                 X_train, y_train,
                 hidden_layers=hidden_layers,
                 random_state=train_request.random_state
@@ -1302,6 +1487,9 @@ async def train(
                 'hidden_layers': hidden_layers,
                 'random_state': train_request.random_state
             }
+            # Store loss_history for response and persistence
+            training_params['loss_history'] = loss_history
+            logger.info(f"Stored loss_history with {len(loss_history)} data points in training_params")
         else:
             raise HTTPException(
                 status_code=400,
@@ -1340,6 +1528,10 @@ async def train(
         "training_params": training_params,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+    
+    # Include loss history if available (for neural network models)
+    if 'loss_history' in training_params:
+        response_content['loss_history'] = training_params['loss_history']
     
     if train_request.include_fields is not None:
         response_content["include_fields"] = train_request.include_fields
@@ -1911,12 +2103,14 @@ async def get_model_metrics(model_name: str = Depends(get_model_name)):
         )
     
     metrics = metadata.get('metrics', {})
+    training_params = metadata.get('training_params', {})
     
     return JSONResponse(
         content={
             "status": "success",
             "model_name": model_name,
             "metrics": metrics,
+            "training_params": training_params,
             "training_date": metadata.get('training_date', 'Unknown'),
             "last_test_date": metadata.get('last_test_date', 'Not tested yet'),
             "timestamp": datetime.now(timezone.utc).isoformat()

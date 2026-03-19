@@ -24,14 +24,19 @@ import WifiIcon from '@mui/icons-material/Wifi';
 import WifiOffIcon from '@mui/icons-material/WifiOff';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import CloseIcon from '@mui/icons-material/Close';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Html, Sphere, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
+import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { ErrorBoundary } from '../App';
 
 // Direct connections to backend services (bypass gateway for Analytics page)
 const USER_SERVICE_BASE = 'http://127.0.0.1:8002'; // User Service - direct connection
 const MODEL_API_BASE = 'http://127.0.0.1:8001'; // Model Service - direct connection
+const DATA_INGESTION_SERVICE_BASE = 'http://127.0.0.1:8000'; // Data Ingestion Service - direct connection
 const WS_BASE = 'ws://127.0.0.1:8002'; // WebSocket - direct connection
 
 interface HistoryRecord {
@@ -46,8 +51,10 @@ interface HistoryRecord {
   location: {
     city?: string;
     country?: string;
+    name?: string;
     latitude?: number;
     longitude?: number;
+    ssh?: boolean;
   } | null;
   data: Record<string, unknown> | null;
   prediction_results: {
@@ -76,6 +83,25 @@ function latLonToXYZ(lat: number, lon: number, radius: number = 1): [number, num
   const y = radius * Math.sin(latRad);
   const z = radius * Math.cos(latRad) * Math.sin(lonRad);
   return [x, y, z];
+}
+
+// Component to fit map bounds to show all markers
+function FitBounds({ locations }: { locations: Array<{ lat: number; lon: number }> }) {
+  const map = useMap();
+  
+  React.useEffect(() => {
+    if (locations.length > 0) {
+      const bounds = locations.reduce(
+        (acc, { lat, lon }) => {
+          return acc.extend([lat, lon]);
+        },
+        new L.LatLngBounds([locations[0].lat, locations[0].lon], [locations[0].lat, locations[0].lon])
+      );
+      map.fitBounds(bounds, { padding: [20, 20], maxZoom: 17 });
+    }
+  }, [locations, map]);
+  
+  return null;
 }
 
 // 3D Globe Component
@@ -200,8 +226,13 @@ function Globe3D({ locations }: { locations: Array<{ record: HistoryRecord; lat:
                         display: 'block',
                       }}
                     >
-                      {record.location?.city || 'Unknown'}
-                      {record.location?.country && `, ${record.location.country}`}
+                      {/* Prefer TMU building name if available, or show SSH coordinates */}
+                      {record.location?.ssh
+                        ? `SSH: ${record.location.latitude?.toFixed(4) || 'N/A'}, ${record.location.longitude?.toFixed(4) || 'N/A'}`
+                        : (record.location?.name ||
+                          (record.location?.city && record.location?.country
+                            ? `${record.location.city}, ${record.location.country}`
+                            : record.location?.city || record.location?.country || 'Unknown'))}
                     </Typography>
                     <Chip
                       label={status}
@@ -253,9 +284,14 @@ export default function AnalyticsPage() {
   const [availableModels, setAvailableModels] = React.useState<Array<{ model_name: string; training_date?: string; n_features?: number; accuracy?: number }>>([]);
   const [selectedModel, setSelectedModel] = React.useState<string>('');
   const [modelsLoading, setModelsLoading] = React.useState(false);
+  const [availableDatasets, setAvailableDatasets] = React.useState<string[]>([]);
+  const [selectedDataset, setSelectedDataset] = React.useState<string>('');
+  const [datasetsLoading, setDatasetsLoading] = React.useState(false);
   const [mapView, setMapView] = React.useState<'2d' | '3d'>('3d');
   const [filterActive, setFilterActive] = React.useState<boolean | 'all'>('all');
   const [filterPrediction, setFilterPrediction] = React.useState<'all' | 'safe' | 'anomaly' | 'pending'>('all');
+  const [clearDialogOpen, setClearDialogOpen] = React.useState(false);
+  const [clearing, setClearing] = React.useState(false);
 
   const fetchHistory = React.useCallback(async (limit: number = 25, offset: number = 0) => {
     setLoading(true);
@@ -332,6 +368,64 @@ export default function AnalyticsPage() {
       setLoading(false);
     }
   }, []);
+
+  const clearHistory = React.useCallback(async () => {
+    setClearing(true);
+    try {
+      const res = await fetch(`${USER_SERVICE_BASE}/history`, {
+        method: 'DELETE',
+      });
+      
+      if (!res.ok) {
+        let errorMessage = `HTTP ${res.status}: ${res.statusText}`;
+        try {
+          const errorJson = await res.json() as { detail?: string };
+          if (errorJson.detail) {
+            errorMessage = errorJson.detail;
+          }
+        } catch (parseErr) {
+          // If we can't parse the error, use the status text
+          errorMessage = `HTTP ${res.status}: ${res.statusText}`;
+        }
+        setSnackbar({ open: true, message: `Failed to clear history: ${errorMessage}`, severity: 'error' });
+        return;
+      }
+      
+      const json = await res.json() as { 
+        status?: string; 
+        message?: string;
+        records_deleted?: number;
+      };
+      
+      if (res.ok && json.status === 'success') {
+        const deletedCount = json.records_deleted || 0;
+        setHistory([]);
+        setTotalRecords(0);
+        setSnackbar({ 
+          open: true, 
+          message: `Successfully cleared ${deletedCount} log${deletedCount !== 1 ? 's' : ''}`, 
+          severity: 'success' 
+        });
+        // Refresh to show empty state
+        const offset = paginationModel.page * paginationModel.pageSize;
+        fetchHistory(paginationModel.pageSize, offset);
+      } else {
+        setSnackbar({ open: true, message: 'Failed to clear history', severity: 'error' });
+      }
+    } catch (err) {
+      console.error('Failed to clear history:', err);
+      let errorMessage = 'Failed to clear history. ';
+      if (err instanceof TypeError && err.message.includes('fetch')) {
+        errorMessage += 'Network error - is the User Service running?';
+      } else if (err instanceof Error) {
+        errorMessage += err.message;
+      }
+      setSnackbar({ open: true, message: errorMessage, severity: 'error' });
+    } finally {
+      setClearing(false);
+      setClearDialogOpen(false);
+    }
+  }, [fetchHistory, paginationModel]);
 
   // Connect to WebSocket - single persistent connection
   const connectWebSocket = React.useCallback(() => {
@@ -434,6 +528,110 @@ export default function AnalyticsPage() {
     }
   }, []);
 
+  // Set the selected dataset in the user service
+  const setDatasetInBackend = React.useCallback(async (datasetName: string) => {
+    try {
+      const res = await fetch(`${USER_SERVICE_BASE}/set-dataset`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ dataset_name: datasetName }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        console.log(`Dataset set to ${datasetName}:`, json);
+      } else {
+        console.warn(`Failed to set dataset to ${datasetName}:`, res.statusText);
+      }
+    } catch (err) {
+      console.error(`Error setting dataset to ${datasetName}:`, err);
+    }
+  }, []);
+
+  // Fetch available datasets from Data Ingestion Service
+  const fetchDatasets = React.useCallback(async () => {
+    setDatasetsLoading(true);
+    try {
+      const res = await fetch(`${DATA_INGESTION_SERVICE_BASE}/tables`, {
+        method: 'GET',
+      });
+      const json = (await res.json()) as {
+        status?: string;
+        tables?: string[];
+        detail?: string;
+      };
+
+      if (res.ok && json.status === 'success' && json.tables) {
+        // Extract dataset names from table names (format: csv_data_{dataset_name})
+        const datasetNames = json.tables
+          .filter((table) => table.startsWith('csv_data_'))
+          .map((table) => table.replace(/^csv_data_/, ''));
+
+        setAvailableDatasets(datasetNames);
+
+        if (datasetNames.length === 0) {
+          setSelectedDataset('');
+          setDatasetsLoading(false);
+          return;
+        }
+
+        // Use functional update to check current state
+        setSelectedDataset((prev) => {
+          // If current selection still exists, keep it
+          if (prev && datasetNames.includes(prev)) {
+            return prev;
+          }
+          
+          // Otherwise, try to get from backend or use first available
+          // We'll do this in a separate async call to avoid issues
+          return prev || datasetNames[0];
+        });
+
+        // Try to get current dataset from backend
+        try {
+          const getRes = await fetch(`${USER_SERVICE_BASE}/get-dataset`, {
+            method: 'GET',
+          });
+          const getJson = (await getRes.json()) as {
+            status?: string;
+            dataset_name?: string;
+            detail?: string;
+          };
+
+          if (getRes.ok && getJson.status === 'success' && getJson.dataset_name) {
+            // Use backend's current dataset if it exists in available datasets
+            if (datasetNames.includes(getJson.dataset_name)) {
+              setSelectedDataset(getJson.dataset_name);
+            } else {
+              // Backend dataset not in available list, use first available
+              setSelectedDataset(datasetNames[0]);
+            }
+          } else {
+            // No dataset from backend, use first available if none selected
+            setSelectedDataset((prev) => prev || datasetNames[0]);
+          }
+        } catch (e) {
+          console.warn('Failed to get current dataset from backend:', e);
+          // Fallback to first available dataset if none selected
+          setSelectedDataset((prev) => prev || datasetNames[0]);
+        }
+      } else {
+        setAvailableDatasets([]);
+        setSelectedDataset('');
+        if (json.detail) {
+          console.warn('Failed to fetch datasets:', json.detail);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch datasets:', err);
+      setAvailableDatasets([]);
+      setSelectedDataset('');
+    } finally {
+      setDatasetsLoading(false);
+    }
+  }, []); // Empty deps - only fetch once on mount
+
   // Use a ref to track if we've initialized the model to prevent loops
   const modelInitializedRef = React.useRef(false);
   const selectedModelRef = React.useRef<string>('');
@@ -525,6 +723,13 @@ export default function AnalyticsPage() {
     }
   }, [selectedModel, setModelInBackend]);
 
+  // Sync selected dataset to backend when it changes
+  React.useEffect(() => {
+    if (selectedDataset) {
+      setDatasetInBackend(selectedDataset);
+    }
+  }, [selectedDataset, setDatasetInBackend]);
+
   // Update refs when they change
   React.useEffect(() => {
     paginationModelRef.current = paginationModel;
@@ -547,6 +752,7 @@ export default function AnalyticsPage() {
     
     const initialize = async () => {
       await fetchModels();
+      await fetchDatasets();
       if (isMounted) {
         connectWebSocket();
       }
@@ -604,17 +810,39 @@ export default function AnalyticsPage() {
     },
     { 
       field: 'timestamp', 
-      headerName: 'UTC Timestamp', 
+      headerName: 'Timestamp', 
       width: 200,
       sortable: true,
       filterable: true,
-      type: 'dateTime',
-      valueFormatter: (params: { value: string | null | undefined } | null | undefined) => {
-        if (!params || !params.value) return '';
+      renderCell: (params: GridRenderCellParams<HistoryRecord>) => {
+        const value = params.value as string | null | undefined;
+        if (!value) return <Typography variant="body2" color="text.secondary">N/A</Typography>;
         try {
-          return new Date(params.value).toLocaleString('en-US', { timeZone: 'UTC' });
+          const date = typeof value === 'string' ? new Date(value) : value;
+          return <Typography variant="body2">{date.toLocaleString('en-US')}</Typography>;
         } catch {
-          return params.value;
+          return <Typography variant="body2">{String(value)}</Typography>;
+        }
+      }
+    },
+    {
+      field: 'utc_timestamp',
+      headerName: 'UTC Timestamp',
+      width: 200,
+      sortable: true,
+      filterable: true,
+      valueGetter: (value: any, row: HistoryRecord) => {
+        return row.utc_timestamp || row.timestamp || null;
+      },
+      renderCell: (params: GridRenderCellParams<HistoryRecord>) => {
+        // valueGetter returns the value, so params.value contains the result
+        const value = params.value as string | null | undefined;
+        if (!value) return <Typography variant="body2" color="text.secondary">N/A</Typography>;
+        try {
+          const date = typeof value === 'string' ? new Date(value) : value;
+          return <Typography variant="body2">{date.toLocaleString('en-US', { timeZone: 'UTC' })}</Typography>;
+        } catch {
+          return <Typography variant="body2">{String(value)}</Typography>;
         }
       }
     },
@@ -649,14 +877,41 @@ export default function AnalyticsPage() {
       valueGetter: (value: any, row: HistoryRecord) => {
         const loc = row.location;
         if (!loc) return 'N/A';
+        // Check if SSH location
+        if (loc.ssh) {
+          return `SSH: ${loc.latitude?.toFixed(4)}, ${loc.longitude?.toFixed(4)}`;
+        }
+        // Prefer name if available (TMU campus locations)
+        if (loc.name) {
+          return loc.name;
+        }
         if (loc.city && loc.country) {
           return `${loc.city}, ${loc.country}`;
         }
         return loc.city || loc.country || 'N/A';
       },
-      valueFormatter: (params: { value: string | null | undefined } | null | undefined) => {
-        if (!params || !params.value) return 'N/A';
-        return params.value;
+      renderCell: (params: GridRenderCellParams<HistoryRecord>) => {
+        const loc = params.row.location;
+        if (!loc) return <Typography variant="body2" color="text.secondary">N/A</Typography>;
+        // Check if SSH location
+        if (loc.ssh) {
+          return (
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <Chip label="SSH" size="small" color="warning" sx={{ height: 20, fontSize: '0.7rem' }} />
+              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                {loc.latitude?.toFixed(4)}, {loc.longitude?.toFixed(4)}
+              </Typography>
+            </Stack>
+          );
+        }
+        // Prefer name if available (TMU campus locations)
+        if (loc.name) {
+          return <Typography variant="body2">{loc.name}</Typography>;
+        }
+        const displayText = loc.city && loc.country 
+          ? `${loc.city}, ${loc.country}` 
+          : (loc.city || loc.country || 'N/A');
+        return <Typography variant="body2">{displayText}</Typography>;
       },
     },
     {
@@ -779,25 +1034,6 @@ export default function AnalyticsPage() {
       }
     },
     {
-      field: 'session_active_time',
-      headerName: 'Session Start',
-      width: 200,
-      sortable: true,
-      filterable: true,
-      type: 'dateTime',
-      valueGetter: (value: any, row: HistoryRecord) => {
-        return row.session_start_time || row.session_active_time || null;
-      },
-      valueFormatter: (params: { value: string | null | undefined } | null | undefined) => {
-        if (!params || !params.value) return 'N/A';
-        try {
-          return new Date(params.value).toLocaleString('en-US', { timeZone: 'UTC' });
-        } catch {
-          return params.value;
-        }
-      }
-    },
-    {
       field: 'is_active',
       headerName: 'Session Status',
       width: 140,
@@ -853,6 +1089,27 @@ export default function AnalyticsPage() {
           </Typography>
         </Stack>
         <Stack direction="row" spacing={2} alignItems="center">
+          <FormControl size="small" sx={{ minWidth: 150 }}>
+            <InputLabel id="dataset-select-label">Dataset</InputLabel>
+            <Select
+              labelId="dataset-select-label"
+              id="dataset-select"
+              value={selectedDataset}
+              label="Dataset"
+              onChange={(e) => {
+                const newDataset = e.target.value;
+                setSelectedDataset(newDataset);
+                setDatasetInBackend(newDataset);
+              }}
+              disabled={datasetsLoading || availableDatasets.length === 0}
+            >
+              {availableDatasets.map((dataset) => (
+                <MenuItem key={dataset} value={dataset}>
+                  {dataset}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
           <FormControl size="small" sx={{ minWidth: 200 }}>
             <InputLabel id="model-select-label">Model</InputLabel>
             <Select
@@ -892,8 +1149,42 @@ export default function AnalyticsPage() {
           >
             Refresh
           </Button>
+          <Button
+            variant="outlined"
+            color="error"
+            startIcon={clearing ? <CircularProgress size={16} color="inherit" /> : <DeleteOutlineIcon />}
+            onClick={() => setClearDialogOpen(true)}
+            disabled={loading || clearing || totalRecords === 0}
+          >
+            Clear Logs
+          </Button>
         </Stack>
       </Stack>
+
+      {/* Clear Confirmation Dialog */}
+      <Dialog open={clearDialogOpen} onClose={() => !clearing && setClearDialogOpen(false)}>
+        <DialogTitle>Clear All Logs?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to clear all {totalRecords} log{totalRecords !== 1 ? 's' : ''}? 
+            This action cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setClearDialogOpen(false)} disabled={clearing}>
+            Cancel
+          </Button>
+          <Button 
+            onClick={clearHistory} 
+            color="error" 
+            variant="contained"
+            disabled={clearing}
+            startIcon={clearing ? <CircularProgress size={16} color="inherit" /> : <DeleteOutlineIcon />}
+          >
+            {clearing ? 'Clearing...' : 'Clear All'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Card variant="outlined">
         <CardContent>
@@ -1131,7 +1422,7 @@ export default function AnalyticsPage() {
         <CardContent>
           <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-              3D Session Locations Globe
+              {mapView === '3d' ? '3D SSH Locations Globe' : '2D Campus Locations Map'}
             </Typography>
             <Stack direction="row" spacing={1}>
               <Button
@@ -1230,7 +1521,21 @@ export default function AnalyticsPage() {
                 });
               }
               
-              const locationsWithCoords = filteredHistory.map((record) => ({
+              // Separate SSH and non-SSH locations based on map view
+              let locationsForView = filteredHistory;
+              if (mapView === '3d') {
+                // 3D map: only show SSH locations
+                locationsForView = filteredHistory.filter(
+                  (record) => record.location && record.location.ssh === true
+                );
+              } else {
+                // 2D map: only show non-SSH locations
+                locationsForView = filteredHistory.filter(
+                  (record) => record.location && record.location.ssh !== true
+                );
+              }
+              
+              const locationsWithCoords = locationsForView.map((record) => ({
                 record,
                 lat: record.location!.latitude!,
                 lon: record.location!.longitude!,
@@ -1241,8 +1546,10 @@ export default function AnalyticsPage() {
                   <Stack alignItems="center" justifyContent="center" sx={{ height: '100%' }}>
                     <Typography variant="body2" color="text.secondary">
                       {history.length === 0
-                        ? 'No location data available. Sessions will appear on the globe once they include coordinates.'
-                        : 'No sessions match the current filters. Try adjusting your filter criteria.'}
+                        ? 'No location data available. Sessions will appear on the map once they include coordinates.'
+                        : mapView === '3d'
+                        ? 'No SSH sessions found. SSH sessions will appear on the 3D globe.'
+                        : 'No campus sessions found. Campus sessions will appear on the 2D map.'}
                     </Typography>
                   </Stack>
                 );
@@ -1265,14 +1572,25 @@ export default function AnalyticsPage() {
                   </ErrorBoundary>
                 );
               } else {
-                // 2D map fallback (simplified)
+                // 2D map using Leaflet, focused on TMU campus area
+                const TMU_CENTER: [number, number] = [43.6577, -79.3788];
+                
                 return (
-                  <Box sx={{ height: '100%', width: '100%' }}>
-                    <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
-                      2D map view - Switch to 3D Globe for interactive visualization
-                    </Typography>
-                    <Stack spacing={1} sx={{ p: 2 }}>
-                      {locationsWithCoords.slice(0, 20).map(({ record, lat, lon }) => {
+                  <Box sx={{ height: '100%', width: '100%', position: 'relative', zIndex: 0 }}>
+                    <MapContainer
+                      key={`map-${locationsWithCoords.length}`}
+                      center={TMU_CENTER}
+                      zoom={locationsWithCoords.length > 0 ? 15 : 16}
+                      style={{ height: '100%', width: '100%', borderRadius: 8, zIndex: 0 }}
+                      scrollWheelZoom={true}
+                      zoomControl={true}
+                    >
+                      <TileLayer
+                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                      />
+                      <FitBounds locations={locationsWithCoords.map(l => ({ lat: l.lat, lon: l.lon }))} />
+                      {locationsWithCoords.map(({ record, lat, lon }) => {
                         const predResults = record.prediction_results;
                         const prediction =
                           predResults?.predictions && predResults.predictions.length > 0
@@ -1284,32 +1602,67 @@ export default function AnalyticsPage() {
                             ? 'Anomaly'
                             : 'Safe'
                           : 'Pending';
-                        
+
+                        const color =
+                          status === 'Anomaly'
+                            ? '#d32f2f'
+                            : status === 'Safe'
+                            ? '#2e7d32'
+                            : '#757575';
+
+                        const loc = record.location;
+                        const label = loc?.ssh
+                          ? `SSH Connection (${lat.toFixed(4)}, ${lon.toFixed(4)})`
+                          : (loc?.name ||
+                            (loc?.city && loc?.country
+                              ? `${loc.city}, ${loc.country}`
+                              : loc?.city || loc?.country || 'Unknown location'));
+
                         return (
-                          <Box key={record.id} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Chip
-                              label={status}
-                              color={isAnomaly ? 'error' : status === 'Safe' ? 'success' : 'default'}
-                              size="small"
-                            />
-                            <Chip
-                              label={record.is_active ? 'Active' : 'Inactive'}
-                              color={record.is_active ? 'success' : 'default'}
-                              size="small"
-                              variant="outlined"
-                            />
-                            <Typography variant="body2">
-                              {record.location?.city}, {record.location?.country} ({lat.toFixed(2)}, {lon.toFixed(2)})
-                            </Typography>
-                          </Box>
+                          <CircleMarker
+                            key={record.id}
+                            center={[lat, lon]}
+                            radius={8}
+                            pathOptions={{ 
+                              color, 
+                              fillColor: color, 
+                              fillOpacity: 0.7,
+                              weight: 2,
+                              opacity: 0.9
+                            }}
+                          >
+                            <Popup>
+                              <Stack spacing={0.5} sx={{ minWidth: 200 }}>
+                                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                                  Session #{record.id}
+                                </Typography>
+                                <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
+                                  {label}
+                                </Typography>
+                                <Typography variant="caption" sx={{ color: 'text.secondary', fontFamily: 'monospace' }}>
+                                  Lat: {lat.toFixed(5)}, Lon: {lon.toFixed(5)}
+                                </Typography>
+                                <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
+                                  <Chip
+                                    label={status}
+                                    color={isAnomaly ? 'error' : status === 'Safe' ? 'success' : 'default'}
+                                    size="small"
+                                    sx={{ height: 24, fontSize: '0.75rem' }}
+                                  />
+                                  <Chip
+                                    label={record.is_active ? 'Active' : 'Inactive'}
+                                    color={record.is_active ? 'success' : 'default'}
+                                    size="small"
+                                    variant="outlined"
+                                    sx={{ height: 24, fontSize: '0.75rem' }}
+                                  />
+                                </Stack>
+                              </Stack>
+                            </Popup>
+                          </CircleMarker>
                         );
                       })}
-                      {locationsWithCoords.length > 20 && (
-                        <Typography variant="caption" color="text.secondary">
-                          ... and {locationsWithCoords.length - 20} more locations
-                        </Typography>
-                      )}
-                    </Stack>
+                    </MapContainer>
                   </Box>
                 );
               }
