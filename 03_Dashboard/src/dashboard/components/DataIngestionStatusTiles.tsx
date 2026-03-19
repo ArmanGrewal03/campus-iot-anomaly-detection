@@ -49,7 +49,7 @@ export default function DataIngestionStatusTiles() {
         }
 
         const statsRes = await fetch(`${GATEWAY_BASE}/stats`, {
-          headers: { dataset_name: first },
+          headers: { 'dataset-name': first },
         });
         const statsJson = (await statsRes.json()) as {
           total_records?: number;

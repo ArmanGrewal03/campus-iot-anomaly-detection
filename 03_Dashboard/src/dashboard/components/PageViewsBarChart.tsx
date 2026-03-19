@@ -45,7 +45,7 @@ export default function PageViewsBarChart() {
         }
 
         const typeRes = await fetch(`${GATEWAY_BASE}/type-stats`, {
-          headers: { dataset_name: firstDataset },
+          headers: { 'dataset-name': firstDataset },
         });
         const typeJson = (await typeRes.json()) as {
           type_distribution?: Record<string, number>;

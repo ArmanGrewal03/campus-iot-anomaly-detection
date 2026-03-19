@@ -192,7 +192,7 @@ export default function MainGrid() {
         if (dsNames.length === 0) return;
         const ds = dsNames[0];
         const viewRes = await fetch(`${GATEWAY_BASE}/view?limit=3000&offset=0`, {
-          headers: { dataset_name: ds },
+          headers: { 'dataset-name': ds },
         });
         const viewJson = (await viewRes.json()) as {
           data?: { id: number; data: Record<string, unknown> }[];
