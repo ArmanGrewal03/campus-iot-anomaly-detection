@@ -1395,54 +1395,54 @@ export default function ModelPage() {
                   Label Distribution (Optional)
                 </Typography>
                 <Grid container spacing={1} sx={{ mb: 1.5 }}>
-                  <Grid item xs={6} sm={3}>
-                    <TextField
-                      size="small"
-                      label="Label 0 (%)"
-                      type="number"
-                      value={label0Percent}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
-                          setLabel0Percent(val);
-                          // Auto-calculate label 1 if both are being set
-                          if (val && label1Percent) {
-                            const remaining = 100 - parseFloat(val);
-                            if (remaining >= 0 && remaining <= 100) {
-                              setLabel1Percent(remaining.toFixed(1));
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <TextField
+                        size="small"
+                        label="Label 0 (%)"
+                        type="number"
+                        value={label0Percent}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                            setLabel0Percent(val);
+                            // Auto-calculate label 1 if both are being set
+                            if (val && label1Percent) {
+                              const remaining = 100 - parseFloat(val);
+                              if (remaining >= 0 && remaining <= 100) {
+                                setLabel1Percent(remaining.toFixed(1));
+                              }
                             }
                           }
-                        }
-                      }}
-                      inputProps={{ min: 0, max: 100, step: 0.1 }}
-                      helperText="% labeled as 0"
-                      fullWidth
-                    />
-                  </Grid>
-                  <Grid item xs={6} sm={3}>
-                    <TextField
-                      size="small"
-                      label="Label 1 (%)"
-                      type="number"
-                      value={label1Percent}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
-                          setLabel1Percent(val);
-                          // Auto-calculate label 0 if both are being set
-                          if (val && label0Percent) {
-                            const remaining = 100 - parseFloat(val);
-                            if (remaining >= 0 && remaining <= 100) {
-                              setLabel0Percent(remaining.toFixed(1));
+                        }}
+                        inputProps={{ min: 0, max: 100, step: 0.1 }}
+                        helperText="% labeled as 0"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <TextField
+                        size="small"
+                        label="Label 1 (%)"
+                        type="number"
+                        value={label1Percent}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                            setLabel1Percent(val);
+                            // Auto-calculate label 0 if both are being set
+                            if (val && label0Percent) {
+                              const remaining = 100 - parseFloat(val);
+                              if (remaining >= 0 && remaining <= 100) {
+                                setLabel0Percent(remaining.toFixed(1));
+                              }
                             }
                           }
-                        }
-                      }}
-                      inputProps={{ min: 0, max: 100, step: 0.1 }}
-                      helperText="% labeled as 1"
-                      fullWidth
-                    />
-                  </Grid>
+                        }}
+                        inputProps={{ min: 0, max: 100, step: 0.1 }}
+                        helperText="% labeled as 1"
+                        fullWidth
+                      />
+                    </Grid>
                 </Grid>
                 
                 {/* Training/Testing Split Controls */}
@@ -1450,54 +1450,54 @@ export default function ModelPage() {
                   Training/Testing Split
                 </Typography>
                 <Grid container spacing={1} sx={{ mb: 1.5 }}>
-                  <Grid item xs={6} sm={3}>
-                    <TextField
-                      size="small"
-                      label="Training (%)"
-                      type="number"
-                      value={trainingPercent}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
-                          setTrainingPercent(val);
-                          // Auto-calculate testing if both are being set
-                          if (val && testingPercent) {
-                            const remaining = 100 - parseFloat(val);
-                            if (remaining >= 0 && remaining <= 100) {
-                              setTestingPercent(remaining.toFixed(1));
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <TextField
+                        size="small"
+                        label="Training (%)"
+                        type="number"
+                        value={trainingPercent}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                            setTrainingPercent(val);
+                            // Auto-calculate testing if both are being set
+                            if (val && testingPercent) {
+                              const remaining = 100 - parseFloat(val);
+                              if (remaining >= 0 && remaining <= 100) {
+                                setTestingPercent(remaining.toFixed(1));
+                              }
                             }
                           }
-                        }
-                      }}
-                      inputProps={{ min: 0, max: 100, step: 0.1 }}
-                      helperText="% for training"
-                      fullWidth
-                    />
-                  </Grid>
-                  <Grid item xs={6} sm={3}>
-                    <TextField
-                      size="small"
-                      label="Testing (%)"
-                      type="number"
-                      value={testingPercent}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
-                          setTestingPercent(val);
-                          // Auto-calculate training if both are being set
-                          if (val && trainingPercent) {
-                            const remaining = 100 - parseFloat(val);
-                            if (remaining >= 0 && remaining <= 100) {
-                              setTrainingPercent(remaining.toFixed(1));
+                        }}
+                        inputProps={{ min: 0, max: 100, step: 0.1 }}
+                        helperText="% for training"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <TextField
+                        size="small"
+                        label="Testing (%)"
+                        type="number"
+                        value={testingPercent}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                            setTestingPercent(val);
+                            // Auto-calculate training if both are being set
+                            if (val && trainingPercent) {
+                              const remaining = 100 - parseFloat(val);
+                              if (remaining >= 0 && remaining <= 100) {
+                                setTrainingPercent(remaining.toFixed(1));
+                              }
                             }
                           }
-                        }
-                      }}
-                      inputProps={{ min: 0, max: 100, step: 0.1 }}
-                      helperText="% for testing"
-                      fullWidth
-                    />
-                  </Grid>
+                        }}
+                        inputProps={{ min: 0, max: 100, step: 0.1 }}
+                        helperText="% for testing"
+                        fullWidth
+                      />
+                    </Grid>
                 </Grid>
                 
                 {validationResult && (
@@ -1866,7 +1866,7 @@ export default function ModelPage() {
                               data: losses,
                               label: 'Loss',
                               color: '#1976d2',
-                              curve: 'monotone',
+                              curve: 'monotoneX',
                               showMark: true,
                             }]}
                             width={undefined}
@@ -2613,7 +2613,7 @@ export default function ModelPage() {
                                 data: losses,
                                 label: 'Loss',
                                 color: '#1976d2',
-                                curve: 'monotone',
+                                curve: 'monotoneX',
                                 showMark: true,
                               }]}
                               width={undefined}

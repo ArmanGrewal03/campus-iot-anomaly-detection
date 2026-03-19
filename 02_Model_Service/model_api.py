@@ -738,7 +738,12 @@ def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
     logger.info("Training autoencoder to reconstruct normal data...")
     model.fit(X_train_scaled, X_train_scaled)
     logger.info("Autoencoder model training completed")
-    return model, scaler
+    
+    # Extract loss curve (history of MSE loss per iteration)
+    loss_curve = getattr(model, 'loss_curve_', [])
+    loss_history = [{"iteration": i, "loss": float(loss)} for i, loss in enumerate(loss_curve)]
+    
+    return model, scaler, loss_history
 
 def train_attack_category_model(X_train: pd.DataFrame, y_train: np.ndarray, 
                                 y_attack_cat: np.ndarray) -> Tuple[RandomForestClassifier, List[str]]:
@@ -1672,11 +1677,14 @@ async def train(
             model = train_if_model(X_train, y_train, 
                                  contamination=train_request.contamination)
         elif model_type == "AEv1":
-            model, scaler = train_ae_model(
+            model, scaler, loss_history = train_ae_model(
                 X_train, y_train,
                 hidden_layers=train_request.hidden_layers or "128,64,32,64,128",
                 random_state=train_request.random_state
             )
+            # Save loss history for dashboard visualization
+            training_params['loss_history'] = loss_history
+            logger.info(f"AEv1 training completed with {len(loss_history)} iterations")
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported model type: {model_type}")
 
@@ -1701,7 +1709,11 @@ async def train(
                 "status": "success",
                 "message": f"Model '{model_name}' trained and saved automatically with DNA.",
                 "feature_set": feature_store_name,
-                "samples": len(X_train)
+                "samples": len(X_train),
+                "model_name": model_name,
+                "model_type": model_type,
+                "metrics": metrics,
+                "training_params": training_params
             },
             status_code=200
         )
@@ -2362,6 +2374,12 @@ async def get_model_metrics(model_name: str = Depends(get_model_name)):
     
     metrics = metadata.get('metrics', {})
     training_params = metadata.get('training_params', {})
+    
+    # Fallback: if loss_history is missing from metadata but available in model object (AEv1)
+    if 'loss_history' not in training_params and hasattr(model, 'loss_curve_'):
+        logger.info(f"Extracting loss_history from model object fallback for {model_name}")
+        loss_curve = model.loss_curve_
+        training_params['loss_history'] = [{"iteration": i, "loss": float(loss)} for i, loss in enumerate(loss_curve)]
     
     return JSONResponse(
         content={

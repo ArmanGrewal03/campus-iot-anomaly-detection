@@ -288,7 +288,7 @@ export default function AnalyticsPage() {
   const [selectedDataset, setSelectedDataset] = React.useState<string>('');
   const [datasetsLoading, setDatasetsLoading] = React.useState(false);
   const [mapView, setMapView] = React.useState<'2d' | '3d'>('3d');
-  const [filterActive, setFilterActive] = React.useState<boolean | 'all'>('all');
+  const [filterActive, setFilterActive] = React.useState<string>('all');
   const [filterPrediction, setFilterPrediction] = React.useState<'all' | 'safe' | 'anomaly' | 'pending'>('all');
   const [clearDialogOpen, setClearDialogOpen] = React.useState(false);
   const [clearing, setClearing] = React.useState(false);
@@ -1432,11 +1432,11 @@ export default function AnalyticsPage() {
                 id="filter-active"
                 value={filterActive}
                 label="Session Status"
-                onChange={(e) => setFilterActive(e.target.value as boolean | 'all')}
+                onChange={(e) => setFilterActive(e.target.value as string)}
               >
                 <MenuItem value="all">All Sessions</MenuItem>
-                <MenuItem value={true}>Active Only</MenuItem>
-                <MenuItem value={false}>Inactive Only</MenuItem>
+                <MenuItem value="true">Active Only</MenuItem>
+                <MenuItem value="false">Inactive Only</MenuItem>
               </Select>
             </FormControl>
             
@@ -1482,7 +1482,8 @@ export default function AnalyticsPage() {
               
               // Apply active/inactive filter
               if (filterActive !== 'all') {
-                filteredHistory = filteredHistory.filter((record) => record.is_active === filterActive);
+                const isActive = filterActive === 'true';
+                filteredHistory = filteredHistory.filter((record) => record.is_active === isActive);
               }
               
               // Apply prediction status filter

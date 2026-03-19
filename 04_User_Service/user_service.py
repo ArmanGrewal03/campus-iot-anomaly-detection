@@ -598,6 +598,51 @@ async def get_history(limit: int = 100, offset: int = 0):
         )
 
 
+@app.delete("/history")
+async def delete_history():
+    """
+    Clear all network logs from the database.
+    This action is irreversible.
+    """
+    try:
+        init_websocket_db()
+        conn = sqlite3.connect(NETWORK_LOGS_DB)
+        cursor = conn.cursor()
+        
+        # Get count before deleting for the response
+        cursor.execute("SELECT COUNT(*) as total FROM websocket_data")
+        total_before = cursor.fetchone()[0]
+        
+        # Delete all records
+        cursor.execute("DELETE FROM websocket_data")
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Cleared history: {total_before} records deleted")
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "message": f"Successfully cleared {total_before} log records",
+                "records_deleted": total_before,
+                "timestamp": datetime.now().isoformat()
+            },
+            status_code=200
+        )
+    except sqlite3.Error as e:
+        logger.error(f"Database error while clearing history: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database error: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error clearing history: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error clearing history: {str(e)}"
+        )
+
+
 _kpi_cache: dict = {"data": None, "ts": 0}
 _KPI_CACHE_TTL = 5  # seconds
 

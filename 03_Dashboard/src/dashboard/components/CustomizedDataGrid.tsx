@@ -26,13 +26,12 @@ const columns: GridColDef<NetworkLogRow>[] = [
     headerName: 'Timestamp (UTC)',
     flex: 1,
     minWidth: 200,
-    valueFormatter: (params) => {
-      const value = params.value as string | null | undefined;
+    valueFormatter: (value) => {
       if (!value) return '';
       try {
-        return new Date(value).toLocaleString('en-US', { timeZone: 'UTC' });
+        return new Date(value as string).toLocaleString('en-US', { timeZone: 'UTC' });
       } catch {
-        return value;
+        return String(value);
       }
     },
   },
