@@ -251,6 +251,11 @@ class TrainRequest(BaseModel):
     model_type: Optional[str] = None  # e.g., "RFv1", "IFv1", "AEv1"
     contamination: Optional[float] = 0.1  # For Isolation Forest
     hidden_layers: Optional[str] = "64,32,32,64"  # For Autoencoder (comma-separated)
+    ae_train_normal_only: Optional[bool] = True
+    ae_threshold_percentile: Optional[float] = 99.0
+    ae_max_iterations: Optional[int] = 300
+    ae_patience: Optional[int] = 20
+    ae_min_improvement: Optional[float] = 1e-5
 
 class PredictRequest(BaseModel):
     data: List[Dict[str, Any]]
@@ -606,13 +611,29 @@ def train_if_model(X_train: pd.DataFrame, y_train: np.ndarray,
     return model
 
 def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
-                   hidden_layers: str = "64,32,32,64", random_state: int = 42) -> tuple:
+                   hidden_layers: str = "64,32,32,64", random_state: int = 42,
+                   train_on_normal_only: bool = True, max_iterations: int = 300,
+                   patience: int = 20, min_improvement: float = 1e-5) -> tuple:
     """Train an Autoencoder model (AEv1). Returns (model, scaler, loss_history)."""
     logger.info(f"Training Autoencoder model with hidden_layers={hidden_layers}")
     
+    # Train AE on normal-only samples by default to improve anomaly separation.
+    if train_on_normal_only:
+        normal_mask = (y_train == 0)
+        normal_count = int(np.sum(normal_mask))
+        if normal_count > 0:
+            X_fit = X_train.loc[normal_mask] if hasattr(X_train, "loc") else X_train[normal_mask]
+            logger.info(f"AE normal-only training enabled: using {normal_count}/{len(X_train)} normal samples")
+        else:
+            X_fit = X_train
+            logger.warning("AE normal-only training requested but no normal samples found; falling back to all samples")
+    else:
+        X_fit = X_train
+        logger.info("AE normal-only training disabled: using all samples")
+
     # Scale data for neural network
     scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
+    X_train_scaled = scaler.fit_transform(X_fit)
     
     # Parse hidden layers
     hidden_layer_sizes = tuple(map(int, hidden_layers.split(',')))
@@ -636,23 +657,35 @@ def train_ae_model(X_train: pd.DataFrame, y_train: np.ndarray,
     
     # Track loss history by training in iterations
     loss_history = []
-    max_iterations = 200
-    iterations_per_log = 10  # Log loss every 10 iterations
+    iterations_per_log = 5
+    best_loss = float('inf')
+    no_improve_steps = 0
     
     logger.info(f"Training autoencoder for {max_iterations} iterations...")
     for iteration in range(max_iterations):
         model.fit(X_train_scaled, X_train_scaled)
         
         # Calculate loss (mean squared error) every few iterations
-        if (iteration + 1) % iterations_per_log == 0 or iteration == 0:
+        if (iteration + 1) % iterations_per_log == 0 or iteration == 0 or iteration == max_iterations - 1:
             X_pred = model.predict(X_train_scaled)
-            mse = np.mean(np.power(X_train_scaled - X_pred, 2))
+            mse = float(np.mean(np.power(X_train_scaled - X_pred, 2)))
             loss_history.append({
                 'iteration': iteration + 1,
-                'loss': float(mse)
+                'loss': mse
             })
             if (iteration + 1) % 50 == 0:
                 logger.info(f"Iteration {iteration + 1}/{max_iterations}, Loss: {mse:.6f}")
+            if (best_loss - mse) > min_improvement:
+                best_loss = mse
+                no_improve_steps = 0
+            else:
+                no_improve_steps += 1
+                if no_improve_steps >= patience:
+                    logger.info(
+                        f"AE early stopping at iteration {iteration + 1}; "
+                        f"best_loss={best_loss:.6f}, current_loss={mse:.6f}"
+                    )
+                    break
     
     logger.info(f"Autoencoder model training completed. Final loss: {loss_history[-1]['loss']:.6f}")
     return model, scaler, loss_history
@@ -788,7 +821,8 @@ def evaluate_if_model(model: IsolationForest, X_test: pd.DataFrame,
     return metrics
 
 def evaluate_ae_model(model: MLPRegressor, scaler: StandardScaler, X_test: pd.DataFrame, 
-                     y_test: np.ndarray, threshold_percentile: float = 95.0) -> Dict[str, Any]:
+                     y_test: np.ndarray, threshold_percentile: float = 99.0,
+                     threshold_override: Optional[float] = None) -> Dict[str, Any]:
     """Evaluate Autoencoder model and return metrics."""
     # Scale test data
     X_test_scaled = scaler.transform(X_test)
@@ -797,9 +831,13 @@ def evaluate_ae_model(model: MLPRegressor, scaler: StandardScaler, X_test: pd.Da
     # Mean Squared Error per sample (reconstruction error)
     mse = np.mean(np.power(X_test_scaled - X_pred, 2), axis=1)
     
-    # Determine threshold based on percentile
-    threshold = np.percentile(mse, threshold_percentile)
-    logger.info(f"Reconstruction Error Threshold ({threshold_percentile}th percentile): {threshold:.4f}")
+    # Determine threshold from train-derived override when available.
+    if threshold_override is not None and float(threshold_override) > 0:
+        threshold = float(threshold_override)
+        logger.info(f"Reconstruction Error Threshold (train-derived): {threshold:.4f}")
+    else:
+        threshold = np.percentile(mse, threshold_percentile)
+        logger.info(f"Reconstruction Error Threshold ({threshold_percentile}th percentile): {threshold:.4f}")
     
     # Predict anomalies based on reconstruction error
     y_pred = (mse > threshold).astype(int)
@@ -863,7 +901,8 @@ def evaluate_ae_model(model: MLPRegressor, scaler: StandardScaler, X_test: pd.Da
     return metrics
 
 def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: np.ndarray, 
-                  model_type: Optional[str] = None, scaler: Optional[Any] = None) -> Dict[str, Any]:
+                  model_type: Optional[str] = None, scaler: Optional[Any] = None,
+                  ae_threshold_override: Optional[float] = None) -> Dict[str, Any]:
     """Evaluate model based on its type. Routes to appropriate evaluation function."""
     # Determine model type from model class or parameter
     if model_type:
@@ -897,14 +936,14 @@ def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: np.ndarray,
     elif model_type_str == "AEv1":
         if scaler is None:
             raise ValueError("Scaler is required for Autoencoder model evaluation")
-        return evaluate_ae_model(model, scaler, X_test, y_test)
+        return evaluate_ae_model(model, scaler, X_test, y_test, threshold_override=ae_threshold_override)
     else:
         # Fallback: try to infer model type from instance
         if isinstance(model, MLPRegressor):
             if scaler is None:
                 raise ValueError("Scaler is required for Autoencoder model evaluation")
             logger.warning(f"Unknown model type {model_type_str}, but detected MLPRegressor - using Autoencoder evaluation")
-            return evaluate_ae_model(model, scaler, X_test, y_test)
+            return evaluate_ae_model(model, scaler, X_test, y_test, threshold_override=ae_threshold_override)
         elif isinstance(model, IsolationForest):
             logger.warning(f"Unknown model type {model_type_str}, but detected IsolationForest - using Isolation Forest evaluation")
             return evaluate_if_model(model, X_test, y_test)
@@ -1476,18 +1515,37 @@ async def train(
                 'contamination': contamination,
                 'random_state': train_request.random_state
             }
+            # Store IF score distribution for stable probability calibration at inference.
+            # score = -decision_function, where larger means more anomalous.
+            if_train_scores = -model.decision_function(X_train)
+            training_params['if_score_mean'] = float(np.mean(if_train_scores))
+            training_params['if_score_std'] = float(np.std(if_train_scores))
+            training_params['if_score_p95'] = float(np.percentile(if_train_scores, 95))
+            training_params['if_score_p99'] = float(np.percentile(if_train_scores, 99))
+            # In score space, decision boundary is 0 (since decision_function < 0 => outlier).
+            training_params['if_decision_threshold'] = 0.0
         elif model_type == "AEv1":
             # Autoencoder
             hidden_layers = train_request.hidden_layers if train_request.hidden_layers else "64,32,32,64"
             model, scaler, loss_history = train_ae_model(
                 X_train, y_train,
                 hidden_layers=hidden_layers,
-                random_state=train_request.random_state
+                random_state=train_request.random_state,
+                train_on_normal_only=bool(train_request.ae_train_normal_only),
+                max_iterations=int(train_request.ae_max_iterations or 300),
+                patience=int(train_request.ae_patience or 20),
+                min_improvement=float(train_request.ae_min_improvement or 1e-5)
             )
+            threshold_percentile = float(train_request.ae_threshold_percentile or 99.0)
             training_params = {
                 'model_type': 'AEv1',  # Use AEv1 for consistency
                 'hidden_layers': hidden_layers,
-                'random_state': train_request.random_state
+                'random_state': train_request.random_state,
+                'ae_train_normal_only': bool(train_request.ae_train_normal_only),
+                'ae_threshold_percentile': threshold_percentile,
+                'ae_max_iterations': int(train_request.ae_max_iterations or 300),
+                'ae_patience': int(train_request.ae_patience or 20),
+                'ae_min_improvement': float(train_request.ae_min_improvement or 1e-5)
             }
             # Compute reconstruction error stats on training data for stable risk calibration.
             X_train_scaled = scaler.transform(X_train)
@@ -1497,6 +1555,7 @@ async def train(
             training_params['ae_error_std'] = float(np.std(train_mse))
             training_params['ae_error_p95'] = float(np.percentile(train_mse, 95))
             training_params['ae_error_p99'] = float(np.percentile(train_mse, 99))
+            training_params['ae_decision_threshold'] = float(np.percentile(train_mse, threshold_percentile))
             # Store loss_history for response and persistence
             training_params['loss_history'] = loss_history
             logger.info(f"Stored loss_history with {len(loss_history)} data points in training_params")
@@ -1521,6 +1580,8 @@ async def train(
         'confusion_matrix': [[0, 0], [0, 0]],
         'feature_importance': []
     }
+    if model_type == "AEv1" and training_params.get('ae_decision_threshold') is not None:
+        metrics['threshold'] = float(training_params['ae_decision_threshold'])
     
     # Save model (attack_cat_model is in scope from training block)
     training_duration_seconds = round(perf_counter() - train_start_time, 3)
@@ -1712,7 +1773,18 @@ async def test(
                     )
         
         logger.info(f"Evaluating model with type: {model_type}")
-        metrics = evaluate_model(model, X_test, y_test, model_type=model_type, scaler=scaler)
+        ae_threshold_override = None
+        if model_type == 'AEv1':
+            training_params = metadata.get('training_params', {}) if isinstance(metadata, dict) else {}
+            ae_threshold_override = training_params.get('ae_decision_threshold') or metadata.get('metrics', {}).get('threshold')
+        metrics = evaluate_model(
+            model,
+            X_test,
+            y_test,
+            model_type=model_type,
+            scaler=scaler,
+            ae_threshold_override=ae_threshold_override
+        )
     except Exception as e:
         logger.error(f"Error evaluating model: {e}")
         raise HTTPException(status_code=500, detail=f"Error evaluating model: {str(e)}")
@@ -1867,42 +1939,51 @@ async def predict(
         
         if model_type == 'RFv1':
             # Random Forest: supervised model with predict_proba
-            predictions = model.predict(X)
+            predictions_raw = model.predict(X)
             proba = model.predict_proba(X)
-            label_mapping = metadata.get('label_mapping', {'0': 'safe', '1': 'unsafe'})
             
-            # Handle case where model might only have one class
-            if proba.shape[1] == 1:
-                # Only one class - check which class the model has
-                model_classes = model.classes_
-                prob_single = proba[:, 0]
-                
-                if len(model_classes) == 1:
-                    # Model only has one class - determine if it's class 0 (safe) or class 1 (unsafe)
-                    if model_classes[0] == 0:
-                        # Model only predicts safe (0)
-                        probabilities = np.column_stack([prob_single, 1.0 - prob_single])
-                        logger.warning(f"Model has only class 0 (safe). Creating probabilities: safe={prob_single}, unsafe={1.0 - prob_single}")
-                    elif model_classes[0] == 1:
-                        # Model only predicts unsafe (1)
-                        probabilities = np.column_stack([1.0 - prob_single, prob_single])
-                        logger.warning(f"Model has only class 1 (unsafe). Creating probabilities: safe={1.0 - prob_single}, unsafe={prob_single}")
-                    else:
-                        # Unknown class - assume it's unsafe
-                        probabilities = np.column_stack([1.0 - prob_single, prob_single])
-                        logger.warning(f"Model has unknown single class {model_classes[0]}. Assuming unsafe probabilities.")
+            # Enforce explicit binary semantics: 0=safe, 1=unsafe
+            def _to_binary_label(value: Any) -> int:
+                s = str(value).strip().lower()
+                if s in {"1", "unsafe", "anomaly", "malicious", "attack", "true"}:
+                    return 1
+                if s in {"0", "safe", "normal", "benign", "false"}:
+                    return 0
+                try:
+                    return 1 if int(float(s)) == 1 else 0
+                except Exception:
+                    return 0
+
+            predictions = np.array([_to_binary_label(v) for v in predictions_raw], dtype=int)
+
+            model_classes = list(getattr(model, "classes_", []))
+            safe_idx = None
+            unsafe_idx = None
+            for idx, cls in enumerate(model_classes):
+                cls_bin = _to_binary_label(cls)
+                if cls_bin == 0 and safe_idx is None:
+                    safe_idx = idx
+                elif cls_bin == 1 and unsafe_idx is None:
+                    unsafe_idx = idx
+
+            if safe_idx is not None and unsafe_idx is not None and proba.shape[1] > max(safe_idx, unsafe_idx):
+                prob_safe_arr = proba[:, safe_idx]
+                prob_unsafe_arr = proba[:, unsafe_idx]
+            elif proba.shape[1] == 1:
+                # Single-class model fallback.
+                only_class_bin = _to_binary_label(model_classes[0]) if len(model_classes) == 1 else 0
+                if only_class_bin == 1:
+                    prob_unsafe_arr = proba[:, 0]
+                    prob_safe_arr = 1.0 - prob_unsafe_arr
                 else:
-                    # Fallback: assume unsafe
-                    probabilities = np.column_stack([1.0 - prob_single, prob_single])
-                    logger.warning(f"Model predict_proba returned 1 column but classes={model_classes}. Assuming unsafe probabilities.")
-            elif proba.shape[1] >= 2:
-                # Binary or multi-class: use as is
-                probabilities = proba
+                    prob_safe_arr = proba[:, 0]
+                    prob_unsafe_arr = 1.0 - prob_safe_arr
+                logger.warning(f"Model has single class {model_classes}; using fallback probability mapping.")
             else:
-                # Fallback: create probabilities from predictions
-                pred_float = predictions.astype(float)
-                probabilities = np.column_stack([1.0 - pred_float, pred_float])
-                logger.warning("Could not get probabilities from model, using predictions as probabilities")
+                # Last-resort fallback: use predicted class as hard probability.
+                prob_unsafe_arr = predictions.astype(float)
+                prob_safe_arr = 1.0 - prob_unsafe_arr
+                logger.warning(f"Could not resolve class indices from classes={model_classes}; using hard probability fallback.")
             
             # Predict attack categories for unsafe samples if attack_cat_model is available
             attack_cat_predictions = None
@@ -1945,14 +2026,16 @@ async def predict(
             
             for i in range(len(predictions)):
                 pred_binary = int(predictions[i])
+                prob_unsafe = float(np.clip(prob_unsafe_arr[i], 0.0, 1.0))
+                prob_safe = 1.0 - prob_unsafe
                 # Calculate risk percentage (0-100) based on probability_unsafe
-                risk_percentage = float(probabilities[i][1] * 100)
+                risk_percentage = float(prob_unsafe * 100)
                 result = {
                     'prediction': round(risk_percentage, 2),  # Risk percentage (0-100)
-                    'label': label_mapping.get(str(pred_binary), 'unknown'),
-                    'probability_safe': float(probabilities[i][0]),
-                    'probability_unsafe': float(probabilities[i][1]),
-                    'confidence': float(max(probabilities[i]))
+                    'label': 'unsafe' if pred_binary == 1 else 'safe',
+                    'probability_safe': float(prob_safe),
+                    'probability_unsafe': float(prob_unsafe),
+                    'confidence': float(max(prob_safe, prob_unsafe))
                 }
                 
                 # Add attack category prediction if available and sample is unsafe
@@ -1988,25 +2071,26 @@ async def predict(
         
         elif model_type == 'IFv1':
             # Isolation Forest: unsupervised model
-            predictions_raw = model.predict(X)  # Returns -1 (outlier) or 1 (inlier)
             scores = -model.decision_function(X)  # Negative for outliers, positive for inliers
-            
-            # Convert to 0 (safe/inlier) or 1 (unsafe/outlier)
-            predictions = np.where(predictions_raw == -1, 1, 0)
-            
-            # Normalize scores to probabilities (0-1 range)
-            # Higher score = more anomalous
-            min_score = scores.min()
-            max_score = scores.max()
-            if max_score > min_score:
-                normalized_scores = (scores - min_score) / (max_score - min_score)
+
+            # Calibrate IF scores with training distribution so probabilities are not flat.
+            training_params = metadata.get('training_params', {}) if isinstance(metadata, dict) else {}
+            if_mean = training_params.get('if_score_mean')
+            if_std = training_params.get('if_score_std')
+            if_threshold = float(training_params.get('if_decision_threshold', 0.0))
+
+            if if_mean is not None and if_std is not None and float(if_std) > 1e-12:
+                z_scores = (scores - float(if_mean)) / float(if_std)
+                normalized_scores = 1.0 / (1.0 + np.exp(-0.9 * z_scores))
             else:
-                normalized_scores = np.zeros_like(scores)
+                # Legacy fallback.
+                scale = max(abs(if_threshold), 1e-3)
+                normalized_scores = 1.0 / (1.0 + np.exp(-(scores - if_threshold) / scale))
             
-            for i in range(len(predictions)):
-                pred_binary = int(predictions[i])
+            for i in range(len(scores)):
                 prob_unsafe = float(normalized_scores[i])
                 prob_safe = 1.0 - prob_unsafe
+                pred_binary = 1 if prob_unsafe >= 0.5 else 0
                 # Calculate risk percentage (0-100) based on probability_unsafe
                 risk_percentage = round(prob_unsafe * 100, 2)
                 results.append({
@@ -2056,12 +2140,22 @@ async def predict(
                 if denom <= 0:
                     denom = 1.0
 
-            normalized_errors = np.clip(mse / denom, 0, 1)
+            # Convert reconstruction error into a smooth probability with variance.
+            # Use threshold-centered calibration so 50% aligns with decision boundary.
+            ae_p99 = training_params.get('ae_error_p99')
+            ae_std = training_params.get('ae_error_std')
+            if ae_p99 is not None and float(ae_p99) > float(threshold):
+                scale = float(ae_p99) - float(threshold)
+            elif ae_std is not None and float(ae_std) > 1e-12:
+                scale = float(ae_std)
+            else:
+                scale = max(float(denom) * 0.25, 1e-6)
+            normalized_errors = 1.0 / (1.0 + np.exp(-(mse - float(threshold)) / scale))
             
             for i in range(len(predictions)):
-                pred_binary = int(predictions[i])
-                prob_unsafe = float(normalized_errors[i])
+                prob_unsafe = float(np.clip(normalized_errors[i], 0.0, 1.0))
                 prob_safe = 1.0 - prob_unsafe
+                pred_binary = 1 if prob_unsafe >= 0.5 else 0
                 # Calculate risk percentage (0-100) based on probability_unsafe
                 risk_percentage = round(prob_unsafe * 100, 2)
                 results.append({
