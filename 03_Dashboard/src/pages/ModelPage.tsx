@@ -63,6 +63,31 @@ const API_BASE = `${GATEWAY_BASE}`; // Data Ingestion Service via Gateway
 const MODEL_API_BASE = `${GATEWAY_BASE}`; // Model Service via Gateway
 
 export default function ModelPage() {
+  const playCompletionSound = React.useCallback(() => {
+    try {
+      const AudioContextClass =
+        window.AudioContext ||
+        ((window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
+      if (!AudioContextClass) return;
+      const audioCtx = new AudioContextClass();
+      const now = audioCtx.currentTime;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.setValueAtTime(1175, now + 0.12);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.12, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + 0.3);
+    } catch (err) {
+      console.debug('Audio notification unavailable:', err);
+    }
+  }, []);
+
   const [datasetName, setDatasetName] = React.useState('');
   const [datasetNameError, setDatasetNameError] = React.useState('');
   const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
@@ -176,7 +201,7 @@ export default function ModelPage() {
         setUploading(false);
         return;
       }
-      headers['dataset-name'] = nameToUse;
+      headers['dataset_name'] = nameToUse;
       const res = await fetch(`${API_BASE}/new`, {
         method: 'POST',
         headers,
@@ -206,11 +231,12 @@ export default function ModelPage() {
       }
       setSnackbar({ open: true, message, severity: 'success' });
       setSelectedFile(null);
-      setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
-      await fetchTables();
       if (datasetName.trim()) {
-        setSelectedDataset(datasetName.trim());
+        const id = `ds-${Date.now()}`;
+        setDatasets((d) => [...d, { id, name: datasetName.trim() }]);
+        setSelectedDatasetId(id);
       }
+      setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Network error. Is the backend running at http://localhost:8000?';
       setSnackbar({ open: true, message, severity: 'error' });
@@ -222,7 +248,7 @@ export default function ModelPage() {
   const fetchTables = React.useCallback(async () => {
     setDatasetsLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/tables?t=${Date.now()}`);
+      const res = await fetch(`${API_BASE}/tables`);
       const json = await res.json() as { status?: string; tables?: string[] };
       if (res.ok && json.status === 'success' && json.tables) {
         // Extract dataset names from table names (format: csv_data_{dataset_name})
@@ -257,9 +283,9 @@ export default function ModelPage() {
     setFieldsLoading(true);
     try {
       const headers: Record<string, string> = {
-        'dataset-name': datasetName.trim(),
+        'dataset_name': datasetName.trim(),
       };
-      const res = await fetch(`${API_BASE}/fields?t=${Date.now()}`, { headers });
+      const res = await fetch(`${API_BASE}/fields`, { headers });
       const json = await res.json() as { status?: string; fields?: string[]; detail?: string };
       if (res.ok && json.status === 'success' && json.fields) {
         // Filter out label, id, attack_cat as they shouldn't be included as features
@@ -300,13 +326,13 @@ export default function ModelPage() {
     setStatsLoading(true);
     try {
       const headers: Record<string, string> = {
-        'dataset-name': datasetName.trim(),
+        'dataset_name': datasetName.trim(),
       };
       
       // Fetch both stats and type-stats in parallel
       const [statsRes, typeStatsRes] = await Promise.all([
-        fetch(`${API_BASE}/stats?t=${Date.now()}`, { headers }),
-        fetch(`${API_BASE}/type-stats?t=${Date.now()}`, { headers }),
+        fetch(`${API_BASE}/stats`, { headers }),
+        fetch(`${API_BASE}/type-stats`, { headers }),
       ]);
 
       const statsJson = await statsRes.json() as any;
@@ -343,7 +369,7 @@ export default function ModelPage() {
   const fetchModels = React.useCallback(async () => {
     setModelsLoading(true);
     try {
-      const res = await fetch(`${MODEL_API_BASE}/models?t=${Date.now()}`);
+      const res = await fetch(`${MODEL_API_BASE}/models`);
       const json = await res.json() as { status?: string; models?: any[]; total_models?: number; detail?: string };
       
       console.log('Models API response:', json);
@@ -384,7 +410,7 @@ export default function ModelPage() {
   const fetchModelTypes = React.useCallback(async () => {
     setModelTypesLoading(true);
     try {
-      const res = await fetch(`${MODEL_API_BASE}/model-types?t=${Date.now()}`);
+      const res = await fetch(`${MODEL_API_BASE}/model-types`);
       const json = await res.json() as { 
         status?: string; 
         model_types?: Array<{ model_type: string; path: string; files: Array<{ name: string; size: number; modified: string }> }>; 
@@ -433,12 +459,12 @@ export default function ModelPage() {
     
     try {
       const headers: Record<string, string> = {
-        'model-name': modelName,
+        'model_name': modelName,
       };
 
       const [statusRes, metricsRes] = await Promise.all([
-        fetch(`${MODEL_API_BASE}/model/status?t=${Date.now()}`, { headers }),
-        fetch(`${MODEL_API_BASE}/model/metrics?t=${Date.now()}`, { headers }).catch(() => null),
+        fetch(`${MODEL_API_BASE}/model/status`, { headers }),
+        fetch(`${MODEL_API_BASE}/model/metrics`, { headers }).catch(() => null), // Metrics might not exist
       ]);
 
       const statusJson = await statusRes.json();
@@ -554,16 +580,17 @@ export default function ModelPage() {
 
     setTesting(true);
     setTestResults(null);
+    const testStartMs = performance.now();
 
     try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'model-name': selectedTestModel.trim(),
+        'model_name': selectedTestModel.trim(),
       };
 
       // dataset_name is optional for /test endpoint
       if (testDataset) {
-        headers['dataset-name'] = testDataset;
+        headers['dataset_name'] = testDataset;
       }
 
       const res = await fetch(`${MODEL_API_BASE}/test`, {
@@ -579,9 +606,14 @@ export default function ModelPage() {
       }
 
       setTestResults(data);
+      playCompletionSound();
+      const testDurationSeconds =
+        typeof data.testing_duration_seconds === 'number'
+          ? data.testing_duration_seconds
+          : Number(((performance.now() - testStartMs) / 1000).toFixed(3));
       setSnackbar({ 
         open: true, 
-        message: `Model "${selectedTestModel.trim()}" tested successfully on dataset "${testDataset}"`, 
+        message: `Model "${selectedTestModel.trim()}" tested successfully on dataset "${testDataset}" in ${testDurationSeconds.toFixed(2)}s`, 
         severity: 'success' 
       });
     } catch (err) {
@@ -601,15 +633,17 @@ export default function ModelPage() {
       setViewLoading(true);
       // Don't reset total_rows - keep it to maintain pagination state
       try {
-        const params = new URLSearchParams({ limit: String(limit), offset: String(offset), t: String(Date.now()) });
+        const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
         const headers: Record<string, string> = {};
-        headers['dataset-name'] = selectedDataset.trim();
+        headers['dataset_name'] = selectedDataset.trim();
         
+        // Determine which endpoint to call based on filterMode
+        // Note: These are GET endpoints from Data Ingestion Service, not POST /train from Model Service
         let endpoint = '/view';
         if (filterMode === 'training') {
-          endpoint = '/training';
+          endpoint = '/training';  // GET endpoint from Data Ingestion Service
         } else if (filterMode === 'testing') {
-          endpoint = '/testing';
+          endpoint = '/testing';  // GET endpoint from Data Ingestion Service
         }
         
         const res = await fetch(`${API_BASE}${endpoint}?${params}`, { headers });
@@ -733,7 +767,7 @@ export default function ModelPage() {
     setValidationResult(null);
     try {
       const headers: Record<string, string> = {
-        'dataset-name': selectedDataset.trim(),
+        'dataset_name': selectedDataset.trim(),
       };
       
       // Add optional percentage headers if provided
@@ -816,7 +850,7 @@ export default function ModelPage() {
     setClearLoading(true);
     try {
       const headers: Record<string, string> = {};
-      if (selectedDataset.trim()) headers['dataset-name'] = selectedDataset.trim();
+      if (selectedDataset.trim()) headers['dataset_name'] = selectedDataset.trim();
       const res = await fetch(`${API_BASE}/clear`, { method: 'DELETE', headers });
       const text = await res.text();
       if (!res.ok) {
@@ -846,7 +880,6 @@ export default function ModelPage() {
       setClearConfirmOpen(false);
       setSnackbar({ open: true, message, severity: 'success' });
       setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
-      await fetchTables();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to clear database.';
       setSnackbar({ open: true, message: msg, severity: 'error' });
@@ -873,6 +906,7 @@ export default function ModelPage() {
 
     setTraining(true);
     setMetrics(null);
+    const trainStartMs = performance.now();
 
     try {
       // TrainRequest body structure
@@ -892,8 +926,8 @@ export default function ModelPage() {
       // Headers: dataset_name and model_name are required
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'dataset-name': selectedDataset.trim(),
-        'model-name': modelName.trim(),
+        'dataset_name': selectedDataset.trim(),
+        'model_name': modelName.trim(),
       };
 
       const res = await fetch(`${MODEL_API_BASE}/train`, {
@@ -909,12 +943,17 @@ export default function ModelPage() {
       }
 
       setMetrics(data);
+      playCompletionSound();
       // Refresh models list after training
       fetchModels();
       const modelTypeDisplay = modelType || data.model_type || 'model';
+      const trainingDurationSeconds =
+        typeof data.training_duration_seconds === 'number'
+          ? data.training_duration_seconds
+          : Number(((performance.now() - trainStartMs) / 1000).toFixed(3));
       setSnackbar({ 
         open: true, 
-        message: `Model "${modelName.trim()}" (${modelTypeDisplay}) trained successfully on dataset "${selectedDataset.trim()}"`, 
+        message: `Model "${modelName.trim()}" (${modelTypeDisplay}) trained successfully on dataset "${selectedDataset.trim()}" in ${trainingDurationSeconds.toFixed(2)}s`, 
         severity: 'success' 
       });
     } catch (err) {
@@ -939,7 +978,7 @@ export default function ModelPage() {
         // Fetch testing data from backend
         const params = new URLSearchParams({ limit: '100', offset: '0' });
         const headers: Record<string, string> = {};
-        if (selectedDataset.trim()) headers['dataset-name'] = selectedDataset.trim();
+        if (selectedDataset.trim()) headers['dataset_name'] = selectedDataset.trim();
         const res = await fetch(`${API_BASE}/testing?${params}`, { headers });
         const json = await res.json();
         if (!res.ok) throw new Error(json.detail || 'Failed to fetch testing data');
@@ -972,9 +1011,10 @@ export default function ModelPage() {
         data: dataToPredict
       };
 
+      // Headers: model_name is required
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'model-name': modelName.trim(),
+        'model_name': modelName.trim(),
       };
 
       const res = await fetch(`${MODEL_API_BASE}/predict`, {
@@ -1395,54 +1435,54 @@ export default function ModelPage() {
                   Label Distribution (Optional)
                 </Typography>
                 <Grid container spacing={1} sx={{ mb: 1.5 }}>
-                    <Grid size={{ xs: 6, sm: 3 }}>
-                      <TextField
-                        size="small"
-                        label="Label 0 (%)"
-                        type="number"
-                        value={label0Percent}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
-                            setLabel0Percent(val);
-                            // Auto-calculate label 1 if both are being set
-                            if (val && label1Percent) {
-                              const remaining = 100 - parseFloat(val);
-                              if (remaining >= 0 && remaining <= 100) {
-                                setLabel1Percent(remaining.toFixed(1));
-                              }
+                  <Grid item xs={6} sm={3}>
+                    <TextField
+                      size="small"
+                      label="Label 0 (%)"
+                      type="number"
+                      value={label0Percent}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                          setLabel0Percent(val);
+                          // Auto-calculate label 1 if both are being set
+                          if (val && label1Percent) {
+                            const remaining = 100 - parseFloat(val);
+                            if (remaining >= 0 && remaining <= 100) {
+                              setLabel1Percent(remaining.toFixed(1));
                             }
                           }
-                        }}
-                        inputProps={{ min: 0, max: 100, step: 0.1 }}
-                        helperText="% labeled as 0"
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid size={{ xs: 6, sm: 3 }}>
-                      <TextField
-                        size="small"
-                        label="Label 1 (%)"
-                        type="number"
-                        value={label1Percent}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
-                            setLabel1Percent(val);
-                            // Auto-calculate label 0 if both are being set
-                            if (val && label0Percent) {
-                              const remaining = 100 - parseFloat(val);
-                              if (remaining >= 0 && remaining <= 100) {
-                                setLabel0Percent(remaining.toFixed(1));
-                              }
+                        }
+                      }}
+                      inputProps={{ min: 0, max: 100, step: 0.1 }}
+                      helperText="% labeled as 0"
+                      fullWidth
+                    />
+                  </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <TextField
+                      size="small"
+                      label="Label 1 (%)"
+                      type="number"
+                      value={label1Percent}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                          setLabel1Percent(val);
+                          // Auto-calculate label 0 if both are being set
+                          if (val && label0Percent) {
+                            const remaining = 100 - parseFloat(val);
+                            if (remaining >= 0 && remaining <= 100) {
+                              setLabel0Percent(remaining.toFixed(1));
                             }
                           }
-                        }}
-                        inputProps={{ min: 0, max: 100, step: 0.1 }}
-                        helperText="% labeled as 1"
-                        fullWidth
-                      />
-                    </Grid>
+                        }
+                      }}
+                      inputProps={{ min: 0, max: 100, step: 0.1 }}
+                      helperText="% labeled as 1"
+                      fullWidth
+                    />
+                  </Grid>
                 </Grid>
                 
                 {/* Training/Testing Split Controls */}
@@ -1450,54 +1490,54 @@ export default function ModelPage() {
                   Training/Testing Split
                 </Typography>
                 <Grid container spacing={1} sx={{ mb: 1.5 }}>
-                    <Grid size={{ xs: 6, sm: 3 }}>
-                      <TextField
-                        size="small"
-                        label="Training (%)"
-                        type="number"
-                        value={trainingPercent}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
-                            setTrainingPercent(val);
-                            // Auto-calculate testing if both are being set
-                            if (val && testingPercent) {
-                              const remaining = 100 - parseFloat(val);
-                              if (remaining >= 0 && remaining <= 100) {
-                                setTestingPercent(remaining.toFixed(1));
-                              }
+                  <Grid item xs={6} sm={3}>
+                    <TextField
+                      size="small"
+                      label="Training (%)"
+                      type="number"
+                      value={trainingPercent}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                          setTrainingPercent(val);
+                          // Auto-calculate testing if both are being set
+                          if (val && testingPercent) {
+                            const remaining = 100 - parseFloat(val);
+                            if (remaining >= 0 && remaining <= 100) {
+                              setTestingPercent(remaining.toFixed(1));
                             }
                           }
-                        }}
-                        inputProps={{ min: 0, max: 100, step: 0.1 }}
-                        helperText="% for training"
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid size={{ xs: 6, sm: 3 }}>
-                      <TextField
-                        size="small"
-                        label="Testing (%)"
-                        type="number"
-                        value={testingPercent}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
-                            setTestingPercent(val);
-                            // Auto-calculate training if both are being set
-                            if (val && trainingPercent) {
-                              const remaining = 100 - parseFloat(val);
-                              if (remaining >= 0 && remaining <= 100) {
-                                setTrainingPercent(remaining.toFixed(1));
-                              }
+                        }
+                      }}
+                      inputProps={{ min: 0, max: 100, step: 0.1 }}
+                      helperText="% for training"
+                      fullWidth
+                    />
+                  </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <TextField
+                      size="small"
+                      label="Testing (%)"
+                      type="number"
+                      value={testingPercent}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '' || (parseFloat(val) >= 0 && parseFloat(val) <= 100)) {
+                          setTestingPercent(val);
+                          // Auto-calculate training if both are being set
+                          if (val && trainingPercent) {
+                            const remaining = 100 - parseFloat(val);
+                            if (remaining >= 0 && remaining <= 100) {
+                              setTrainingPercent(remaining.toFixed(1));
                             }
                           }
-                        }}
-                        inputProps={{ min: 0, max: 100, step: 0.1 }}
-                        helperText="% for testing"
-                        fullWidth
-                      />
-                    </Grid>
+                        }
+                      }}
+                      inputProps={{ min: 0, max: 100, step: 0.1 }}
+                      helperText="% for testing"
+                      fullWidth
+                    />
+                  </Grid>
                 </Grid>
                 
                 {validationResult && (
@@ -1803,6 +1843,13 @@ export default function ModelPage() {
                   <Chip label={`Dataset: ${metrics.dataset_name || metrics.dataset || 'N/A'}`} size="small" variant="outlined" />
                   <Chip label={`Model: ${metrics.model_name || 'N/A'}`} size="small" variant="outlined" />
                   <Chip label={`Type: ${metrics.model_type || 'N/A'}`} size="small" variant="outlined" />
+                  {(metrics.training_duration_seconds != null || metrics.training_params?.training_duration_seconds != null) && (
+                    <Chip
+                      label={`Train Time: ${Number(metrics.training_duration_seconds ?? metrics.training_params?.training_duration_seconds).toFixed(2)}s`}
+                      size="small"
+                      variant="outlined"
+                    />
+                  )}
                   {metrics.features && (
                     <Chip label={`Features: ${typeof metrics.features === 'string' ? metrics.features : metrics.n_features || 'N/A'}`} size="small" variant="outlined" />
                   )}
@@ -1866,7 +1913,7 @@ export default function ModelPage() {
                               data: losses,
                               label: 'Loss',
                               color: '#1976d2',
-                              curve: 'monotoneX',
+                              curve: 'monotone',
                               showMark: true,
                             }]}
                             width={undefined}
@@ -2302,6 +2349,9 @@ export default function ModelPage() {
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
                     <Chip label={`Status: ${testResults.status}`} color="success" size="small" />
                     <Chip label={`Samples: ${testResults.testing_samples?.toLocaleString() || 'N/A'}`} size="small" variant="outlined" />
+                    {testResults.testing_duration_seconds != null && (
+                      <Chip label={`Test Time: ${Number(testResults.testing_duration_seconds).toFixed(2)}s`} size="small" variant="outlined" />
+                    )}
                   </Stack>
                   {testResults.metrics && (
                     <Grid container spacing={2}>
@@ -2613,7 +2663,7 @@ export default function ModelPage() {
                                 data: losses,
                                 label: 'Loss',
                                 color: '#1976d2',
-                                curve: 'monotoneX',
+                                curve: 'monotone',
                                 showMark: true,
                               }]}
                               width={undefined}

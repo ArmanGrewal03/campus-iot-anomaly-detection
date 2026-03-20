@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple
 from starlette.requests import Request
 import json
 import os
@@ -15,8 +15,7 @@ import random
 import uuid
 import httpx
 import contextvars
-from aio_pika import connect_robust, Message, DeliveryMode, ExchangeType
-from aio_pika.abc import AbstractConnection, AbstractChannel, AbstractQueue
+from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 
 def load_env_file():
     env_path = os.path.join(os.path.dirname(__file__), ".env")
@@ -241,24 +240,27 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
 # Add input validation middleware
 app.add_middleware(InputValidationMiddleware)
 
-NETWORK_LOGS_DB = "network_logs.db"
-USERS_DB = "users.db"
-MESSAGE_QUEUE_DB = "message_queue.db"  # Kept for backward compatibility but not used
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+NETWORK_LOGS_DB = os.path.join(BASE_DIR, "network_logs.db")
+USERS_DB = os.path.join(BASE_DIR, "users.db")
+MESSAGE_QUEUE_DB = os.path.join(BASE_DIR, "message_queue.db")  # Kept for backward compatibility but not used
 MODEL_API_URL = os.getenv("MODEL_API_URL", "http://127.0.0.1:8001")
 DATA_INGESTION_SERVICE_URL = os.getenv("DATA_INGESTION_SERVICE_URL", "http://127.0.0.1:8000")
 DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL_NAME", "A")
 DEFAULT_DATASET_NAME = os.getenv("DEFAULT_DATASET_NAME", None)  # Optional default dataset name for statistics
 
-# RabbitMQ configuration
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
-RABBITMQ_QUEUE_NAME = os.getenv("RABBITMQ_QUEUE_NAME", "prediction_queue")
-RABBITMQ_EXCHANGE_NAME = os.getenv("RABBITMQ_EXCHANGE_NAME", "predictions")
-RABBITMQ_ROUTING_KEY = os.getenv("RABBITMQ_ROUTING_KEY", "prediction.request")
+# Current dataset name (can be set via API, defaults to DEFAULT_DATASET_NAME or "default")
+current_dataset_name: Optional[str] = DEFAULT_DATASET_NAME
 
-# RabbitMQ connection and channel (will be initialized on startup)
-rabbitmq_connection: Optional[AbstractConnection] = None
-rabbitmq_channel: Optional[AbstractChannel] = None
-rabbitmq_queue: Optional[AbstractQueue] = None
+# Kafka configuration
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "prediction_queue")
+KAFKA_CONSUMER_GROUP = os.getenv("KAFKA_CONSUMER_GROUP", "prediction_consumer_group")
+KAFKA_AUTO_OFFSET_RESET = os.getenv("KAFKA_AUTO_OFFSET_RESET", "earliest")  # earliest or latest
+
+# Kafka producer and consumer (will be initialized on startup)
+kafka_producer: Optional[AIOKafkaProducer] = None
+kafka_consumer: Optional[AIOKafkaConsumer] = None
 
 # Singleton WebSocket connection tracking for data generation
 active_generate_websocket: Optional[WebSocket] = None
@@ -416,7 +418,7 @@ async def process_missing_predictions(batch_size: int = 10):
                 payload = {"data": [data]}
                 headers = {
                     "Content-Type": "application/json",
-                    "model-name": selected_model_name
+                    "model_name": selected_model_name
                 }
                 
                 logger.info(f"Calling prediction API for network_id: {network_id}, data: {json.dumps(data)}")
@@ -482,7 +484,7 @@ async def get_history(limit: int = 100, offset: int = 0):
         total = cursor.fetchone()["total"]
         
         cursor.execute("""
-            SELECT id, network_id, timestamp, data, user_id, location, os, browser, prediction_results, session_active_time, is_active 
+            SELECT id, network_id, timestamp, data, user_id, location, os, browser, prediction_results, session_active_time, is_active, utc_timestamp, session_start_time 
             FROM websocket_data 
             ORDER BY id DESC 
             LIMIT ? OFFSET ?
@@ -498,20 +500,43 @@ async def get_history(limit: int = 100, offset: int = 0):
             except (KeyError, IndexError):
                 network_id = f"NET-{row['id']:06d}"
             
+            # Get timestamp - ensure it exists
+            timestamp_value = row["timestamp"] if "timestamp" in row.keys() and row["timestamp"] else None
+            if not timestamp_value:
+                logger.warning(f"Record {row['id']} has no timestamp value")
+            
             record = {
                 "id": row["id"],
                 "network_id": network_id,
-                "timestamp": row["timestamp"],
+                "timestamp": timestamp_value,
                 "user_id": row["user_id"],
                 "os": row["os"],
                 "browser": row["browser"]
             }
+            
+            # Add UTC timestamp (use existing timestamp if utc_timestamp is not set, as timestamp is already in UTC)
+            try:
+                utc_ts = row["utc_timestamp"] if "utc_timestamp" in row.keys() and row["utc_timestamp"] else None
+                record["utc_timestamp"] = utc_ts if utc_ts else timestamp_value  # Fallback to timestamp which is already UTC
+            except (KeyError, IndexError):
+                record["utc_timestamp"] = timestamp_value  # Fallback to timestamp which is already UTC
             
             # Add session tracking fields
             try:
                 record["session_active_time"] = row["session_active_time"]
             except (KeyError, IndexError):
                 record["session_active_time"] = None
+            
+            # Add session_start_time (use session_active_time if session_start_time is not set)
+            try:
+                session_start = row["session_start_time"] if "session_start_time" in row.keys() else None
+                session_active = row["session_active_time"] if "session_active_time" in row.keys() else None
+                record["session_start_time"] = session_start if session_start else session_active
+            except (KeyError, IndexError):
+                try:
+                    record["session_start_time"] = row["session_active_time"] if "session_active_time" in row.keys() else None
+                except:
+                    record["session_start_time"] = None
             
             try:
                 record["is_active"] = bool(row["is_active"]) if row["is_active"] is not None else False
@@ -597,46 +622,49 @@ async def get_history(limit: int = 100, offset: int = 0):
             detail=f"Error retrieving history: {str(e)}"
         )
 
-
 @app.delete("/history")
-async def delete_history():
-    """
-    Clear all network logs from the database.
-    This action is irreversible.
-    """
+async def clear_history():
+    """Clear all history/logs from the websocket_data table"""
     try:
         init_websocket_db()
         conn = sqlite3.connect(NETWORK_LOGS_DB)
         cursor = conn.cursor()
         
-        # Get count before deleting for the response
+        # Get count before deletion for logging
         cursor.execute("SELECT COUNT(*) as total FROM websocket_data")
         total_before = cursor.fetchone()[0]
         
         # Delete all records
         cursor.execute("DELETE FROM websocket_data")
         conn.commit()
+        
+        # Verify deletion
+        cursor.execute("SELECT COUNT(*) as total FROM websocket_data")
+        total_after = cursor.fetchone()[0]
         conn.close()
         
-        logger.info(f"Cleared history: {total_before} records deleted")
+        logger.info(f"Cleared {total_before} history records from websocket_data table")
         
         return JSONResponse(
             content={
                 "status": "success",
-                "message": f"Successfully cleared {total_before} log records",
+                "message": f"Cleared {total_before} history records",
                 "records_deleted": total_before,
-                "timestamp": datetime.now().isoformat()
+                "records_remaining": total_after
             },
             status_code=200
         )
     except sqlite3.Error as e:
-        logger.error(f"Database error while clearing history: {e}")
+        logger.error(f"Database error in /history DELETE endpoint: {type(e).__name__}: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+            conn.close()
         raise HTTPException(
             status_code=500,
             detail=f"Database error: {str(e)}"
         )
     except Exception as e:
-        logger.error(f"Error clearing history: {e}")
+        logger.error(f"Error in /history DELETE endpoint: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Error clearing history: {str(e)}"
@@ -1190,42 +1218,37 @@ async def block_user(user_id: int = Path(..., description="User ID to block"), b
         status_code=200
     )
 
-async def init_rabbitmq():
-    """Initialize RabbitMQ connection, channel, exchange, and queue"""
-    global rabbitmq_connection, rabbitmq_channel, rabbitmq_queue
+async def init_kafka():
+    """Initialize Kafka producer and consumer"""
+    global kafka_producer, kafka_consumer
     
     try:
-        if rabbitmq_connection is None or rabbitmq_connection.is_closed:
-            logger.info(f"Connecting to RabbitMQ at {RABBITMQ_URL}")
-            rabbitmq_connection = await connect_robust(RABBITMQ_URL)
-            logger.info("RabbitMQ connection established")
+        # Initialize producer
+        if kafka_producer is None:
+            logger.info(f"Connecting to Kafka at {KAFKA_BOOTSTRAP_SERVERS}")
+            kafka_producer = AIOKafkaProducer(
+                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8')
+            )
+            await kafka_producer.start()
+            logger.info("Kafka producer started")
         
-        if rabbitmq_channel is None or rabbitmq_channel.is_closed:
-            rabbitmq_channel = await rabbitmq_connection.channel()
-            # Set prefetch count to process one message at a time
-            await rabbitmq_channel.set_qos(prefetch_count=1)
-            logger.info("RabbitMQ channel created")
-        
-        # Declare exchange
-        exchange = await rabbitmq_channel.declare_exchange(
-            RABBITMQ_EXCHANGE_NAME,
-            ExchangeType.DIRECT,
-            durable=True
-        )
-        
-        # Declare queue
-        rabbitmq_queue = await rabbitmq_channel.declare_queue(
-            RABBITMQ_QUEUE_NAME,
-            durable=True
-        )
-        
-        # Bind queue to exchange
-        await rabbitmq_queue.bind(exchange, RABBITMQ_ROUTING_KEY)
-        logger.info(f"RabbitMQ queue '{RABBITMQ_QUEUE_NAME}' declared and bound to exchange '{RABBITMQ_EXCHANGE_NAME}'")
+        # Initialize consumer
+        if kafka_consumer is None:
+            kafka_consumer = AIOKafkaConsumer(
+                KAFKA_TOPIC,
+                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                group_id=KAFKA_CONSUMER_GROUP,
+                auto_offset_reset=KAFKA_AUTO_OFFSET_RESET,
+                enable_auto_commit=False,  # Manual commit for better control
+                value_deserializer=lambda m: json.loads(m.decode('utf-8'))
+            )
+            await kafka_consumer.start()
+            logger.info(f"Kafka consumer started for topic '{KAFKA_TOPIC}' with group '{KAFKA_CONSUMER_GROUP}'")
         
         return True
     except Exception as e:
-        logger.error(f"Error initializing RabbitMQ: {e}", exc_info=True)
+        logger.error(f"Error initializing Kafka: {e}", exc_info=True)
         return False
 
 @app.post("/publish")
@@ -1237,10 +1260,10 @@ async def publish_to_queue(publish_request: PublishRequest):
         )
     
     try:
-        # Ensure RabbitMQ is initialized
-        if rabbitmq_connection is None or rabbitmq_connection.is_closed:
-            if not await init_rabbitmq():
-                raise HTTPException(status_code=503, detail="RabbitMQ connection failed")
+        # Ensure Kafka is initialized
+        if kafka_producer is None:
+            if not await init_kafka():
+                raise HTTPException(status_code=503, detail="Kafka connection failed")
         
         # Prepare message payload
         message_payload = {
@@ -1249,33 +1272,26 @@ async def publish_to_queue(publish_request: PublishRequest):
             "created_at": datetime.utcnow().isoformat()
         }
         
-        # Create message
-        message = Message(
-            json.dumps(message_payload).encode(),
-            delivery_mode=DeliveryMode.PERSISTENT,
-            headers={
-                "network_id": publish_request.network_id,
-                "created_at": message_payload["created_at"]
-            }
+        # Publish to Kafka topic
+        await kafka_producer.send_and_wait(
+            KAFKA_TOPIC,
+            value=message_payload,
+            key=publish_request.network_id.encode('utf-8')  # Use network_id as key for partitioning
         )
         
-        # Publish to exchange
-        exchange = await rabbitmq_channel.get_exchange(RABBITMQ_EXCHANGE_NAME)
-        await exchange.publish(message, routing_key=RABBITMQ_ROUTING_KEY)
-        
-        logger.info(f"Published message to RabbitMQ for network_id: {publish_request.network_id}")
+        logger.info(f"Published message to Kafka for network_id: {publish_request.network_id}")
         
         return JSONResponse(
             content={
                 "status": "success",
-                "message": "Message published to RabbitMQ queue",
+                "message": "Message published to Kafka topic",
                 "network_id": publish_request.network_id,
-                "queue": RABBITMQ_QUEUE_NAME
+                "topic": KAFKA_TOPIC
             },
             status_code=200
         )
     except Exception as e:
-        logger.error(f"Error publishing to RabbitMQ: {e}", exc_info=True)
+        logger.error(f"Error publishing to Kafka: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to publish message: {str(e)}")
 
 @app.post("/set-model")
@@ -1306,6 +1322,46 @@ async def get_model():
         content={
             "status": "success",
             "model_name": selected_model_name
+        },
+        status_code=200,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
+
+class SetDatasetRequest(BaseModel):
+    dataset_name: str
+
+@app.post("/set-dataset")
+async def set_dataset(request: SetDatasetRequest):
+    """Set the dataset name to use for data generation"""
+    global current_dataset_name
+    current_dataset_name = request.dataset_name
+    logger.info(f"Dataset selection updated to: {current_dataset_name}")
+    return JSONResponse(
+        content={
+            "status": "success",
+            "message": f"Dataset set to {current_dataset_name}",
+            "dataset_name": current_dataset_name
+        },
+        status_code=200,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
+
+@app.get("/get-dataset")
+async def get_dataset():
+    """Get the currently selected dataset name"""
+    global current_dataset_name
+    return JSONResponse(
+        content={
+            "status": "success",
+            "dataset_name": current_dataset_name or "default"
         },
         status_code=200,
         headers={
@@ -1405,6 +1461,16 @@ def init_websocket_db():
         logger.info("Added is_active column to websocket_data table")
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute("ALTER TABLE websocket_data ADD COLUMN utc_timestamp TEXT")
+        logger.info("Added utc_timestamp column to websocket_data table")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE websocket_data ADD COLUMN session_start_time TEXT")
+        logger.info("Added session_start_time column to websocket_data table")
+    except sqlite3.OperationalError:
+        pass
     
     cursor.execute("SELECT id FROM websocket_data WHERE network_id IS NULL")
     rows_without_network_id = cursor.fetchall()
@@ -1477,13 +1543,13 @@ async def _make_http_request(url: str, data: dict, headers: dict):
         raise
 
 async def process_predict_request(network_id: str, data: dict, message=None):
-    """Process a prediction request and acknowledge/nack the RabbitMQ message"""
+    """Process a prediction request (Kafka commit is handled by the consumer)"""
     try:
         url = f"{MODEL_API_URL}/predict"
         payload = {"data": [data]}
         headers = {
             "Content-Type": "application/json",
-            "model-name": selected_model_name
+            "model_name": selected_model_name
         }
         
         logger.info(f"Processing prediction for network_id: {network_id}")
@@ -1519,121 +1585,84 @@ async def process_predict_request(network_id: str, data: dict, message=None):
             finally:
                 conn.close()
             
-            # Acknowledge message on success
-            if message:
-                await message.ack()
-                logger.debug(f"Acknowledged RabbitMQ message for network_id: {network_id}")
-            
+            # Kafka commit is handled by the consumer on success
             return True
         else:
             error_msg = result.get('error', f"HTTP {status_code}")[:500] if isinstance(result, dict) else f"HTTP {status_code}"
             logger.error(f"Prediction failed for network_id: {network_id}, status: {status_code}, error: {error_msg}")
-            
-            # Check retry count from message headers or redelivery flag
-            retry_count = 0
-            if message:
-                if message.headers:
-                    retry_count = message.headers.get('x-retry-count', 0)
-                # Check if message was redelivered (RabbitMQ tracks this)
-                if hasattr(message, 'redelivered') and message.redelivered:
-                    retry_count = max(retry_count, 1)
-            
-            if retry_count < 3:
-                # Reject and requeue for retry (RabbitMQ will increment redelivered flag)
-                if message:
-                    await message.nack(requeue=True)
-                    logger.info(f"Requeued message for network_id: {network_id} (attempt {retry_count + 1})")
-                return False
-            else:
-                # Reject without requeue after max retries
-                if message:
-                    await message.nack(requeue=False)
-                    logger.error(f"Message for network_id: {network_id} failed after {retry_count} attempts, not requeued")
-                return False
+            # Kafka commit/retry logic is handled by the consumer
+            return False
                 
     except Exception as e:
         error_msg = str(e)[:500]
         logger.error(f"Error processing predict request for network_id: {network_id}: {error_msg}", exc_info=True)
-        
-        # Check retry count
-        retry_count = 0
-        if message:
-            if message.headers:
-                retry_count = message.headers.get('x-retry-count', 0)
-            if hasattr(message, 'redelivered') and message.redelivered:
-                retry_count = max(retry_count, 1)
-        
-        if retry_count < 3:
-            # Reject and requeue for retry
-            if message:
-                await message.nack(requeue=True)
-                logger.info(f"Requeued message for network_id: {network_id} after exception (attempt {retry_count + 1})")
-        else:
-            # Reject without requeue after max retries
-            if message:
-                await message.nack(requeue=False)
-                logger.error(f"Message for network_id: {network_id} failed after {retry_count} attempts, not requeued")
-        
+        # Kafka commit/retry logic is handled by the consumer
         return False
 
-async def process_rabbitmq_messages():
-    """Consume messages from RabbitMQ queue"""
+async def process_kafka_messages():
+    """Consume messages from Kafka topic"""
     try:
-        # Ensure RabbitMQ is initialized
-        if rabbitmq_connection is None or rabbitmq_connection.is_closed:
-            if not await init_rabbitmq():
-                logger.error("Failed to initialize RabbitMQ, cannot process messages")
+        # Ensure Kafka is initialized
+        if kafka_consumer is None:
+            if not await init_kafka():
+                logger.error("Failed to initialize Kafka, cannot process messages")
                 return
         
-        if rabbitmq_queue is None:
-            logger.error("RabbitMQ queue not initialized")
-            return
+        logger.info(f"Starting to consume messages from Kafka topic: {KAFKA_TOPIC}")
         
-        logger.info(f"Starting to consume messages from RabbitMQ queue: {RABBITMQ_QUEUE_NAME}")
-        
-        # Consume messages (manual acknowledgment)
-        async for message in rabbitmq_queue:
+        # Consume messages
+        async for kafka_message in kafka_consumer:
             try:
-                # Parse message body
-                message_body = json.loads(message.body.decode())
+                # Message value is already deserialized by the consumer
+                message_body = kafka_message.value
+                
+                if not isinstance(message_body, dict):
+                    logger.error(f"Invalid message format: expected dict, got {type(message_body)}")
+                    await kafka_consumer.commit()  # Commit to skip invalid messages
+                    continue
+                
                 network_id = message_body.get("network_id")
                 data = message_body.get("data")
                 
                 if not network_id or not data:
                     logger.error(f"Invalid message format: missing network_id or data")
-                    await message.nack(requeue=False)  # Don't requeue invalid messages
+                    await kafka_consumer.commit()  # Commit to skip invalid messages
                     continue
                 
-                # Get retry count from headers or redelivery flag
-                retry_count = 0
-                if message.headers:
-                    retry_count = message.headers.get('x-retry-count', 0)
-                if hasattr(message, 'redelivered') and message.redelivered:
-                    retry_count = max(retry_count, 1)  # At least 1 if redelivered
+                # Get retry count from message payload
+                retry_count = message_body.get('retry_count', 0)
                 
                 logger.info(f"Processing message for network_id: {network_id} (retry: {retry_count})")
                 
-                # Process prediction (will handle ack/nack)
-                success = await process_predict_request(network_id, data, message)
+                # Process prediction (will handle commit)
+                success = await process_predict_request(network_id, data, kafka_message)
                 
-                if not success and retry_count >= 3:
-                    logger.error(f"Message for network_id: {network_id} exceeded max retries")
-                    
-            except json.JSONDecodeError as e:
-                logger.error(f"Error decoding RabbitMQ message: {e}")
-                # Nack message without requeue if JSON is invalid
-                await message.nack(requeue=False)
-            except Exception as e:
-                logger.error(f"Error processing RabbitMQ message: {e}", exc_info=True)
-                # Nack with requeue for unexpected errors (up to retry limit)
-                retry_count = message.headers.get('x-retry-count', 0) if message.headers else 0
-                if retry_count < 3:
-                    await message.nack(requeue=True)
+                if success:
+                    # Commit offset only on success
+                    await kafka_consumer.commit()
+                    logger.debug(f"Committed Kafka message for network_id: {network_id}")
+                elif retry_count >= 3:
+                    # Max retries exceeded, commit to skip (or could send to dead letter topic)
+                    logger.error(f"Message for network_id: {network_id} exceeded max retries, committing to skip")
+                    await kafka_consumer.commit()
                 else:
-                    await message.nack(requeue=False)
+                    # For retries, we'll commit and let the producer republish if needed
+                    # Alternatively, we could seek back, but that's more complex
+                    # For now, commit and log - retry logic can be handled by republishing
+                    logger.warning(f"Message for network_id: {network_id} failed, will be retried if republished")
+                    await kafka_consumer.commit()
+                    
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                logger.error(f"Error decoding/deserializing Kafka message: {e}")
+                # Commit to skip invalid messages
+                await kafka_consumer.commit()
+            except Exception as e:
+                logger.error(f"Error processing Kafka message: {e}", exc_info=True)
+                # Commit to skip messages with processing errors (after logging)
+                await kafka_consumer.commit()
                     
     except Exception as e:
-        logger.error(f"Error in RabbitMQ message consumer: {e}", exc_info=True)
+        logger.error(f"Error in Kafka message consumer: {e}", exc_info=True)
 
 async def missing_predictions_worker():
     """Background worker to process records without predictions"""
@@ -1641,15 +1670,7 @@ async def missing_predictions_worker():
     while True:
         try:
             if MESSAGE_QUEUE_ENABLED:
-                # Check RabbitMQ queue size if available
-                try:
-                    if rabbitmq_queue is not None:
-                        # Note: Getting queue info requires admin access, so we'll skip this check
-                        # Queue size monitoring can be done via RabbitMQ management UI
-                        pass
-                except:
-                    pass  # Ignore if queue info not available
-                
+                # Kafka topic monitoring can be done via Kafka management tools
                 await process_missing_predictions(batch_size=5)  # Process 5 at a time
         except Exception as e:
             logger.error(f"Error in missing predictions worker: {e}", exc_info=True)
@@ -1657,14 +1678,14 @@ async def missing_predictions_worker():
         await asyncio.sleep(120)  # Check every 120 seconds (2 minutes)
 
 async def message_queue_worker():
-    """RabbitMQ message consumer worker - runs continuously"""
-    logger.info("RabbitMQ message queue worker starting...")
+    """Kafka message consumer worker - runs continuously"""
+    logger.info("Kafka message queue worker starting...")
     
     while True:
         try:
-            await process_rabbitmq_messages()
+            await process_kafka_messages()
         except Exception as e:
-            logger.error(f"Error in RabbitMQ message queue worker: {e}", exc_info=True)
+            logger.error(f"Error in Kafka message queue worker: {e}", exc_info=True)
             # Wait before retrying connection
             await asyncio.sleep(10)
 
@@ -1725,37 +1746,108 @@ def get_random_user():
     logger.warning("Could not find an unblocked user after multiple attempts")
     return None
 
-def generate_random_location():
-    cities = [
-        {"city": "New York", "country": "United States", "lat": 40.7128, "lon": -74.0060},
-        {"city": "Los Angeles", "country": "United States", "lat": 34.0522, "lon": -118.2437},
-        {"city": "Chicago", "country": "United States", "lat": 41.8781, "lon": -87.6298},
-        {"city": "Houston", "country": "United States", "lat": 29.7604, "lon": -95.3698},
-        {"city": "Phoenix", "country": "United States", "lat": 33.4484, "lon": -112.0740},
-        {"city": "London", "country": "United Kingdom", "lat": 51.5074, "lon": -0.1278},
-        {"city": "Paris", "country": "France", "lat": 48.8566, "lon": 2.3522},
-        {"city": "Tokyo", "country": "Japan", "lat": 35.6762, "lon": 139.6503},
-        {"city": "Sydney", "country": "Australia", "lat": -33.8688, "lon": 151.2093},
-        {"city": "Toronto", "country": "Canada", "lat": 43.6532, "lon": -79.3832},
-        {"city": "Berlin", "country": "Germany", "lat": 52.5200, "lon": 13.4050},
-        {"city": "Madrid", "country": "Spain", "lat": 40.4168, "lon": -3.7038},
-        {"city": "Rome", "country": "Italy", "lat": 41.9028, "lon": 12.4964},
-        {"city": "Moscow", "country": "Russia", "lat": 55.7558, "lon": 37.6173},
-        {"city": "Beijing", "country": "China", "lat": 39.9042, "lon": 116.4074},
-        {"city": "Mumbai", "country": "India", "lat": 19.0760, "lon": 72.8777},
-        {"city": "São Paulo", "country": "Brazil", "lat": -23.5505, "lon": -46.6333},
-        {"city": "Mexico City", "country": "Mexico", "lat": 19.4326, "lon": -99.1332},
-        {"city": "Dubai", "country": "United Arab Emirates", "lat": 25.2048, "lon": 55.2708},
-        {"city": "Singapore", "country": "Singapore", "lat": 1.3521, "lon": 103.8198}
-    ]
+def generate_random_location(ssh: bool = None):
+    """
+    Generate a random location.
     
-    location = random.choice(cities)
-    return {
-        "city": location["city"],
-        "country": location["country"],
-        "latitude": round(location["lat"] + random.uniform(-0.1, 0.1), 6),
-        "longitude": round(location["lon"] + random.uniform(-0.1, 0.1), 6)
-    }
+    Args:
+        ssh: If True, generate random coordinates anywhere in the world.
+             If None, randomly decide (10% chance of SSH).
+             If False, use TMU campus location.
+    
+    Returns:
+        Dictionary with location information including ssh field.
+    """
+    # Randomly determine SSH if not explicitly provided (10% chance)
+    if ssh is None:
+        ssh = random.random() < 0.1  # 10% probability
+    
+    if ssh:
+        # Generate random coordinates anywhere in the world
+        # Latitude: -90 to 90 degrees
+        # Longitude: -180 to 180 degrees
+        latitude = round(random.uniform(-90.0, 90.0), 6)
+        longitude = round(random.uniform(-180.0, 180.0), 6)
+        
+        return {
+            "city": "Remote",
+            "country": "Unknown",
+            "name": "SSH Connection",
+            "latitude": latitude,
+            "longitude": longitude,
+            "ssh": True
+        }
+    else:
+        # TMU (Toronto Metropolitan University) campus locations with real coordinates
+        # Base coordinates: Downtown Toronto area around Yonge-Dundas (approx 43.6577, -79.3788)
+        tmu_locations = [
+            {"name": "AOB Atrium on Bay, 20 Dundas Street West", "lat": 43.6565, "lon": -79.3805},
+            {"name": "ARC Architecture Building — Paul H. Cocker Gallery, 325 Church Street", "lat": 43.6588, "lon": -79.3775},
+            {"name": "BKS Campus Store, 17 Gould Street", "lat": 43.6575, "lon": -79.3788},
+            {"name": "BND 114 Bond Street", "lat": 43.6572, "lon": -79.3785},
+            {"name": "BON 111 Bond Street", "lat": 43.6573, "lon": -79.3786},
+            {"name": "BTS Bell Trinity Square, 483 Bay Street", "lat": 43.6535, "lon": -79.3802},
+            {"name": "CAR Carlton Cinema, 20 Carlton Street", "lat": 43.6568, "lon": -79.3795},
+            {"name": "CED The Chang School of Continuing Education (Heaslip House), 297 Victoria Street", "lat": 43.6595, "lon": -79.3798},
+            {"name": "CIS Creative Innovation Studio, 110 Bond Street", "lat": 43.6571, "lon": -79.3784},
+            {"name": "CIV Civil Engineering Storage, 106 Mutual Street", "lat": 43.6580, "lon": -79.3770},
+            {"name": "COP 101 Gerrard Street East", "lat": 43.6585, "lon": -79.3778},
+            {"name": "CPK English Language Institute and International College (College Park), 424 Yonge Street", "lat": 43.6560, "lon": -79.3820},
+            {"name": "CUI Centre for Urban Innovation, 44 Gerrard Street East", "lat": 43.6582, "lon": -79.3776},
+            {"name": "DAL 147 Dalhousie Street", "lat": 43.6555, "lon": -79.3765},
+            {"name": "DCC Daphne Cockwell Health Sciences Complex, 288 Church Street", "lat": 43.6592, "lon": -79.3778},
+            {"name": "DSQ Yonge-Dundas Square, 10 Dundas Street East", "lat": 43.6563, "lon": -79.3800},
+            {"name": "ENG George Vari Engineering and Computing Centre, 245 Church Street", "lat": 43.6585, "lon": -79.3772},
+            {"name": "EPH Eric Palin Hall, 87 Gerrard Street East", "lat": 43.6580, "lon": -79.3775},
+            {"name": "HEI School of Graphic Communications Management (Heidelberg Centre), 125 Bond Street", "lat": 43.6570, "lon": -79.3783},
+            {"name": "ILC International Living / Learning Centre, 133 Mutual Street and 240 Jarvis Street", "lat": 43.6578, "lon": -79.3768},
+            {"name": "IMA School of Image Arts, 122 Bond Street", "lat": 43.6571, "lon": -79.3782},
+            {"name": "IMC The Image Centre, 33 Gould Street", "lat": 43.6576, "lon": -79.3789},
+            {"name": "JOR Jorgenson Hall, 380 Victoria Street", "lat": 43.6598, "lon": -79.3795},
+            {"name": "KHE Kerr Hall East, 340 Church Street", "lat": 43.6589, "lon": -79.3779},
+            {"name": "KHN Kerr Hall North, 31 / 43 Gerrard Street East", "lat": 43.6583, "lon": -79.3777},
+            {"name": "KHS Kerr Hall South, 40 / 50 / 60 Gould Street", "lat": 43.6577, "lon": -79.3787},
+            {"name": "KHW Kerr Hall West, 379 Victoria Street", "lat": 43.6597, "lon": -79.3794},
+            {"name": "LIB Library Building, 350 Victoria Street", "lat": 43.6595, "lon": -79.3792},
+            {"name": "MAC Mattamy Athletic Centre, 50 Carlton Street", "lat": 43.6569, "lon": -79.3798},
+            {"name": "MER Merchandise Building, 159 Dalhousie Street", "lat": 43.6558, "lon": -79.3768},
+            {"name": "MON Civil Engineering Building (Monetary Times), 341 Church Street", "lat": 43.6588, "lon": -79.3778},
+            {"name": "MRS MaRS Building, 661 University Avenue", "lat": 43.6545, "lon": -79.3875},
+            {"name": "OAK Oakham House, 63 Gould Street", "lat": 43.6574, "lon": -79.3785},
+            {"name": "OKF O'Keefe House, 137 Bond Street", "lat": 43.6569, "lon": -79.3781},
+            {"name": "PIT Pitman Hall, 160 Mutual Street", "lat": 43.6579, "lon": -79.3772},
+            {"name": "PKG Parking Garage, 300 Victoria Street", "lat": 43.6593, "lon": -79.3790},
+            {"name": "POD Podium, 350 Victoria Street", "lat": 43.6595, "lon": -79.3792},
+            {"name": "PRO 112 Bond Street", "lat": 43.6572, "lon": -79.3785},
+            {"name": "RAC Recreation and Athletics Centre, 40 / 50 Gould Street", "lat": 43.6577, "lon": -79.3787},
+            {"name": "RCC Rogers Communications Centre, 80 Gould Street", "lat": 43.6578, "lon": -79.3788},
+            {"name": "SBB South Bond Building, 105 Bond Street", "lat": 43.6570, "lon": -79.3783},
+            {"name": "SCC Student Campus Centre, 55 Gould Street", "lat": 43.6575, "lon": -79.3786},
+            {"name": "SHE Sally Horsfall Eaton Centre for Studies in Community Health, 99 Gerrard Street East", "lat": 43.6581, "lon": -79.3774},
+            {"name": "SID School of Interior Design, 302 Church Street", "lat": 43.6591, "lon": -79.3779},
+            {"name": "SLC Sheldon & Tracy Levy Student Learning Centre, 341 Yonge Street", "lat": 43.6568, "lon": -79.3815},
+            {"name": "SMH St. Michael's Hospital, 209 Victoria Street", "lat": 43.6585, "lon": -79.3785},
+            {"name": "TEC Toronto Eaton Centre, 220 Yonge Street", "lat": 43.6548, "lon": -79.3808},
+            {"name": "TRS Ted Rogers School of Management, 55 Dundas Street West", "lat": 43.6562, "lon": -79.3803},
+            {"name": "VIC Victoria Building, 285 Victoria Street", "lat": 43.6594, "lon": -79.3796},
+            {"name": "YDI Yonge-Dundas Intersection, 1 Dundas St West", "lat": 43.6563, "lon": -79.3800},
+            {"name": "YNG 415 Yonge Street", "lat": 43.6555, "lon": -79.3818}
+        ]
+        
+        location = random.choice(tmu_locations)
+        # Add small random offset to coordinates (approximately 10-50 meters)
+        # 0.0001 degrees ≈ 11 meters at this latitude
+        lat_offset = random.uniform(-0.0005, 0.0005)  # ~55 meters max offset
+        lon_offset = random.uniform(-0.0005, 0.0005)  # ~55 meters max offset
+        
+        return {
+            "city": "Toronto",
+            "country": "Canada",
+            "name": location["name"],
+            "latitude": round(location["lat"] + lat_offset, 6),
+            "longitude": round(location["lon"] + lon_offset, 6),
+            "ssh": False
+        }
 
 def generate_random_os():
     operating_systems = [
@@ -1982,9 +2074,9 @@ def fetch_view_data_from_ingestion_service(dataset_name: str = None, limit: int 
                 params = {"limit": min(limit, max_samples - len(all_data)), "offset": offset}
                 headers = {}
                 
-                # Add dataset_name header if provided
-                if dataset_name:
-                    headers["dataset_name"] = dataset_name
+                # The /view endpoint requires dataset_name header, so always send it
+                # Use "default" if not provided
+                headers["dataset_name"] = dataset_name if dataset_name else "default"
                 
                 try:
                     response = client.get(url, params=params, headers=headers)
@@ -2034,9 +2126,33 @@ def fetch_view_data_from_ingestion_service(dataset_name: str = None, limit: int 
     logger.info(f"Fetched {len(all_data)} samples from Data Ingestion Service /view endpoint")
     return all_data
 
+def _try_convert_to_number(value):
+    """
+    Try to convert a value to a number (int or float).
+    Returns (converted_value, success) tuple.
+    """
+    if isinstance(value, (int, float)):
+        return value, True
+    if isinstance(value, str):
+        # Try to convert string to number
+        value_stripped = value.strip()
+        if not value_stripped or value_stripped == '-':
+            return None, False
+        try:
+            # Try integer first
+            if value_stripped.isdigit() or (value_stripped.startswith('-') and value_stripped[1:].isdigit()):
+                return int(value_stripped), True
+            # Try float
+            float_val = float(value_stripped)
+            return float_val, True
+        except (ValueError, OverflowError):
+            return None, False
+    return None, False
+
 def calculate_statistics_from_data(data_samples: list, feature_names: list) -> dict:
     """
     Calculate statistics (min, max, range, types) from a list of data samples.
+    Handles both numeric and string values (converts numeric strings to numbers).
     
     Args:
         data_samples: List of data dictionaries
@@ -2055,7 +2171,8 @@ def calculate_statistics_from_data(data_samples: list, feature_names: list) -> d
             'min': None,
             'max': None,
             'values': [],
-            'types': set()
+            'types': set(),
+            'string_values': []  # Track original string values for categorical features
         }
     
     # Collect values for each feature
@@ -2069,22 +2186,35 @@ def calculate_statistics_from_data(data_samples: list, feature_names: list) -> d
             if feature in data_dict:
                 value = data_dict[feature]
                 
-                # Track the type of this value
+                # Track the original type of this value
                 value_type = type(value).__name__
                 stats[feature]['types'].add(value_type)
                 
-                # Process numeric values
-                if isinstance(value, (int, float)):
-                    if stats[feature]['min'] is None or value < stats[feature]['min']:
-                        stats[feature]['min'] = value
-                    if stats[feature]['max'] is None or value > stats[feature]['max']:
-                        stats[feature]['max'] = value
-                    stats[feature]['values'].append(value)
-                # For binary/categorical features, track unique values
-                elif isinstance(value, (str, bool)):
+                # Try to convert to number (handles both numeric types and numeric strings)
+                numeric_value, is_numeric = _try_convert_to_number(value)
+                
+                if is_numeric and numeric_value is not None:
+                    # Process as numeric value
+                    if stats[feature]['min'] is None or numeric_value < stats[feature]['min']:
+                        stats[feature]['min'] = numeric_value
+                    if stats[feature]['max'] is None or numeric_value > stats[feature]['max']:
+                        stats[feature]['max'] = numeric_value
+                    stats[feature]['values'].append(numeric_value)
+                    # Track if value is integer-like (whole number)
+                    if isinstance(numeric_value, int) or (isinstance(numeric_value, float) and numeric_value.is_integer()):
+                        if 'integer_count' not in stats[feature]:
+                            stats[feature]['integer_count'] = 0
+                        stats[feature]['integer_count'] += 1
+                    else:
+                        if 'float_count' not in stats[feature]:
+                            stats[feature]['float_count'] = 0
+                        stats[feature]['float_count'] += 1
+                else:
+                    # For non-numeric values (strings, bools, etc.), track as categorical
                     if 'unique_values' not in stats[feature]:
                         stats[feature]['unique_values'] = set()
                     stats[feature]['unique_values'].add(value)
+                    stats[feature]['string_values'].append(value)
     
     # Calculate final statistics
     final_stats = {}
@@ -2095,15 +2225,32 @@ def calculate_statistics_from_data(data_samples: list, feature_names: list) -> d
         types_list = list(feature_stats['types'])
         primary_type = types_list[0] if types_list else 'unknown'
         
-        if feature_stats['min'] is not None and feature_stats['max'] is not None:
+        # Check if we have numeric values (converted from strings or already numeric)
+        has_numeric_values = feature_stats['min'] is not None and feature_stats['max'] is not None and len(feature_stats['values']) > 0
+        
+        # Determine if feature should be treated as numeric or categorical
+        # If we have numeric values and they represent a significant portion, treat as numeric
+        numeric_ratio = len(feature_stats['values']) / sample_count if sample_count > 0 else 0
+        
+        if has_numeric_values and numeric_ratio > 0.5:  # If >50% of values are numeric, treat as numeric
             # Numeric feature
+            total_numeric = len(feature_stats['values'])
+            integer_count = feature_stats.get('integer_count', 0)
+            float_count = feature_stats.get('float_count', 0)
+            
+            # Determine if feature is primarily integer or float
+            # If >80% of values are integers, treat as integer type
+            is_integer_type = (integer_count / total_numeric) > 0.8 if total_numeric > 0 else False
+            
             final_stats[feature] = {
                 'min': feature_stats['min'],
                 'max': feature_stats['max'],
                 'range': feature_stats['max'] - feature_stats['min'],
-                'sample_count': len(feature_stats['values']),
+                'sample_count': total_numeric,
                 'type': primary_type,
-                'types': types_list
+                'types': types_list,
+                'is_integer': is_integer_type,
+                'integer_ratio': integer_count / total_numeric if total_numeric > 0 else 0.0
             }
             # Calculate percentiles for better distribution
             if feature_stats['values']:
@@ -2112,7 +2259,9 @@ def calculate_statistics_from_data(data_samples: list, feature_names: list) -> d
                 final_stats[feature]['p25'] = sorted_values[n // 4] if n > 0 else None
                 final_stats[feature]['p50'] = sorted_values[n // 2] if n > 0 else None
                 final_stats[feature]['p75'] = sorted_values[3 * n // 4] if n > 0 else None
-        elif 'unique_values' in feature_stats:
+                # Calculate mean for better distribution
+                final_stats[feature]['mean'] = sum(sorted_values) / n if n > 0 else None
+        elif 'unique_values' in feature_stats and len(feature_stats['unique_values']) > 0:
             # Categorical/binary feature
             final_stats[feature] = {
                 'unique_values': list(feature_stats['unique_values']),
@@ -2120,6 +2269,25 @@ def calculate_statistics_from_data(data_samples: list, feature_names: list) -> d
                 'type': primary_type,
                 'types': types_list
             }
+            # If it's a small set of unique values that look numeric, note that
+            unique_vals = feature_stats['unique_values']
+            if len(unique_vals) <= 20:
+                # Check if all values are numeric strings
+                all_numeric = True
+                numeric_vals = []
+                for val in unique_vals:
+                    num_val, is_num = _try_convert_to_number(val)
+                    if is_num and num_val is not None:
+                        numeric_vals.append(num_val)
+                    else:
+                        all_numeric = False
+                        break
+                
+                if all_numeric and len(numeric_vals) > 0:
+                    # Store numeric stats even for categorical features with numeric values
+                    final_stats[feature]['numeric_values'] = sorted(numeric_vals)
+                    final_stats[feature]['numeric_min'] = min(numeric_vals)
+                    final_stats[feature]['numeric_max'] = max(numeric_vals)
         elif sample_count > 0:
             # Feature exists but no values collected (might be None/null)
             final_stats[feature] = {
@@ -2215,8 +2383,22 @@ def get_database_statistics(feature_names: list, force_refresh: bool = False, da
     return None
 
 def load_feature_names() -> list:
-    """Return RAW UNSW-NB15 column names that the DataVectorizer expects as input.
-    The vectorizer handles all encoding (one-hot, label, log, scaling) internally."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    feature_names_path = os.path.join(base_dir, "..", "A-DataIngestion", "Processed", "feature_names.json")
+    feature_names_path = os.path.normpath(feature_names_path)
+    
+    if os.path.exists(feature_names_path):
+        try:
+            with open(feature_names_path, 'r') as f:
+                features = json.load(f)
+                logger.info(f"Loaded {len(features)} features from {feature_names_path}")
+                return features
+        except Exception as e:
+            logger.error(f"Error loading feature names: {e}")
+    else:
+        logger.warning(f"Feature names file not found at {feature_names_path}")
+    
+    logger.info("Using default feature set")
     return [
         "dur", "proto", "service", "state", "spkts", "dpkts", "sbytes", "dbytes",
         "rate", "sttl", "dttl", "sload", "dload", "sloss", "dloss", "sinpkt", "dinpkt",
@@ -2226,162 +2408,404 @@ def load_feature_names() -> list:
         "is_ftp_login", "ct_ftp_cmd", "ct_flw_http_mthd", "ct_src_ltm", "ct_srv_dst", "is_sm_ips_ports"
     ]
 
-_SAFE_TEMPLATES = [
-    {"dur":"1.051148","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"8","sbytes":"936","dbytes":"354","rate":"16.172793","sttl":"254","dttl":"252","sload":"6415.842285","dload":"2359.325195","sloss":"2","dloss":"1","sinpkt":"112.270222","dinpkt":"142.600578","sjit":"7987.718541","djit":"200.644531","swin":"255","stcpb":"4086146597","dtcpb":"182795087","dwin":"255","tcprtt":"0.105847","synack":"0.052936","ackdat":"0.052911","smean":"94","dmean":"44","trans_depth":"0","response_body_len":"0","ct_srv_src":"12","ct_state_ttl":"1","ct_dst_ltm":"5","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"12","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"17","is_sm_ips_ports":"0"},
-    {"dur":"0.893006","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"8","sbytes":"534","dbytes":"354","rate":"19.036826","sttl":"254","dttl":"252","sload":"4309.041504","dload":"2777.136963","sloss":"2","dloss":"1","sinpkt":"99.072556","dinpkt":"113.72543","sjit":"5841.744148","djit":"175.437641","swin":"255","stcpb":"386666398","dtcpb":"1493009112","dwin":"255","tcprtt":"0.152876","synack":"0.096918","ackdat":"0.055958","smean":"53","dmean":"44","trans_depth":"0","response_body_len":"0","ct_srv_src":"4","ct_state_ttl":"1","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"2","ct_dst_src_ltm":"3","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"3","is_sm_ips_ports":"0"},
-    {"dur":"0.791099","proto":"tcp","service":"-","state":"FIN","spkts":"16","dpkts":"12","sbytes":"922","dbytes":"642","rate":"34.129735","sttl":"254","dttl":"252","sload":"8747.325195","dload":"5956.270996","sloss":"5","dloss":"3","sinpkt":"52.739934","dinpkt":"68.261094","sjit":"3439.932838","djit":"98.826758","swin":"255","stcpb":"1984472663","dtcpb":"1174049858","dwin":"255","tcprtt":"0.061295","synack":"0.032636","ackdat":"0.028659","smean":"58","dmean":"54","trans_depth":"0","response_body_len":"0","ct_srv_src":"6","ct_state_ttl":"1","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"6","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"6","is_sm_ips_ports":"0"},
-    {"dur":"0.150081","proto":"tcp","service":"-","state":"CON","spkts":"6","dpkts":"2","sbytes":"978","dbytes":"86","rate":"46.641482","sttl":"62","dttl":"252","sload":"43443.21094","dload":"2292.095703","sloss":"2","dloss":"1","sinpkt":"30.0162","dinpkt":"0.004","sjit":"1899.658862","djit":"0","swin":"255","stcpb":"806568857","dtcpb":"3712035026","dwin":"255","tcprtt":"0.133288","synack":"0.072648","ackdat":"0.06064","smean":"163","dmean":"43","trans_depth":"0","response_body_len":"0","ct_srv_src":"8","ct_state_ttl":"3","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"8","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"8","is_sm_ips_ports":"0"},
-    {"dur":"0.645432","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"6","sbytes":"534","dbytes":"268","rate":"23.240249","sttl":"254","dttl":"252","sload":"5961.898438","dload":"2776.435059","sloss":"2","dloss":"1","sinpkt":"68.762222","dinpkt":"117.256797","sjit":"3961.98145","djit":"191.804344","swin":"255","stcpb":"1921691350","dtcpb":"1007322645","dwin":"255","tcprtt":"0.158264","synack":"0.059139","ackdat":"0.099125","smean":"53","dmean":"45","trans_depth":"0","response_body_len":"0","ct_srv_src":"4","ct_state_ttl":"1","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"4","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"4","is_sm_ips_ports":"0"},
-    {"dur":"1.144943","proto":"tcp","service":"http","state":"FIN","spkts":"12","dpkts":"18","sbytes":"1580","dbytes":"10168","rate":"25.328772","sttl":"31","dttl":"29","sload":"10124.52148","dload":"67105.52344","sloss":"3","dloss":"5","sinpkt":"104.053817","dinpkt":"67.318059","sjit":"10572.93372","djit":"8514.995115","swin":"255","stcpb":"598555952","dtcpb":"2745009965","dwin":"255","tcprtt":"0.000669","synack":"0.000533","ackdat":"0.000136","smean":"132","dmean":"565","trans_depth":"1","response_body_len":"0","ct_srv_src":"1","ct_state_ttl":"0","ct_dst_ltm":"4","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"1","ct_src_ltm":"3","ct_srv_dst":"4","is_sm_ips_ports":"0"},
-    {"dur":"0.086042","proto":"tcp","service":"-","state":"FIN","spkts":"72","dpkts":"76","sbytes":"4238","dbytes":"65392","rate":"1708.467921","sttl":"31","dttl":"29","sload":"388647.4063","dload":"6000046.5","sloss":"7","dloss":"30","sinpkt":"1.207","dinpkt":"1.139893","sjit":"80.990943","djit":"78.190416","swin":"255","stcpb":"1309193701","dtcpb":"1309494282","dwin":"255","tcprtt":"0.000906","synack":"0.000542","ackdat":"0.000364","smean":"59","dmean":"860","trans_depth":"0","response_body_len":"0","ct_srv_src":"7","ct_state_ttl":"0","ct_dst_ltm":"2","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"14","is_sm_ips_ports":"0"},
-    {"dur":"0.723204","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"6","sbytes":"956","dbytes":"268","rate":"20.741035","sttl":"254","dttl":"252","sload":"9524.283203","dload":"2477.862305","sloss":"2","dloss":"1","sinpkt":"75.823333","dinpkt":"126.160797","sjit":"4046.010424","djit":"183.468156","swin":"255","stcpb":"2100472424","dtcpb":"1789886347","dwin":"255","tcprtt":"0.196422","synack":"0.092399","ackdat":"0.104023","smean":"96","dmean":"45","trans_depth":"0","response_body_len":"0","ct_srv_src":"4","ct_state_ttl":"1","ct_dst_ltm":"2","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"2","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"4","is_sm_ips_ports":"0"},
-    {"dur":"0.000012","proto":"udp","service":"-","state":"INT","spkts":"2","dpkts":"0","sbytes":"1934","dbytes":"0","rate":"83333.33039","sttl":"254","dttl":"0","sload":"644666624","dload":"0","sloss":"0","dloss":"0","sinpkt":"0.012","dinpkt":"0","sjit":"0","djit":"0","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"967","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"6","ct_state_ttl":"2","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"6","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"6","is_sm_ips_ports":"0"},
-    {"dur":"0.004801","proto":"tcp","service":"-","state":"FIN","spkts":"22","dpkts":"14","sbytes":"1470","dbytes":"1728","rate":"7290.147882","sttl":"31","dttl":"29","sload":"2339512.5","dload":"2674442.75","sloss":"5","dloss":"4","sinpkt":"0.228619","dinpkt":"0.317692","sjit":"13.553399","djit":"0.418939","swin":"255","stcpb":"1046166650","dtcpb":"1046447478","dwin":"255","tcprtt":"0.000928","synack":"0.00053","ackdat":"0.000398","smean":"67","dmean":"123","trans_depth":"0","response_body_len":"0","ct_srv_src":"5","ct_state_ttl":"0","ct_dst_ltm":"3","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"4","is_sm_ips_ports":"0"},
-    {"dur":"0.534047","proto":"tcp","service":"http","state":"FIN","spkts":"10","dpkts":"8","sbytes":"828","dbytes":"1066","rate":"31.832404","sttl":"62","dttl":"252","sload":"11175.0459","dload":"13976.29785","sloss":"2","dloss":"2","sinpkt":"59.338556","dinpkt":"60.476855","sjit":"2918.248049","djit":"99.108773","swin":"255","stcpb":"1232103614","dtcpb":"352881835","dwin":"255","tcprtt":"0.152411","synack":"0.088684","ackdat":"0.063727","smean":"83","dmean":"133","trans_depth":"1","response_body_len":"126","ct_srv_src":"10","ct_state_ttl":"1","ct_dst_ltm":"6","ct_src_dport_ltm":"5","ct_dst_sport_ltm":"2","ct_dst_src_ltm":"10","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"4","ct_src_ltm":"5","ct_srv_dst":"10","is_sm_ips_ports":"0"},
-    {"dur":"0.020864","proto":"tcp","service":"-","state":"FIN","spkts":"46","dpkts":"48","sbytes":"2854","dbytes":"30622","rate":"4457.438534","sttl":"31","dttl":"29","sload":"1070552.125","dload":"11497316","sloss":"7","dloss":"17","sinpkt":"0.456578","dinpkt":"0.432809","sjit":"30.890742","djit":"30.143443","swin":"255","stcpb":"2170156398","dtcpb":"2181853152","dwin":"255","tcprtt":"0.000652","synack":"0.000518","ackdat":"0.000134","smean":"62","dmean":"638","trans_depth":"0","response_body_len":"0","ct_srv_src":"11","ct_state_ttl":"0","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"3","is_sm_ips_ports":"0"},
-    {"dur":"0.334611","proto":"tcp","service":"-","state":"CON","spkts":"6","dpkts":"2","sbytes":"978","dbytes":"86","rate":"20.919814","sttl":"62","dttl":"252","sload":"19485.3125","dload":"1028.059448","sloss":"2","dloss":"1","sinpkt":"66.9222","dinpkt":"0","sjit":"3925.43813","djit":"0","swin":"255","stcpb":"470487264","dtcpb":"2986765766","dwin":"255","tcprtt":"0.269988","synack":"0.179548","ackdat":"0.09044","smean":"163","dmean":"43","trans_depth":"0","response_body_len":"0","ct_srv_src":"5","ct_state_ttl":"3","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"4","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"4","is_sm_ips_ports":"0"},
-    {"dur":"0.292636","proto":"tcp","service":"-","state":"CON","spkts":"6","dpkts":"2","sbytes":"1012","dbytes":"86","rate":"23.920501","sttl":"62","dttl":"252","sload":"23073.03125","dload":"1175.521729","sloss":"2","dloss":"1","sinpkt":"58.5272","dinpkt":"0.009","sjit":"3951.720039","djit":"0","swin":"255","stcpb":"329909538","dtcpb":"1858697271","dwin":"255","tcprtt":"0.279125","synack":"0.210856","ackdat":"0.068269","smean":"169","dmean":"43","trans_depth":"0","response_body_len":"0","ct_srv_src":"4","ct_state_ttl":"3","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"4","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"4","is_sm_ips_ports":"0"},
-    {"dur":"0.046028","proto":"tcp","service":"-","state":"FIN","spkts":"72","dpkts":"74","sbytes":"4238","dbytes":"63878","rate":"3150.256409","sttl":"31","dttl":"29","sload":"726514.3125","dload":"10952464","sloss":"7","dloss":"30","sinpkt":"0.641775","dinpkt":"0.621945","sjit":"36.64745","djit":"36.374344","swin":"255","stcpb":"2540909347","dtcpb":"2541211363","dwin":"255","tcprtt":"0.000801","synack":"0.000615","ackdat":"0.000186","smean":"59","dmean":"863","trans_depth":"0","response_body_len":"0","ct_srv_src":"6","ct_state_ttl":"0","ct_dst_ltm":"3","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"4","is_sm_ips_ports":"0"},
-    {"dur":"0.130028","proto":"tcp","service":"-","state":"CON","spkts":"6","dpkts":"2","sbytes":"1012","dbytes":"86","rate":"53.834561","sttl":"62","dttl":"252","sload":"51927.28125","dload":"2645.584229","sloss":"2","dloss":"1","sinpkt":"26.0056","dinpkt":"0.002","sjit":"1543.219652","djit":"0","swin":"255","stcpb":"1151716320","dtcpb":"1978852486","dwin":"255","tcprtt":"0.106594","synack":"0.073924","ackdat":"0.03267","smean":"169","dmean":"43","trans_depth":"0","response_body_len":"0","ct_srv_src":"9","ct_state_ttl":"3","ct_dst_ltm":"4","ct_src_dport_ltm":"4","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"9","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"4","ct_srv_dst":"9","is_sm_ips_ports":"0"},
-    {"dur":"8.232217","proto":"tcp","service":"-","state":"REQ","spkts":"12","dpkts":"0","sbytes":"540","dbytes":"0","rate":"1.336214","sttl":"254","dttl":"0","sload":"481.036896","dload":"0","sloss":"11","dloss":"0","sinpkt":"748.383375","dinpkt":"0","sjit":"1073.022","djit":"0","swin":"255","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"45","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"18","ct_state_ttl":"6","ct_dst_ltm":"11","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"2","ct_dst_src_ltm":"18","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"11","ct_srv_dst":"17","is_sm_ips_ports":"0"},
-    {"dur":"0.000006","proto":"udp","service":"-","state":"INT","spkts":"2","dpkts":"0","sbytes":"1520","dbytes":"0","rate":"166666.6608","sttl":"254","dttl":"0","sload":"1013333312","dload":"0","sloss":"0","dloss":"0","sinpkt":"0.006","dinpkt":"0","sjit":"0","djit":"0","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"760","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"6","ct_state_ttl":"2","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"6","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"6","is_sm_ips_ports":"0"},
-    {"dur":"0.000004","proto":"udp","service":"-","state":"INT","spkts":"2","dpkts":"0","sbytes":"78","dbytes":"0","rate":"250000.0006","sttl":"254","dttl":"0","sload":"78000000","dload":"0","sloss":"0","dloss":"0","sinpkt":"0.004","dinpkt":"0","sjit":"0","djit":"0","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"39","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"7","ct_state_ttl":"2","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"4","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"4","is_sm_ips_ports":"0"},
-    {"dur":"0.277692","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"6","sbytes":"588","dbytes":"268","rate":"54.016682","sttl":"254","dttl":"252","sload":"15268.71582","dload":"6453.192871","sloss":"2","dloss":"1","sinpkt":"29.765778","dinpkt":"48.229602","sjit":"1552.039666","djit":"75.641508","swin":"255","stcpb":"2321832564","dtcpb":"3615855187","dwin":"255","tcprtt":"0.075255","synack":"0.036539","ackdat":"0.038716","smean":"59","dmean":"45","trans_depth":"0","response_body_len":"0","ct_srv_src":"1","ct_state_ttl":"1","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"1","is_sm_ips_ports":"0"},
-    {"dur":"0.002083","proto":"udp","service":"dns","state":"CON","spkts":"4","dpkts":"4","sbytes":"512","dbytes":"304","rate":"3360.53764","sttl":"31","dttl":"29","sload":"1474796","dload":"875660.0625","sloss":"0","dloss":"0","sinpkt":"0.571333","dinpkt":"0.213","sjit":"0.802331","djit":"0.298399","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"128","dmean":"76","trans_depth":"0","response_body_len":"0","ct_srv_src":"10","ct_state_ttl":"0","ct_dst_ltm":"7","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"3","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"10","is_sm_ips_ports":"0"},
-    {"dur":"0.92078","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"6","sbytes":"630","dbytes":"268","rate":"16.290536","sttl":"254","dttl":"252","sload":"4926.258301","dload":"1946.176025","sloss":"2","dloss":"1","sinpkt":"95.077444","dinpkt":"164.211594","sjit":"5159.077923","djit":"258.478078","swin":"255","stcpb":"1335194272","dtcpb":"2375593094","dwin":"255","tcprtt":"0.254808","synack":"0.099721","ackdat":"0.155087","smean":"63","dmean":"45","trans_depth":"0","response_body_len":"0","ct_srv_src":"5","ct_state_ttl":"1","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"5","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"5","is_sm_ips_ports":"0"},
-    {"dur":"0.199754","proto":"tcp","service":"-","state":"FIN","spkts":"16","dpkts":"18","sbytes":"1540","dbytes":"1644","rate":"165.2032","sttl":"31","dttl":"29","sload":"57831.13281","dload":"62196.5","sloss":"4","dloss":"4","sinpkt":"13.2936","dinpkt":"11.719588","sjit":"946.831911","djit":"30.536279","swin":"255","stcpb":"597156973","dtcpb":"637658311","dwin":"255","tcprtt":"0.000648","synack":"0.000514","ackdat":"0.000134","smean":"96","dmean":"91","trans_depth":"0","response_body_len":"0","ct_srv_src":"10","ct_state_ttl":"0","ct_dst_ltm":"7","ct_src_dport_ltm":"5","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"5","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"8","ct_srv_dst":"6","is_sm_ips_ports":"0"},
-    {"dur":"0.017872","proto":"tcp","service":"-","state":"FIN","spkts":"44","dpkts":"46","sbytes":"2766","dbytes":"24004","rate":"4979.856728","sttl":"31","dttl":"29","sload":"1210385","dload":"10511638","sloss":"7","dloss":"16","sinpkt":"0.408256","dinpkt":"0.386133","sjit":"0","djit":"25.792413","swin":"255","stcpb":"3032253943","dtcpb":"3039132544","dwin":"255","tcprtt":"0.000872","synack":"0.000492","ackdat":"0.00038","smean":"63","dmean":"522","trans_depth":"0","response_body_len":"0","ct_srv_src":"6","ct_state_ttl":"0","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"8","is_sm_ips_ports":"0"},
-    {"dur":"0.539619","proto":"tcp","service":"-","state":"FIN","spkts":"10","dpkts":"6","sbytes":"650","dbytes":"268","rate":"27.797389","sttl":"254","dttl":"252","sload":"8672.785156","dload":"3320.861328","sloss":"2","dloss":"1","sinpkt":"57.330222","dinpkt":"94.990203","sjit":"3299.790564","djit":"157.307297","swin":"255","stcpb":"1284416270","dtcpb":"3057937301","dwin":"255","tcprtt":"0.133117","synack":"0.064659","ackdat":"0.068458","smean":"65","dmean":"45","trans_depth":"0","response_body_len":"0","ct_srv_src":"7","ct_state_ttl":"1","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"6","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"6","is_sm_ips_ports":"0"},
-    {"dur":"0.510235","proto":"tcp","service":"smtp","state":"FIN","spkts":"52","dpkts":"42","sbytes":"37496","dbytes":"3380","rate":"182.26895","sttl":"31","dttl":"29","sload":"576597.0625","dload":"51740.86328","sloss":"18","dloss":"8","sinpkt":"9.995157","dinpkt":"12.43278","sjit":"782.624144","djit":"25.029299","swin":"255","stcpb":"3750640182","dtcpb":"3871597945","dwin":"255","tcprtt":"0.000649","synack":"0.000487","ackdat":"0.000162","smean":"721","dmean":"80","trans_depth":"0","response_body_len":"0","ct_srv_src":"2","ct_state_ttl":"0","ct_dst_ltm":"3","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"2","ct_dst_src_ltm":"2","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"3","ct_srv_dst":"3","is_sm_ips_ports":"0"},
-    {"dur":"0.001047","proto":"udp","service":"dns","state":"CON","spkts":"2","dpkts":"2","sbytes":"146","dbytes":"178","rate":"2865.329359","sttl":"31","dttl":"29","sload":"557784.125","dload":"680038.1875","sloss":"0","dloss":"0","sinpkt":"0.011","dinpkt":"0.008","sjit":"0","djit":"0","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"73","dmean":"89","trans_depth":"0","response_body_len":"0","ct_srv_src":"3","ct_state_ttl":"0","ct_dst_ltm":"5","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"2","is_sm_ips_ports":"0"},
-    {"dur":"15.008936","proto":"tcp","service":"-","state":"REQ","spkts":"8","dpkts":"0","sbytes":"360","dbytes":"0","rate":"0.466389","sttl":"254","dttl":"0","sload":"167.899979","dload":"0","sloss":"7","dloss":"0","sinpkt":"2144.13375","dinpkt":"0","sjit":"4393.9205","djit":"0","swin":"255","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"45","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"11","ct_state_ttl":"6","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"2","ct_dst_src_ltm":"11","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"2","ct_srv_dst":"11","is_sm_ips_ports":"0"},
-]
-
-_PERTURB_KEYS = [
-    'dur', 'sbytes', 'dbytes', 'rate', 'sload', 'dload', 'sinpkt', 'dinpkt',
-    'sjit', 'djit', 'tcprtt', 'synack', 'ackdat'
-]
-
-# data generation mode: controls how random records are created
-#  * template  - original behaviour (sample from safe templates, ±15% perturb)
-#  * random    - ignore templates; heavy perturbations so records rarely match training set
-#  * mixed     - mostly template but occasionally inject a large out‑of‑range anomaly
-DATA_GENERATION_MODE = os.getenv("DATA_GENERATION_MODE", "mixed").lower()
-
-# build a few anomaly templates by taking safe records and blowing up numeric
-# features; this happens once when the module is imported.  keeping them in a
-# list makes the behaviour reproducible across runs (random seed applies during
-# service start).  the perturb step below may further modify them.
-_ANOMALY_TEMPLATES = []
-for _ in range(3):
-    if _SAFE_TEMPLATES:
-        t = random.choice(_SAFE_TEMPLATES).copy()
-        for key in _PERTURB_KEYS:
-            if key in t:
-                try:
-                    val = float(t[key])
-                    t[key] = str(val * random.uniform(5.0, 10.0))
-                except Exception:
-                    pass
-        _ANOMALY_TEMPLATES.append(t)
-    else:
-        # fallback hard‑coded if safe list is empty
-        _ANOMALY_TEMPLATES.append({"dur": "9999", "proto": "tcp", "service": "http"})
-
-# explicit unsafe records copied from real training/testing data (label=1)
-_UNSAFE_TEMPLATES = [
-    {"dur":"0.921987","proto":"ospf","service":"-","state":"INT","spkts":"20","dpkts":"0","sbytes":"1280","dbytes":"0","rate":"20.607666","sttl":"254","dttl":"0","sload":"10551.125","dload":"0","sloss":"0","dloss":"0","sinpkt":"48.525633","dinpkt":"0","sjit":"52.253805","djit":"0","swin":"0","stcpb":"0","dtcpb":"0","dwin":"0","tcprtt":"0","synack":"0","ackdat":"0","smean":"64","dmean":"0","trans_depth":"0","response_body_len":"0","ct_srv_src":"1","ct_state_ttl":"2","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"2","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"1","ct_srv_dst":"1","is_sm_ips_ports":"0"},
-    {"dur":"0.224524","proto":"tcp","service":"http","state":"FIN","spkts":"10","dpkts":"8","sbytes":"830","dbytes":"960","rate":"75.715734","sttl":"62","dttl":"252","sload":"26616.30664","dload":"29929.98438","sloss":"2","dloss":"2","sinpkt":"24.947111","dinpkt":"30.407428","sjit":"1344.946273","djit":"54.342605","swin":"255","stcpb":"3306255269","dtcpb":"327760033","dwin":"255","tcprtt":"0.055643","synack":"0.00698","ackdat":"0.048663","smean":"83","dmean":"120","trans_depth":"1","response_body_len":"66","ct_srv_src":"3","ct_state_ttl":"1","ct_dst_ltm":"2","ct_src_dport_ltm":"2","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"2","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"1","ct_src_ltm":"2","ct_srv_dst":"3","is_sm_ips_ports":"0"},
-    {"dur":"0.502392","proto":"tcp","service":"http","state":"FIN","spkts":"10","dpkts":"8","sbytes":"938","dbytes":"354","rate":"33.838119","sttl":"254","dttl":"252","sload":"13455.62891","dload":"4936.384277","sloss":"2","dloss":"1","sinpkt":"53.853","dinpkt":"62.081","sjit":"3382.950901","djit":"125.017484","swin":"255","stcpb":"212558147","dtcpb":"1344236237","dwin":"255","tcprtt":"0.10843","synack":"0.067821","ackdat":"0.040609","smean":"94","dmean":"44","trans_depth":"0","response_body_len":"0","ct_srv_src":"1","ct_state_ttl":"0","ct_dst_ltm":"1","ct_src_dport_ltm":"1","ct_dst_sport_ltm":"1","ct_dst_src_ltm":"1","is_ftp_login":"0","ct_ftp_cmd":"0","ct_flw_http_mthd":"0","ct_src_ltm":"0","ct_srv_dst":"1","is_sm_ips_ports":"0"},
-]
-
-def _perturb_numeric(value: Any, strength: float) -> Any:
-    """Apply a perturbation factor to a numeric value; non‑numeric values are left alone."""
-    try:
-        if isinstance(value, (int, float)):
-            return value * strength
-        # string representation of a number
-        if isinstance(value, str):
-            if '.' in value:
-                return float(value) * strength
-            else:
-                return int(value) * strength
-    except Exception:
-        pass
-    return value
-
-
-def generate_random_data(feature_names: list) -> dict:
-    """Produce one record according to the current DATA_GENERATION_MODE.
-
-    The original implementation was hard‑coded to sample from
-    ``_SAFE_TEMPLATES`` and perturb a handful of numeric features by +/-15%.
-    That guarantees the generated sample is nearly identical to something the
-    model was trained on; hence analytics always report 100% safe.  By allowing
-    other modes we can create genuinely new inputs for more realistic testing.
+def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
     """
-    mode = DATA_GENERATION_MODE
-
-    # pick a base template to start from (even in "random" mode we use it as a
-    # convenient container of all feature names so we don't accidentally omit
-    # fields); the perturbation strength varies by mode.
-    base = random.choice(_SAFE_TEMPLATES)
+    Generate random data based on database statistics if available, otherwise use defaults.
+    
+    Args:
+        feature_names: List of feature names to generate
+        db_stats: Optional dictionary of database statistics (min/max/range per feature)
+    """
     data = {}
-    for k, v in base.items():
-        data[k] = v  # will be converted below
-
-    # sometimes select a real unsafe template so the model will label it
-    # unsafe.  make this more frequent when in random/mixed modes.
-    # reduced probability to 25% for better balance; randomization happens at WebSocket level
-    if mode in ("random", "mixed") and random.random() < 0.25:
-        data = random.choice(_UNSAFE_TEMPLATES).copy()
-    # occasionally return one of the synthetic anomaly templates in mixed mode
-    elif mode == "mixed" and random.random() < 0.05:
-        data = random.choice(_ANOMALY_TEMPLATES).copy()
-    elif mode == "random" and random.random() < 0.05:
-        # occasionally add a blatant anomaly even in random mode so the rate
-        # is not zero during short demos (reduced from 10% to 5%)
-        data = random.choice(_ANOMALY_TEMPLATES).copy()
-
-    # decide perturbation factor ranges based on mode
-    if mode == "template":
-        min_f, max_f = 0.85, 1.15
-    elif mode == "random":
-        min_f, max_f = 0.5, 2.0
-    elif mode == "mixed":
-        # if we already selected an anomaly template above, make the numbers
-        # huge, otherwise behave like template mode and rely on branch to
-        # occasionally produce anomalies next call
-        if data in _ANOMALY_TEMPLATES:
-            min_f, max_f = 3.0, 10.0
+    
+    # Get database statistics if not provided
+    if db_stats is None:
+        db_stats = get_database_statistics(feature_names)
+    
+    # Occasionally generate anomalous patterns (5% chance)
+    is_anomaly_pattern = random.random() < 0.05
+    
+    proto_features = [f for f in feature_names if f.startswith("proto_")]
+    state_features = [f for f in feature_names if f.startswith("state_")]
+    service_features = [f for f in feature_names if f.startswith("service_")]
+    
+    def get_feature_range(feature: str, default_min: float, default_max: float) -> tuple:
+        """Get min/max range for a feature from database stats or use defaults."""
+        if db_stats and feature in db_stats:
+            feature_stat = db_stats[feature]
+            if 'min' in feature_stat and 'max' in feature_stat:
+                min_val = feature_stat['min']
+                max_val = feature_stat['max']
+                # CRITICAL: Only return if values are not None
+                if min_val is not None and max_val is not None:
+                    logger.debug(f"Feature '{feature}': using database stats - min={min_val}, max={max_val}")
+                    return min_val, max_val
+            else:
+                logger.warning(f"Feature '{feature}': found in db_stats but missing min/max, using defaults - min={default_min}, max={default_max}")
         else:
-            min_f, max_f = 0.85, 1.15
-    else:
-        # fallback to template behaviour on unrecognised mode
-        min_f, max_f = 0.85, 1.15
-
-    # perturb a random subset of numeric features
-    n_perturb = random.randint(3, 6)
-    for key in random.sample(_PERTURB_KEYS, min(n_perturb, len(_PERTURB_KEYS))):
-        if key in data:
-            orig = data[key]
-            try:
-                num = float(orig)
-            except Exception:
-                continue
-            if num == 0:
-                continue
-            strength = random.uniform(min_f, max_f)
-            newval = num * strength
-            # preserve integer type when appropriate
-            data[key] = int(newval) if isinstance(orig, (int, str)) and str(orig).isdigit() else round(newval, 6)
-
-    # randomize TCP sequence numbers to avoid exact duplicates
-    if data.get("proto") == "tcp" and data.get("stcpb", 0) != "" and int(data.get("stcpb", 0)) > 0:
-        data["stcpb"] = random.randint(100000000, 4000000000)
-        data["dtcpb"] = random.randint(100000000, 4000000000)
-
+            # Try case-insensitive match
+            if db_stats:
+                for key in db_stats.keys():
+                    if key.lower() == feature.lower():
+                        feature_stat = db_stats[key]
+                        if 'min' in feature_stat and 'max' in feature_stat:
+                            min_val = feature_stat['min']
+                            max_val = feature_stat['max']
+                            logger.info(f"Feature '{feature}': found case-insensitive match '{key}' - min={min_val}, max={max_val}")
+                            return min_val, max_val
+            logger.warning(f"Feature '{feature}': not found in db_stats, using defaults - min={default_min}, max={default_max}")
+        return default_min, default_max
+    
+    def generate_numeric_value(feature: str, default_min: float, default_max: float, 
+                              anomaly_multiplier: float = 2.0, decimals: int = 6) -> float:
+        """Generate a numeric value within the feature's range from database, respecting data type."""
+        min_val, max_val = get_feature_range(feature, default_min, default_max)
+        
+        # Check if feature should be integer based on database statistics
+        is_integer = False
+        if db_stats and feature in db_stats:
+            stat = db_stats[feature]
+            is_integer = stat.get('is_integer', False)
+            # Override decimals if it's an integer type
+            if is_integer:
+                decimals = 0
+        
+        if is_anomaly_pattern and random.random() < 0.3:
+            # Anomaly: extend beyond max range
+            anomaly_max = max_val * anomaly_multiplier
+            value = random.uniform(max_val, anomaly_max)
+        else:
+            # Normal: within range, use statistics for better distribution
+            if db_stats and feature in db_stats:
+                stat = db_stats[feature]
+                # Use percentile-based distribution for more realistic values
+                if 'p25' in stat and 'p75' in stat and 'mean' in stat:
+                    # Weighted distribution: 40% around mean, 30% in percentile range, 30% full range
+                    rand = random.random()
+                    if rand < 0.4:
+                        # Generate around mean (within 20% of range)
+                        mean_val = stat['mean']
+                        range_val = stat.get('range', max_val - min_val)
+                        value = random.uniform(
+                            max(min_val, mean_val - 0.1 * range_val),
+                            min(max_val, mean_val + 0.1 * range_val)
+                        )
+                    elif rand < 0.7:
+                        # Use percentile range (more common values)
+                        value = random.uniform(stat['p25'], stat['p75'])
+                    else:
+                        # Use full range
+                        value = random.uniform(min_val, max_val)
+                elif 'p25' in stat and 'p75' in stat:
+                    # Use percentile-based distribution
+                    if random.random() < 0.6:
+                        value = random.uniform(stat['p25'], stat['p75'])
+                    else:
+                        value = random.uniform(min_val, max_val)
+                else:
+                    value = random.uniform(min_val, max_val)
+            else:
+                value = random.uniform(min_val, max_val)
+        
+        # Round appropriately based on type
+        if is_integer:
+            return int(round(value))
+        else:
+            return round(value, decimals)
+    
+    def generate_integer_value(feature: str, default_min: int, default_max: int, 
+                               anomaly_multiplier: float = 2.0) -> int:
+        """Generate an integer value within the feature's range from database."""
+        min_val, max_val = get_feature_range(feature, float(default_min), float(default_max))
+        min_val = int(min_val)
+        max_val = int(max_val)
+        
+        if is_anomaly_pattern and random.random() < 0.4:
+            # Anomaly: extend beyond max range
+            anomaly_max = int(max_val * anomaly_multiplier)
+            return random.randint(max_val, anomaly_max)
+        else:
+            # Normal: within range, use statistics for better distribution
+            if db_stats and feature in db_stats:
+                stat = db_stats[feature]
+                # Use percentile-based distribution for more realistic integer values
+                if 'p25' in stat and 'p75' in stat and 'mean' in stat:
+                    # Weighted distribution: 40% around mean, 30% in percentile range, 30% full range
+                    rand = random.random()
+                    if rand < 0.4:
+                        # Generate around mean (within 20% of range)
+                        mean_val = int(stat['mean'])
+                        range_val = stat.get('range', max_val - min_val)
+                        lower = max(min_val, int(mean_val - 0.1 * range_val))
+                        upper = min(max_val, int(mean_val + 0.1 * range_val))
+                        if lower <= upper:
+                            return random.randint(lower, upper)
+                    elif rand < 0.7:
+                        # Use percentile range (more common values)
+                        p25 = int(stat['p25']) if stat['p25'] is not None else min_val
+                        p75 = int(stat['p75']) if stat['p75'] is not None else max_val
+                        if p25 <= p75:
+                            return random.randint(p25, p75)
+                    # Fall through to full range
+                elif 'p25' in stat and 'p75' in stat:
+                    # Use percentile-based distribution
+                    if random.random() < 0.6:
+                        p25 = int(stat['p25']) if stat['p25'] is not None else min_val
+                        p75 = int(stat['p75']) if stat['p75'] is not None else max_val
+                        if p25 <= p75:
+                            return random.randint(p25, p75)
+            
+            # Default: use full range
+            return random.randint(min_val, max_val)
+    
+    for feature in feature_names:
+        if feature == "dur":
+            # Duration: use database range, check if integer type
+            if db_stats and feature in db_stats and db_stats[feature].get('is_integer', False):
+                data[feature] = generate_integer_value(feature, 0, 5000, anomaly_multiplier=10.0)
+            else:
+                data[feature] = generate_numeric_value(feature, 0.0, 5000.0, anomaly_multiplier=10.0)
+        elif feature.startswith("proto_"):
+            # Protocol features: binary, use database to determine probability distribution
+            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
+                # Use actual values from database
+                unique_vals = db_stats[feature]['unique_values']
+                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.15 else 0)
+            else:
+                prob = 0.3 if is_anomaly_pattern else random.uniform(0.05, 0.25)
+                data[feature] = 1 if random.random() < prob else 0
+        elif feature.startswith("state_"):
+            # State features: binary
+            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
+                unique_vals = db_stats[feature]['unique_values']
+                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.25 else 0)
+            else:
+                prob = 0.5 if is_anomaly_pattern else random.uniform(0.1, 0.4)
+                data[feature] = 1 if random.random() < prob else 0
+        elif feature.startswith("service_"):
+            # Service features: binary
+            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
+                unique_vals = db_stats[feature]['unique_values']
+                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.15 else 0)
+            else:
+                prob = 0.4 if is_anomaly_pattern else random.uniform(0.05, 0.3)
+                data[feature] = 1 if random.random() < prob else 0
+        elif feature.lower() in ["spkts", "dpkts", "sbytes", "dbytes", "sttl", "dttl", 
+                         "sloss", "dloss", "swin", "stcpb", "dtcpb", "dwin",
+                         "tcprtt", "synack", "ackdat", "trans_depth", "response_body_len",
+                         "ct_srv_src", "ct_state_ttl", "ct_dst_ltm", "ct_src_dport_ltm",
+                         "ct_dst_sport_ltm", "ct_dst_src_ltm", "ct_ftp_cmd", "ct_flw_http_mthd",
+                         "ct_src_ltm", "ct_srv_dst", "sload", "dload", "sinpkt", "dinpkt",
+                         "sjit", "djit", "smean", "dmean"]:
+            # Packet/connection features: use database range (typically integers)
+            # Check database to see if it's actually integer type, otherwise use default
+            if db_stats and feature in db_stats:
+                stat = db_stats[feature]
+                # CRITICAL: Only use actual database values, not defaults
+                if 'min' in stat and 'max' in stat:
+                    min_val = stat['min']
+                    max_val = stat['max']
+                    if stat.get('is_integer', True):
+                        data[feature] = generate_integer_value(feature, int(min_val), int(max_val), anomaly_multiplier=20.0)
+                    else:
+                        # Some might be floats, use appropriate decimals
+                        decimals = 2 if (max_val - min_val) > 1000 else 6
+                        data[feature] = generate_numeric_value(feature, float(min_val), float(max_val), anomaly_multiplier=20.0, decimals=decimals)
+                else:
+                    # Stats exist but no min/max - use conservative defaults
+                    logger.warning(f"Feature '{feature}': stats exist but missing min/max, using conservative defaults")
+                    data[feature] = generate_integer_value(feature, 0, 1000, anomaly_multiplier=20.0)
+            else:
+                # Try case-insensitive match
+                matched = False
+                if db_stats:
+                    for key in db_stats.keys():
+                        if key.lower() == feature.lower():
+                            stat = db_stats[key]
+                            if 'min' in stat and 'max' in stat:
+                                min_val = stat['min']
+                                max_val = stat['max']
+                                if stat.get('is_integer', True):
+                                    data[feature] = generate_integer_value(feature, int(min_val), int(max_val), anomaly_multiplier=20.0)
+                                else:
+                                    decimals = 2 if (max_val - min_val) > 1000 else 6
+                                    data[feature] = generate_numeric_value(feature, float(min_val), float(max_val), anomaly_multiplier=20.0, decimals=decimals)
+                                matched = True
+                                break
+                if not matched:
+                    logger.warning(f"Feature '{feature}': not found in db_stats, using conservative defaults")
+                    data[feature] = generate_integer_value(feature, 0, 1000, anomaly_multiplier=20.0)
+        elif feature.lower() in ["rate"]:
+            # Rate/load features: use database range (typically floats)
+            if db_stats and feature in db_stats:
+                stat = db_stats[feature]
+                # CRITICAL: Only use actual database values, check if keys exist
+                if 'min' in stat and 'max' in stat and stat['min'] is not None and stat['max'] is not None:
+                    min_val = stat['min']
+                    max_val = stat['max']
+                # Determine appropriate decimals based on range
+                range_val = max_val - min_val
+                if range_val < 1.0:
+                    decimals = 6
+                elif range_val < 100.0:
+                    decimals = 4
+                elif range_val < 10000.0:
+                    decimals = 2
+                else:
+                    decimals = 0
+                data[feature] = generate_numeric_value(feature, min_val, max_val, anomaly_multiplier=10.0, decimals=decimals)
+            else:
+                data[feature] = generate_numeric_value(feature, 0.0, 1000000.0, anomaly_multiplier=10.0, decimals=2)
+        elif feature in ["proto", "service", "state"]:
+            # Categorical string features: use database unique values if available
+            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
+                unique_vals = db_stats[feature]['unique_values']
+                if unique_vals:
+                    data[feature] = random.choice(list(unique_vals))
+                else:
+                    # Fallback values
+                    if feature == "proto":
+                        data[feature] = random.choice(["tcp", "udp", "icmp"])
+                    elif feature == "service":
+                        data[feature] = random.choice(["-", "http", "dns", "ftp"])
+                    elif feature == "state":
+                        data[feature] = random.choice(["INT", "CON", "FIN", "ACC"])
+            else:
+                # Fallback values
+                if feature == "proto":
+                    data[feature] = random.choice(["tcp", "udp", "icmp"])
+                elif feature == "service":
+                    data[feature] = random.choice(["-", "http", "dns", "ftp"])
+                elif feature == "state":
+                    data[feature] = random.choice(["INT", "CON", "FIN", "ACC"])
+        elif feature in ["is_ftp_login", "is_sm_ips_ports"]:
+            # Boolean features: use database distribution if available
+            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
+                unique_vals = db_stats[feature]['unique_values']
+                # Convert string "0"/"1" to int if needed
+                if unique_vals:
+                    val = random.choice(list(unique_vals))
+                    # Try to convert to int if it's a numeric string
+                    num_val, is_num = _try_convert_to_number(val)
+                    data[feature] = int(num_val) if is_num and num_val is not None else val
+                else:
+                    data[feature] = 1 if random.random() < 0.1 else 0
+            else:
+                prob = 0.8 if is_anomaly_pattern else random.uniform(0.0, 0.3)
+                data[feature] = 1 if random.random() < prob else 0
+        elif feature in ["byte_ratio", "pkt_ratio", "flow_rate", "pkt_rate"]:
+            # Ratio features: use database range (typically floats with more precision)
+            if db_stats and feature in db_stats:
+                stat = db_stats[feature]
+                # CRITICAL: Only use actual database values
+                if 'min' in stat and 'max' in stat and stat['min'] is not None and stat['max'] is not None:
+                    min_val = stat['min']
+                    max_val = stat['max']
+                    # Ratios typically need more precision
+                    decimals = 4 if (max_val - min_val) < 10 else 2
+                    data[feature] = generate_numeric_value(feature, float(min_val), float(max_val), anomaly_multiplier=5.0, decimals=decimals)
+                else:
+                    logger.warning(f"Feature '{feature}': stats exist but missing min/max, using conservative defaults")
+                    data[feature] = generate_numeric_value(feature, 0.0, 10.0, anomaly_multiplier=5.0, decimals=4)
+            else:
+                logger.warning(f"Feature '{feature}': not found in db_stats, using conservative defaults")
+                data[feature] = generate_numeric_value(feature, 0.0, 10.0, anomaly_multiplier=5.0, decimals=4)
+        else:
+            # Default: use database range or fallback, check if integer type
+            min_val, max_val = get_feature_range(feature, 0.0, 10000.0)
+            
+            # Check database statistics to determine if feature is integer type
+            is_integer = False
+            if db_stats and feature in db_stats:
+                is_integer = db_stats[feature].get('is_integer', False)
+            
+            if is_integer or (isinstance(max_val, int) and max_val <= 1000):
+                # Generate as integer
+                data[feature] = generate_integer_value(feature, int(min_val), int(max_val))
+            else:
+                # Generate as float
+                # Determine appropriate decimals based on range
+                range_val = max_val - min_val
+                if range_val < 1.0:
+                    decimals = 6
+                elif range_val < 100.0:
+                    decimals = 4
+                elif range_val < 10000.0:
+                    decimals = 2
+                else:
+                    decimals = 0
+                data[feature] = generate_numeric_value(feature, min_val, max_val, decimals=decimals)
+    
     return data
+
+async def fetch_random_test_data(dataset_name: str = None) -> Optional[dict]:
+    """
+    Fetch a random test data record from the Data Ingestion Service /random-test endpoint.
+    This endpoint uses ORDER BY RANDOM() LIMIT 1 for efficient random selection.
+    
+    Args:
+        dataset_name: Optional dataset name to use (defaults to "default" if None)
+        
+    Returns:
+        Dictionary with test data features, or None if unavailable
+    """
+    try:
+        url = f"{DATA_INGESTION_SERVICE_URL}/random-test"
+        headers = {}
+        
+        # The /random-test endpoint requires dataset_name header, so always send it
+        # Use "default" if not provided
+        headers["dataset_name"] = dataset_name if dataset_name else "default"
+        
+        logger.info(f"Fetching random test data from: {url} with headers: {list(headers.keys())}")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers=headers)
+            
+            # Log response details for debugging
+            logger.info(f"Response status: {response.status_code}, URL: {url}")
+            if response.status_code != 200:
+                response_text = response.text[:500]  # First 500 chars
+                logger.warning(f"Non-200 response from /random-test: {response.status_code} - {response_text}")
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get("status") != "success":
+                logger.warning(f"Data Ingestion Service returned non-success status: {result.get('status')}")
+                return None
+            
+            # The response structure is: {"status": "success", "data": {...}}
+            # Where data contains: {"id": ..., "upload_timestamp": ..., "T": ..., "data": {...actual features...}}
+            data_record = result.get("data", {})
+            if not data_record:
+                logger.warning("No data returned from /random-test endpoint")
+                return None
+            
+            # Extract the actual data dictionary (the features)
+            test_data = data_record.get("data", {})
+            
+            if not test_data or not isinstance(test_data, dict):
+                logger.warning("Invalid test data format")
+                return None
+            
+            # Log which record ID we got to verify randomness
+            record_id = data_record.get("id", "unknown")
+            logger.info(f"Fetched random test data from /random-test endpoint: record_id={record_id}")
+            return test_data
+            
+    except httpx.HTTPStatusError as e:
+        error_detail = e.response.text[:500] if hasattr(e.response, 'text') else str(e)
+        logger.error(f"HTTP error fetching test data from {url}: {e.response.status_code} - {error_detail}")
+        if e.response.status_code == 404:
+            logger.error(f"Endpoint /random-test not found. Make sure Data Ingestion Service has been restarted to register the new endpoint.")
+        return None
+    except httpx.RequestError as e:
+        logger.error(f"Request error fetching test data from {url}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching test data from {url}: {e}", exc_info=True)
+        return None
 
 @app.websocket("/ws/generate-data")
 async def websocket_generate_data(websocket: WebSocket):
@@ -2408,22 +2832,35 @@ async def websocket_generate_data(websocket: WebSocket):
     
     init_websocket_db()
     feature_names = load_feature_names()
-    logger.info(f"Using {len(feature_names)} raw features for data generation")
+    logger.info(f"Loaded {len(feature_names)} features for data generation")
     
-    # Load database statistics once at the start (will be cached)
-    # Use default dataset name from environment if available
-    dataset_name = DEFAULT_DATASET_NAME
+    # Load database statistics once at the start (will be cached) - kept for fallback
+    # Use current dataset name (can be changed via API)
+    global current_dataset_name
+    dataset_name = current_dataset_name or DEFAULT_DATASET_NAME or "default"
     db_stats = get_database_statistics(feature_names, dataset_name=dataset_name)
     if db_stats:
-        logger.info(f"Using database statistics for {len(db_stats)} features (dataset: {dataset_name or 'default'})")
+        logger.info(f"Database statistics available for {len(db_stats)} features (dataset: {dataset_name}) - will use as fallback")
     else:
-        logger.info("No database statistics available, using default ranges")
+        logger.info("No database statistics available, will use default ranges as fallback")
     
     try:
         while True:
-            random_data = generate_random_data(feature_names)
-            is_known_unsafe = any(random_data == u for u in _UNSAFE_TEMPLATES)
+            # Get current dataset name (may have changed since loop started)
+            current_ds = current_dataset_name or DEFAULT_DATASET_NAME or "default"
+            # Try to fetch real test data first
+            real_test_data = await fetch_random_test_data(current_ds)
+            
+            if real_test_data:
+                # Use real test data
+                random_data = real_test_data
+                logger.debug("Using real test data from /testing endpoint")
+            else:
+                # Fallback to generated data if test data is unavailable
+                random_data = generate_random_data(feature_names, db_stats)
+                logger.debug("Using generated data (test data unavailable)")
             timestamp = datetime.utcnow().isoformat()
+            utc_timestamp = datetime.utcnow().isoformat()
             network_id = str(uuid.uuid4())
             random_user = get_random_user()
             location = generate_random_location()
@@ -2435,27 +2872,10 @@ async def websocket_generate_data(websocket: WebSocket):
             data_json = json.dumps(random_data)
             location_json = json.dumps(location)
             user_id = random_user["id"] if random_user else None
-            if is_known_unsafe:
-                # pre‑populate prediction_results so the frontend sees an anomaly immediately
-                prediction_payload = {
-                    "predictions": [{
-                        "prediction": 1,
-                        "label": "unsafe",
-                        "probability_safe": 0.0,
-                        "probability_unsafe": 1.0,
-                        "confidence": 1.0,
-                    }],
-                    "model_name": selected_model_name
-                }
-                cursor.execute(
-                    "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser, session_active_time, is_active, prediction_results) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (network_id, timestamp, data_json, user_id, location_json, os, browser, generate_websocket_session_start_time, 1, json.dumps(prediction_payload))
-                )
-            else:
-                cursor.execute(
-                    "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser, session_active_time, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (network_id, timestamp, data_json, user_id, location_json, os, browser, generate_websocket_session_start_time, 1)
-                )
+            cursor.execute(
+                "INSERT INTO websocket_data (network_id, timestamp, data, user_id, location, os, browser, session_active_time, is_active, utc_timestamp, session_start_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (network_id, timestamp, data_json, user_id, location_json, os, browser, generate_websocket_session_start_time, 1, utc_timestamp, generate_websocket_session_start_time)
+            )
             inserted_id = cursor.lastrowid
             conn.commit()
             conn.close()
@@ -2513,8 +2933,8 @@ async def websocket_generate_data(websocket: WebSocket):
             else:
                 logger.debug(f"Message queue disabled - skipping publish for network_id: {network_id}")
             
-            wait_time = 30  # Insert a new record every 30 seconds
-            logger.info(f"Waiting {wait_time} seconds before next data generation")
+            wait_time = random.uniform(60, 90)  # Wait 60-90 seconds between data generation
+            logger.info(f"Waiting {wait_time:.2f} seconds before next data generation")
             await asyncio.sleep(wait_time)
             
     except WebSocketDisconnect:
@@ -2686,16 +3106,16 @@ async def startup_event():
     logger.info("Demo users: seeded 80 users, background worker adding 1–7 every 30s")
 
     init_websocket_db()
-    # Keep init_message_queue_db for backward compatibility but it's not used with RabbitMQ
+    # Keep init_message_queue_db for backward compatibility but it's not used with Kafka
     init_message_queue_db()
 
     if MESSAGE_QUEUE_ENABLED:
-        # Initialize RabbitMQ connection
-        if await init_rabbitmq():
+        # Initialize Kafka connection
+        if await init_kafka():
             asyncio.create_task(message_queue_worker())
-            logger.info("RabbitMQ message queue worker started")
+            logger.info("Kafka message queue worker started")
         else:
-            logger.error("Failed to initialize RabbitMQ, message queue worker not started")
+            logger.error("Failed to initialize Kafka, message queue worker not started")
     else:
         logger.info("Message queue worker disabled in configuration")
 
@@ -2710,13 +3130,18 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Clean up RabbitMQ connections on shutdown"""
-    global rabbitmq_connection, rabbitmq_channel
+    """Clean up Kafka connections on shutdown"""
+    global kafka_producer, kafka_consumer
     
-    if rabbitmq_connection and not rabbitmq_connection.is_closed:
-        logger.info("Closing RabbitMQ connection...")
-        await rabbitmq_connection.close()
-        logger.info("RabbitMQ connection closed")
+    if kafka_producer:
+        logger.info("Closing Kafka producer...")
+        await kafka_producer.stop()
+        logger.info("Kafka producer closed")
+    
+    if kafka_consumer:
+        logger.info("Closing Kafka consumer...")
+        await kafka_consumer.stop()
+        logger.info("Kafka consumer closed")
 
 if __name__ == "__main__":
     import uvicorn

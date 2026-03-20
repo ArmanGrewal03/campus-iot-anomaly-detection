@@ -6,7 +6,3 @@ grpcio>=1.60.0
 grpcio-tools>=1.60.0
 protobuf>=4.25.0
 aiokafka>=0.10.0
-requests>=2.31.0
-aio_pika>=9.0.0
-
-
