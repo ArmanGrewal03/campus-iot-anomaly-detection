@@ -10,6 +10,9 @@ Write-Host "Starting All Services" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
+# default data generation mode if not already set
+if (-not $env:DATA_GENERATION_MODE) { $env:DATA_GENERATION_MODE = "random" }
+
 # Get the script directory and project root
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
