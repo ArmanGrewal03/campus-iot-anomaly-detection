@@ -1,0 +1,496 @@
+window[window["TiktokAnalyticsObject"]]._env = {
+    "env": "external",
+    "key": ""
+};
+window[window["TiktokAnalyticsObject"]]._variation_id = 'default::canary';
+window[window["TiktokAnalyticsObject"]]._vids = '';
+window[window["TiktokAnalyticsObject"]]._cc = 'CA';
+window[window.TiktokAnalyticsObject]._li || (window[window.TiktokAnalyticsObject]._li = {}), window[window.TiktokAnalyticsObject]._li["C0HFL9SP76SVVJ0USP90"] = "4ef22518-1f30-11f1-a518-aaf7618396ca";
+window[window["TiktokAnalyticsObject"]]._cde = 390;;
+if (!window[window["TiktokAnalyticsObject"]]._server_unique_id) window[window["TiktokAnalyticsObject"]]._server_unique_id = '4ef23553-1f30-11f1-a518-aaf7618396ca';
+window[window["TiktokAnalyticsObject"]]._plugins = {
+    "AdvancedMatching": true,
+    "AutoAdvancedMatching": true,
+    "AutoClick": true,
+    "AutoConfig": true,
+    "Callback": true,
+    "DiagnosticsConsole": true,
+    "EnableLPV": true,
+    "EnrichIpv6": true,
+    "EnrichIpv6V2": true,
+    "EventBuilder": true,
+    "EventBuilderRuleEngine": true,
+    "HistoryObserver": true,
+    "Identify": true,
+    "JSBridge": false,
+    "Metadata": true,
+    "Monitor": false,
+    "PageData": true,
+    "PerformanceInteraction": false,
+    "RuntimeMeasurement": false,
+    "Shopify": true,
+    "WebFL": false
+};
+window[window["TiktokAnalyticsObject"]]._csid_config = {
+    "enable": true
+};
+window[window["TiktokAnalyticsObject"]]._ttls_config = {
+    "key": "ttoclid"
+};
+window[window["TiktokAnalyticsObject"]]._auto_config = {
+    "open_graph": ["audience"],
+    "microdata": ["audience"],
+    "json_ld": ["audience"],
+    "meta": null
+};
+! function(e, n, i, d, o, t) {
+    var u, a, E = l()._static_map || [{
+            id: "MTEwMjY2ZTExMA",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !1,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExMQ",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !1,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExMg",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !0,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExMw",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !0,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExNA",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !1,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExNQ",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !1,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExNg",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !0,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExNw",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !0,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExOA",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !1,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExOQ",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !1,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExMTA",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !0,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExMTE",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !0,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExMTI",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !1,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExMTM",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !1,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExMTQ",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !0,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExMTU",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !0,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !1
+            }
+        }, {
+            id: "MTEwMjY2ZTExMTY",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !1,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMTc",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !1,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMTg",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !0,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMTk",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !0,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMjA",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !1,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMjE",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !1,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMjI",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !0,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMjM",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !0,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !1,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMjQ",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !1,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMjU",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !1,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMjY",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !0,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMjc",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !0,
+                JSBridge: !1,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMjg",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !1,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMjk",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !1,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMzA",
+            map: {
+                AutoAdvancedMatching: !1,
+                Shopify: !0,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !0
+            }
+        }, {
+            id: "MTEwMjY2ZTExMzE",
+            map: {
+                AutoAdvancedMatching: !0,
+                Shopify: !0,
+                JSBridge: !0,
+                EventBuilderRuleEngine: !0,
+                RemoveUnusedCode: !0
+            }
+        }],
+        e = (l()._static_map = E, a = "https://analytics.tiktok.com/i18n/pixel/static/", null == (e = u = {
+            "info": {
+                "pixelCode": "C0HFL9SP76SVVJ0USP90",
+                "name": "Ryerson University sitewide pixel",
+                "status": 0,
+                "setupMode": 0,
+                "partner": "",
+                "advertiserID": "6920280544374685698",
+                "is_onsite": false,
+                "firstPartyCookieEnabled": true
+            },
+            "plugins": {
+                "Shopify": false,
+                "AdvancedMatching": {
+                    "email": true,
+                    "phone_number": true,
+                    "first_name": true,
+                    "last_name": true,
+                    "city": true,
+                    "state": true,
+                    "country": true,
+                    "zip_code": true
+                },
+                "AutoAdvancedMatching": null,
+                "Callback": true,
+                "Identify": true,
+                "Monitor": true,
+                "PerformanceInteraction": true,
+                "WebFL": true,
+                "AutoConfig": {
+                    "form_rules": null,
+                    "vc_rules": {
+                        "google.com": [{
+                            "version": "stable",
+                            "rule_key": "google.com",
+                            "valueXpath": "//div[@class='ByJDCc ']",
+                            "currency": {}
+                        }],
+                        "googleadservices.com": [{
+                            "version": "stable",
+                            "rule_key": "googleadservices.com",
+                            "valueXpath": "//strong",
+                            "currency": {
+                                "val": "$"
+                            }
+                        }]
+                    }
+                },
+                "PageData": {
+                    "performance": false,
+                    "interaction": true
+                },
+                "DiagnosticsConsole": true,
+                "CompetitorInsight": true,
+                "EventBuilder": true,
+                "EnrichIpv6": true,
+                "HistoryObserver": {
+                    "dynamic_web_pageview": true
+                },
+                "RuntimeMeasurement": true,
+                "JSBridge": true,
+                "EventBuilderRuleEngine": true,
+                "RemoveUnusedCode": true,
+                "EnableLPV": true,
+                "AutoConfigV2": false,
+                "EnableDatalayerVisiter": true
+            },
+            "rules": [{
+                "code_id": 7002677021272784898,
+                "pixel_event_id": 7002677021272784898,
+                "trigger_type": "CLICK",
+                "conditions": [{
+                    "rule_id": 1579580,
+                    "variable_type": "ELEMENT",
+                    "operator": "EQUALS",
+                    "value": ".resTwoColEven.section .col-lg-6:nth-of-type(even) .btn"
+                }, {
+                    "rule_id": 4434324,
+                    "variable_type": "ELEMENT",
+                    "operator": "EQUALS",
+                    "value": ".resTwoColEven.section .col-lg-6:nth-of-type(odd) .btn"
+                }],
+                "code": "\n\u003cscript\u003e\nwindow[window.TiktokAnalyticsObject].instance(\"C0HFL9SP76SVVJ0USP90\").track(\"ClickButton\",{\"pixelMethod\":\"standard\"});\n\u003c/script\u003e\n"
+            }, {
+                "code_id": 7008254776634933250,
+                "pixel_event_id": 7008254776634933250,
+                "trigger_type": "CLICK",
+                "conditions": [{
+                    "rule_id": 1579581,
+                    "variable_type": "ELEMENT",
+                    "operator": "EQUALS",
+                    "value": ".resTwoColEven.section .col-lg-6:nth-of-type(odd) .btn"
+                }, {
+                    "rule_id": 4434347,
+                    "variable_type": "ELEMENT",
+                    "operator": "EQUALS",
+                    "value": ":nth-child(12) \u003e :nth-child(1) \u003e :nth-child(3) \u003e :nth-child(1) \u003e :nth-child(1) \u003e :nth-child(1) \u003e :nth-child(1) \u003e :nth-child(1) \u003e :nth-child(1) \u003e :nth-child(1) \u003e div \u003e a"
+                }],
+                "code": "\n\u003cscript\u003e\nwindow[window.TiktokAnalyticsObject].instance(\"C0HFL9SP76SVVJ0USP90\").track(\"InitiateCheckout\",{\"pixelMethod\":\"standard\"});\n\u003c/script\u003e\n"
+            }, {
+                "code_id": 6927370113406566402,
+                "pixel_event_id": 6927370113406566402,
+                "trigger_type": "PAGEVIEW",
+                "conditions": [{
+                    "rule_id": 526875,
+                    "variable_type": "PAGE_URL",
+                    "operator": "CONTAINS",
+                    "value": "torontomu.ca/international/admissions/how-to-apply/"
+                }],
+                "code": "\n\u003cscript\u003e\nwindow[window.TiktokAnalyticsObject].instance(\"C0HFL9SP76SVVJ0USP90\").track(\"ViewContent\",{\"pixelMethod\":\"standard\"});\n\u003c/script\u003e\n"
+            }, {
+                "code_id": 7008514834971000833,
+                "pixel_event_id": 7008514834971000833,
+                "trigger_type": "PAGEVIEW",
+                "conditions": [{
+                    "rule_id": 1584793,
+                    "variable_type": "PAGE_URL",
+                    "operator": "CONTAINS",
+                    "value": "torontomu.ca/programs/undergraduate/"
+                }],
+                "code": "\n\u003cscript\u003e\nwindow[window.TiktokAnalyticsObject].instance(\"C0HFL9SP76SVVJ0USP90\").track(\"Search\",{\"pixelMethod\":\"standard\"});\n\u003c/script\u003e\n"
+            }]
+        }) || null == (n = e.info) ? void 0 : n.pixelCode);
+
+    function M() {
+        return window && window.TiktokAnalyticsObject || "ttq"
+    }
+
+    function l() {
+        return window && window[M()]
+    }
+
+    function c(e, n) {
+        n = l()[n];
+        return n && n[e] || {}
+    }
+    var g, r, n = l();
+    n || (n = [], window && (window[M()] = n)), Object.assign(u, {
+        options: c(e, "_o")
+    }), g = u, n._i || (n._i = {}), (r = g.info.pixelCode) && (n._i[r] || (n._i[r] = []), Object.assign(n._i[r], g), n._i[r]._load = +new Date), Object.assign(u.info, {
+        loadStart: c(e, "_t"),
+        loadEnd: c(e, "_i")._load,
+        loadId: n._li && n._li[e] || ""
+    }), null != (i = (d = n).instance) && null != (o = i.call(d, e)) && null != (t = o.setPixelInfo) && t.call(o, u.info), g = function(e, n, i) {
+        var t = 0 < arguments.length && void 0 !== e ? e : {},
+            u = 1 < arguments.length ? n : void 0,
+            e = 2 < arguments.length ? i : void 0,
+            n = function(e, n) {
+                for (var i = 0; i < e.length; i++)
+                    if (n.call(null, e[i], i)) return e[i]
+            }(E, function(e) {
+                for (var i = e.map, n = Object.keys(i), d = function(e) {
+                        var n;
+                        return "JSBridge" === e ? "external" !== (null == (n = l()._env) ? void 0 : n.env) === i[e] : !(!t[e] || !u[e]) === i[e]
+                    }, o = 0; o < n.length; o++)
+                    if (!d.call(null, n[o], o)) return !1;
+                return !0
+            });
+        return n ? "".concat(e, "main.").concat(n.id, ".js") : "".concat(e, "main.").concat(E[0].id, ".js")
+    }(n._plugins, u.plugins, a), r = e, (void 0 !== self.DedicatedWorkerGlobalScope ? self instanceof self.DedicatedWorkerGlobalScope : "DedicatedWorkerGlobalScope" === self.constructor.name) ? self.importScripts && self.importScripts(g) : ((i = document.createElement("script")).type = "text/javascript", i.async = !0, i.src = g, i.setAttribute("data-id", r), (g = document.getElementsByTagName("script")[0]) && g.parentNode && g.parentNode.insertBefore(i, g))
+}();

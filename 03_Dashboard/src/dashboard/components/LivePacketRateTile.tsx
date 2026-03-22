@@ -11,13 +11,33 @@ import { BarChart } from '@mui/x-charts/BarChart';
 
 const LIVE_METRICS_BASE = 'http://127.0.0.1:8010';
 
-export default function LivePacketRateTile() {
+interface MetricsState {
+  data: number[];
+  labels: string[];
+  maxVal: number;
+  loading: boolean;
+  error: string | null;
+}
+
+function metricsReducer(
+  state: MetricsState,
+  action: { type: string; payload?: Partial<MetricsState> }
+): MetricsState {
+  if (action.type === 'SET_METRICS' && action.payload) {
+    return { ...state, ...action.payload };
+  }
+  return state;
+}
+
+function LivePacketRateTileComponent() {
   const theme = useTheme();
-  const [data, setData] = React.useState<number[]>([]);
-  const [labels, setLabels] = React.useState<string[]>([]);
-  const [maxVal, setMaxVal] = React.useState<number>(0);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
+  const [state, dispatch] = React.useReducer(metricsReducer, {
+    data: [],
+    labels: [],
+    maxVal: 0,
+    loading: true,
+    error: null,
+  });
 
   React.useEffect(() => {
     let cancelled = false;
@@ -26,9 +46,7 @@ export default function LivePacketRateTile() {
         const res = await fetch(`${LIVE_METRICS_BASE}/metrics?t=${Date.now()}`);
         if (!res.ok) {
           if (!cancelled) {
-            setError('Service unavailable');
-            setData([]);
-            setLabels([]);
+            dispatch({ type: 'SET_METRICS', payload: { error: 'Service unavailable', data: [], labels: [] } });
           }
           return;
         }
@@ -46,21 +64,27 @@ export default function LivePacketRateTile() {
           : [];
         const packetData = packetArray.length > 0 ? packetArray : fallback;
         if (packetData.length > 0) {
-          setData(packetData);
-          setLabels(Array.isArray(json.labels) && json.labels.length === packetData.length ? json.labels : packetData.map((_, i) => String(i)));
-          setMaxVal(Math.max(...packetData));
-          setError(null);
+          const newLabels = Array.isArray(json.labels) && json.labels.length === packetData.length ? json.labels : packetData.map((_, i) => String(i));
+          dispatch({
+            type: 'SET_METRICS',
+            payload: {
+              data: packetData,
+              labels: newLabels,
+              maxVal: Math.max(...packetData),
+              error: null,
+              loading: false,
+            },
+          });
         } else if (!cancelled) {
-          setError('No packet rate data');
+          dispatch({ type: 'SET_METRICS', payload: { error: 'No packet rate data', loading: false } });
         }
       } catch (e) {
         if (!cancelled) {
-          setError('Service unavailable');
-          setData([]);
-          setLabels([]);
+          dispatch({
+            type: 'SET_METRICS',
+            payload: { error: 'Service unavailable', data: [], labels: [], loading: false },
+          });
         }
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     };
     fetchMetrics();
@@ -71,10 +95,24 @@ export default function LivePacketRateTile() {
     };
   }, []);
 
-  const xLabels = labels.length === data.length ? labels : data.map((_, i) => String(i));
+  const xLabels = React.useMemo(
+    () => (state.labels.length === state.data.length ? state.labels : state.data.map((_, i) => String(i))),
+    [state.labels, state.data.length]
+  );
   const barColor = theme.palette.mode === 'dark' ? '#ba68c8' : '#7b1fa2';
+  
+  // Memoize chart config to prevent recreation on every render
+  const chartConfig = React.useMemo(
+    () => ({
+      xAxis: [{ scaleType: 'band' as const, data: xLabels, tickLabelStyle: { fontSize: 9 }, tickInterval: (_: any, i: number) => i % 12 === 0 || i === xLabels.length - 1 }],
+      yAxis: [{ tickMinStep: 1, valueFormatter: (v: any) => String(Math.round(Number(v))) }],
+      series: [{ id: 'packets', data: state.data, label: 'Packets', color: barColor }],
+      margin: { top: 8, right: 8, bottom: 24, left: 36 } as const,
+    }),
+    [xLabels, state.data, barColor]
+  );
 
-  if (loading && data.length === 0) {
+  if (state.loading && state.data.length === 0) {
     return (
       <Card variant="outlined" sx={{ height: '100%', minHeight: 220 }}>
         <CardContent>
@@ -106,28 +144,28 @@ export default function LivePacketRateTile() {
             Packet Rate
           </Typography>
           <Stack direction="row" alignItems="center" spacing={1}>
-            {maxVal > 0 && (
+            {state.maxVal > 0 && (
               <Typography variant="caption" color="text.secondary">
-                Max <strong>{Math.round(maxVal)}</strong>
+                Max <strong>{Math.round(state.maxVal)}</strong>
               </Typography>
             )}
             <Chip size="small" label="Live" color="error" sx={{ fontSize: '0.625rem', height: 18 }} />
           </Stack>
         </Stack>
-        {error && (
-          <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>{error}</Typography>
+        {state.error && (
+          <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>{state.error}</Typography>
         )}
-        {data.length === 0 ? (
+        {state.data.length === 0 ? (
           <Box sx={{ height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Typography variant="caption" color="text.secondary">No data</Typography>
           </Box>
         ) : (
           <BarChart
-            xAxis={[{ scaleType: 'band', data: xLabels, tickLabelStyle: { fontSize: 9 }, tickInterval: (_, i) => i % 12 === 0 || i === xLabels.length - 1 }]}
-            yAxis={[{ tickMinStep: 1, valueFormatter: (v) => String(Math.round(Number(v))) }]}
-            series={[{ id: 'packets', data, label: 'Packets', color: barColor }]}
+            xAxis={chartConfig.xAxis}
+            yAxis={chartConfig.yAxis}
+            series={chartConfig.series}
             height={180}
-            margin={{ top: 8, right: 8, bottom: 24, left: 36 }}
+            margin={chartConfig.margin}
             grid={{ vertical: false, horizontal: true }}
             borderRadius={2}
             slotProps={{ legend: { hidden: true } }}
@@ -140,3 +178,5 @@ export default function LivePacketRateTile() {
     </Card>
   );
 }
+
+export default React.memo(LivePacketRateTileComponent);
