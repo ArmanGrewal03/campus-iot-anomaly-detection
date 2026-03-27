@@ -12,7 +12,6 @@ const TestPage = lazy(() => import('./pages/TestPage'));
 const ModelPage = lazy(() => import('./pages/ModelPage'));
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
 const ClientsPage = lazy(() => import('./pages/ClientsPage'));
-const TasksPage = lazy(() => import('./pages/TasksPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const AboutPage = lazy(() => import('./pages/AboutPage'));
 
@@ -76,7 +75,6 @@ export default function App() {
         <Route path="model" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><ModelPage /></Suspense></ErrorBoundary>} />
         <Route path="analytics" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><AnalyticsPage /></Suspense></ErrorBoundary>} />
         <Route path="clients" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><ClientsPage /></Suspense></ErrorBoundary>} />
-        <Route path="tasks" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><TasksPage /></Suspense></ErrorBoundary>} />
         <Route path="settings" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><SettingsPage /></Suspense></ErrorBoundary>} />
         <Route path="about" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><AboutPage /></Suspense></ErrorBoundary>} />
       </Route>
