@@ -33,6 +33,7 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import { DataGrid } from '@mui/x-data-grid';
+import { LineChart } from '@mui/x-charts/LineChart';
 
 /* Mock data & types */
 const DEFAULT_FEATURE_COLUMNS = ['duration', 'protocol', 'bytes_sent', 'bytes_recv', 'packets', 'label'];
@@ -62,6 +63,31 @@ const API_BASE = `${GATEWAY_BASE}`; // Data Ingestion Service via Gateway
 const MODEL_API_BASE = `${GATEWAY_BASE}`; // Model Service via Gateway
 
 export default function ModelPage() {
+  const playCompletionSound = React.useCallback(() => {
+    try {
+      const AudioContextClass =
+        window.AudioContext ||
+        ((window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
+      if (!AudioContextClass) return;
+      const audioCtx = new AudioContextClass();
+      const now = audioCtx.currentTime;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.setValueAtTime(1175, now + 0.12);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.12, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + 0.3);
+    } catch (err) {
+      console.debug('Audio notification unavailable:', err);
+    }
+  }, []);
+
   const [datasetName, setDatasetName] = React.useState('');
   const [datasetNameError, setDatasetNameError] = React.useState('');
   const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
@@ -112,6 +138,9 @@ export default function ModelPage() {
   const [modelDetailsLoading, setModelDetailsLoading] = React.useState(false);
   const [modelTypes, setModelTypes] = React.useState<Array<{ model_type: string; path: string; files: Array<{ name: string; size: number; modified: string }> }>>([]);
   const [modelTypesLoading, setModelTypesLoading] = React.useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
+  const [modelToDelete, setModelToDelete] = React.useState<string | null>(null);
 
 
   const [snackbar, setSnackbar] = React.useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' | 'warning' }>({
@@ -172,7 +201,7 @@ export default function ModelPage() {
         setUploading(false);
         return;
       }
-      headers['dataset-name'] = nameToUse;
+      headers['dataset_name'] = nameToUse;
       const res = await fetch(`${API_BASE}/new`, {
         method: 'POST',
         headers,
@@ -202,11 +231,12 @@ export default function ModelPage() {
       }
       setSnackbar({ open: true, message, severity: 'success' });
       setSelectedFile(null);
-      setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
-      await fetchTables();
       if (datasetName.trim()) {
-        setSelectedDataset(datasetName.trim());
+        const id = `ds-${Date.now()}`;
+        setDatasets((d) => [...d, { id, name: datasetName.trim() }]);
+        setSelectedDatasetId(id);
       }
+      setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Network error. Is the backend running at http://localhost:8000?';
       setSnackbar({ open: true, message, severity: 'error' });
@@ -218,7 +248,7 @@ export default function ModelPage() {
   const fetchTables = React.useCallback(async () => {
     setDatasetsLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/tables?t=${Date.now()}`);
+      const res = await fetch(`${API_BASE}/tables`);
       const json = await res.json() as { status?: string; tables?: string[] };
       if (res.ok && json.status === 'success' && json.tables) {
         // Extract dataset names from table names (format: csv_data_{dataset_name})
@@ -253,9 +283,9 @@ export default function ModelPage() {
     setFieldsLoading(true);
     try {
       const headers: Record<string, string> = {
-        'dataset-name': datasetName.trim(),
+        'dataset_name': datasetName.trim(),
       };
-      const res = await fetch(`${API_BASE}/fields?t=${Date.now()}`, { headers });
+      const res = await fetch(`${API_BASE}/fields`, { headers });
       const json = await res.json() as { status?: string; fields?: string[]; detail?: string };
       if (res.ok && json.status === 'success' && json.fields) {
         // Filter out label, id, attack_cat as they shouldn't be included as features
@@ -296,13 +326,13 @@ export default function ModelPage() {
     setStatsLoading(true);
     try {
       const headers: Record<string, string> = {
-        'dataset-name': datasetName.trim(),
+        'dataset_name': datasetName.trim(),
       };
       
       // Fetch both stats and type-stats in parallel
       const [statsRes, typeStatsRes] = await Promise.all([
-        fetch(`${API_BASE}/stats?t=${Date.now()}`, { headers }),
-        fetch(`${API_BASE}/type-stats?t=${Date.now()}`, { headers }),
+        fetch(`${API_BASE}/stats`, { headers }),
+        fetch(`${API_BASE}/type-stats`, { headers }),
       ]);
 
       const statsJson = await statsRes.json() as any;
@@ -339,7 +369,7 @@ export default function ModelPage() {
   const fetchModels = React.useCallback(async () => {
     setModelsLoading(true);
     try {
-      const res = await fetch(`${MODEL_API_BASE}/models?t=${Date.now()}`);
+      const res = await fetch(`${MODEL_API_BASE}/models`);
       const json = await res.json() as { status?: string; models?: any[]; total_models?: number; detail?: string };
       
       console.log('Models API response:', json);
@@ -380,7 +410,7 @@ export default function ModelPage() {
   const fetchModelTypes = React.useCallback(async () => {
     setModelTypesLoading(true);
     try {
-      const res = await fetch(`${MODEL_API_BASE}/model-types?t=${Date.now()}`);
+      const res = await fetch(`${MODEL_API_BASE}/model-types`);
       const json = await res.json() as { 
         status?: string; 
         model_types?: Array<{ model_type: string; path: string; files: Array<{ name: string; size: number; modified: string }> }>; 
@@ -429,12 +459,12 @@ export default function ModelPage() {
     
     try {
       const headers: Record<string, string> = {
-        'model-name': modelName,
+        'model_name': modelName,
       };
 
       const [statusRes, metricsRes] = await Promise.all([
-        fetch(`${MODEL_API_BASE}/model/status?t=${Date.now()}`, { headers }),
-        fetch(`${MODEL_API_BASE}/model/metrics?t=${Date.now()}`, { headers }).catch(() => null),
+        fetch(`${MODEL_API_BASE}/model/status`, { headers }),
+        fetch(`${MODEL_API_BASE}/model/metrics`, { headers }).catch(() => null), // Metrics might not exist
       ]);
 
       const statusJson = await statusRes.json();
@@ -444,6 +474,16 @@ export default function ModelPage() {
 
       if (metricsRes && metricsRes.ok) {
         const metricsJson = await metricsRes.json();
+        // Debug logging for loss_history
+        if (metricsJson.training_params?.loss_history) {
+          console.log(`Model ${modelName} has loss_history:`, {
+            length: metricsJson.training_params.loss_history.length,
+            firstItem: metricsJson.training_params.loss_history[0],
+            lastItem: metricsJson.training_params.loss_history[metricsJson.training_params.loss_history.length - 1]
+          });
+        } else {
+          console.log(`Model ${modelName} does not have loss_history in training_params`);
+        }
         setModelMetrics((prev) => ({ ...prev, [modelName]: metricsJson }));
       }
     } catch (err) {
@@ -474,6 +514,58 @@ export default function ModelPage() {
     setCurrentModelIndex((prev) => (prev < availableModels.length - 1 ? prev + 1 : 0));
   };
 
+  const handleDeleteClick = () => {
+    if (currentModel) {
+      setModelToDelete(currentModel.model_name);
+      setDeleteConfirmOpen(true);
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!modelToDelete) return;
+    
+    setDeleting(true);
+    try {
+      const res = await fetch(`${MODEL_API_BASE}/models/${encodeURIComponent(modelToDelete)}`, {
+        method: 'DELETE',
+      });
+      
+      const json = await res.json() as { status?: string; message?: string; detail?: string };
+      
+      if (res.ok && json.status === 'success') {
+        setSnackbar({
+          open: true,
+          message: json.message || `Model "${modelToDelete}" deleted successfully`,
+          severity: 'success',
+        });
+        
+        // Refresh models list
+        await fetchModels();
+        
+        // Adjust current index if needed
+        if (currentModelIndex >= availableModels.length - 1 && currentModelIndex > 0) {
+          setCurrentModelIndex(currentModelIndex - 1);
+        } else if (availableModels.length === 1) {
+          setCurrentModelIndex(0);
+        }
+      } else {
+        throw new Error(json.detail || json.message || 'Failed to delete model');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to delete model.';
+      setSnackbar({ open: true, message: msg, severity: 'error' });
+    } finally {
+      setDeleting(false);
+      setDeleteConfirmOpen(false);
+      setModelToDelete(null);
+    }
+  };
+
+  const handleDeleteCancel = () => {
+    setDeleteConfirmOpen(false);
+    setModelToDelete(null);
+  };
+
   const handleTest = async () => {
     if (!selectedTestModel.trim()) {
       setSnackbar({ open: true, message: 'Please select a model to test.', severity: 'warning' });
@@ -488,16 +580,17 @@ export default function ModelPage() {
 
     setTesting(true);
     setTestResults(null);
+    const testStartMs = performance.now();
 
     try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'model-name': selectedTestModel.trim(),
+        'model_name': selectedTestModel.trim(),
       };
 
       // dataset_name is optional for /test endpoint
       if (testDataset) {
-        headers['dataset-name'] = testDataset;
+        headers['dataset_name'] = testDataset;
       }
 
       const res = await fetch(`${MODEL_API_BASE}/test`, {
@@ -513,9 +606,14 @@ export default function ModelPage() {
       }
 
       setTestResults(data);
+      playCompletionSound();
+      const testDurationSeconds =
+        typeof data.testing_duration_seconds === 'number'
+          ? data.testing_duration_seconds
+          : Number(((performance.now() - testStartMs) / 1000).toFixed(3));
       setSnackbar({ 
         open: true, 
-        message: `Model "${selectedTestModel.trim()}" tested successfully on dataset "${testDataset}"`, 
+        message: `Model "${selectedTestModel.trim()}" tested successfully on dataset "${testDataset}" in ${testDurationSeconds.toFixed(2)}s`, 
         severity: 'success' 
       });
     } catch (err) {
@@ -535,15 +633,17 @@ export default function ModelPage() {
       setViewLoading(true);
       // Don't reset total_rows - keep it to maintain pagination state
       try {
-        const params = new URLSearchParams({ limit: String(limit), offset: String(offset), t: String(Date.now()) });
+        const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
         const headers: Record<string, string> = {};
-        headers['dataset-name'] = selectedDataset.trim();
+        headers['dataset_name'] = selectedDataset.trim();
         
+        // Determine which endpoint to call based on filterMode
+        // Note: These are GET endpoints from Data Ingestion Service, not POST /train from Model Service
         let endpoint = '/view';
         if (filterMode === 'training') {
-          endpoint = '/training';
+          endpoint = '/training';  // GET endpoint from Data Ingestion Service
         } else if (filterMode === 'testing') {
-          endpoint = '/testing';
+          endpoint = '/testing';  // GET endpoint from Data Ingestion Service
         }
         
         const res = await fetch(`${API_BASE}${endpoint}?${params}`, { headers });
@@ -667,7 +767,7 @@ export default function ModelPage() {
     setValidationResult(null);
     try {
       const headers: Record<string, string> = {
-        'dataset-name': selectedDataset.trim(),
+        'dataset_name': selectedDataset.trim(),
       };
       
       // Add optional percentage headers if provided
@@ -750,7 +850,7 @@ export default function ModelPage() {
     setClearLoading(true);
     try {
       const headers: Record<string, string> = {};
-      if (selectedDataset.trim()) headers['dataset-name'] = selectedDataset.trim();
+      if (selectedDataset.trim()) headers['dataset_name'] = selectedDataset.trim();
       const res = await fetch(`${API_BASE}/clear`, { method: 'DELETE', headers });
       const text = await res.text();
       if (!res.ok) {
@@ -780,7 +880,6 @@ export default function ModelPage() {
       setClearConfirmOpen(false);
       setSnackbar({ open: true, message, severity: 'success' });
       setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
-      await fetchTables();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to clear database.';
       setSnackbar({ open: true, message: msg, severity: 'error' });
@@ -807,6 +906,7 @@ export default function ModelPage() {
 
     setTraining(true);
     setMetrics(null);
+    const trainStartMs = performance.now();
 
     try {
       // TrainRequest body structure
@@ -826,8 +926,8 @@ export default function ModelPage() {
       // Headers: dataset_name and model_name are required
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'dataset-name': selectedDataset.trim(),
-        'model-name': modelName.trim(),
+        'dataset_name': selectedDataset.trim(),
+        'model_name': modelName.trim(),
       };
 
       const res = await fetch(`${MODEL_API_BASE}/train`, {
@@ -843,12 +943,17 @@ export default function ModelPage() {
       }
 
       setMetrics(data);
+      playCompletionSound();
       // Refresh models list after training
       fetchModels();
       const modelTypeDisplay = modelType || data.model_type || 'model';
+      const trainingDurationSeconds =
+        typeof data.training_duration_seconds === 'number'
+          ? data.training_duration_seconds
+          : Number(((performance.now() - trainStartMs) / 1000).toFixed(3));
       setSnackbar({ 
         open: true, 
-        message: `Model "${modelName.trim()}" (${modelTypeDisplay}) trained successfully on dataset "${selectedDataset.trim()}"`, 
+        message: `Model "${modelName.trim()}" (${modelTypeDisplay}) trained successfully on dataset "${selectedDataset.trim()}" in ${trainingDurationSeconds.toFixed(2)}s`, 
         severity: 'success' 
       });
     } catch (err) {
@@ -873,7 +978,7 @@ export default function ModelPage() {
         // Fetch testing data from backend
         const params = new URLSearchParams({ limit: '100', offset: '0' });
         const headers: Record<string, string> = {};
-        if (selectedDataset.trim()) headers['dataset-name'] = selectedDataset.trim();
+        if (selectedDataset.trim()) headers['dataset_name'] = selectedDataset.trim();
         const res = await fetch(`${API_BASE}/testing?${params}`, { headers });
         const json = await res.json();
         if (!res.ok) throw new Error(json.detail || 'Failed to fetch testing data');
@@ -906,9 +1011,10 @@ export default function ModelPage() {
         data: dataToPredict
       };
 
+      // Headers: model_name is required
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'model-name': modelName.trim(),
+        'model_name': modelName.trim(),
       };
 
       const res = await fetch(`${MODEL_API_BASE}/predict`, {
@@ -1734,9 +1840,100 @@ export default function ModelPage() {
               <Stack spacing={2}>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   <Chip label={`Status: ${metrics.status}`} color="success" size="small" />
-                  <Chip label={`Dataset: ${metrics.dataset}`} size="small" variant="outlined" />
-                  <Chip label={`Features: ${metrics.features}`} size="small" variant="outlined" />
+                  <Chip label={`Dataset: ${metrics.dataset_name || metrics.dataset || 'N/A'}`} size="small" variant="outlined" />
+                  <Chip label={`Model: ${metrics.model_name || 'N/A'}`} size="small" variant="outlined" />
+                  <Chip label={`Type: ${metrics.model_type || 'N/A'}`} size="small" variant="outlined" />
+                  {(metrics.training_duration_seconds != null || metrics.training_params?.training_duration_seconds != null) && (
+                    <Chip
+                      label={`Train Time: ${Number(metrics.training_duration_seconds ?? metrics.training_params?.training_duration_seconds).toFixed(2)}s`}
+                      size="small"
+                      variant="outlined"
+                    />
+                  )}
+                  {metrics.features && (
+                    <Chip label={`Features: ${typeof metrics.features === 'string' ? metrics.features : metrics.n_features || 'N/A'}`} size="small" variant="outlined" />
+                  )}
                 </Stack>
+                
+                {/* Loss History Graph */}
+                {(() => {
+                  // Check for loss_history in multiple possible locations
+                  const lossHistory = metrics?.loss_history || metrics?.training_params?.loss_history;
+                  
+                  // Debug logging
+                  if (metrics && !lossHistory) {
+                    console.log('Loss history not found. Metrics keys:', Object.keys(metrics));
+                    console.log('metrics.loss_history:', metrics.loss_history);
+                    console.log('metrics.training_params:', metrics.training_params);
+                  }
+                  
+                  if (!lossHistory || !Array.isArray(lossHistory) || lossHistory.length === 0) {
+                    return null;
+                  }
+                  
+                  const iterations = lossHistory.map((item: any) => {
+                    // Handle both object format {iteration: X, loss: Y} and array format
+                    if (typeof item === 'object' && item !== null) {
+                      return Number(item.iteration || item[0]);
+                    }
+                    return Number(item);
+                  }).filter((v: number) => !isNaN(v));
+                  
+                  const losses = lossHistory.map((item: any) => {
+                    // Handle both object format {iteration: X, loss: Y} and array format
+                    if (typeof item === 'object' && item !== null) {
+                      return Number(item.loss || item[1]);
+                    }
+                    return Number(item);
+                  }).filter((v: number) => !isNaN(v));
+                  
+                  if (iterations.length === 0 || losses.length === 0 || iterations.length !== losses.length) {
+                    console.warn('Loss history data format issue:', { iterations, losses, lossHistory });
+                    return null;
+                  }
+                  
+                  return (
+                    <Card variant="outlined" sx={{ mt: 2, mb: 2 }}>
+                      <CardContent>
+                        <Typography variant="subtitle2" sx={{ mb: 2, fontWeight: 600 }}>
+                          Training Loss History
+                        </Typography>
+                        <Box sx={{ width: '100%', height: 300 }}>
+                          <LineChart
+                            xAxis={[{
+                              data: iterations,
+                              label: 'Iteration',
+                              scaleType: 'linear',
+                            }]}
+                            yAxis={[{
+                              label: 'Loss (MSE)',
+                              scaleType: 'linear',
+                            }]}
+                            series={[{
+                              data: losses,
+                              label: 'Loss',
+                              color: '#1976d2',
+                              curve: 'monotone',
+                              showMark: true,
+                            }]}
+                            width={undefined}
+                            height={300}
+                            margin={{ top: 20, right: 20, bottom: 40, left: 50 }}
+                            grid={{ vertical: true, horizontal: true }}
+                          />
+                        </Box>
+                      </CardContent>
+                    </Card>
+                  );
+                })()}
+                
+                {/* Show message if loss history is not available (for non-AEv1 models) */}
+                {metrics && !metrics.loss_history && !metrics.training_params?.loss_history && metrics.model_type === 'AEv1' && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1, fontStyle: 'italic' }}>
+                    Loss history not available for this model.
+                  </Typography>
+                )}
+                
                 <Grid container spacing={2}>
                   {metrics.accuracy != null && (
                     <Grid size={{ xs: 6, sm: 3 }}>
@@ -1762,11 +1959,72 @@ export default function ModelPage() {
                       </Box>
                     </Grid>
                   )}
-                  {metrics.f1 != null && (
+                  {(metrics.f1_score != null || metrics.f1 != null) && (
                     <Grid size={{ xs: 6, sm: 3 }}>
                       <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
-                        <Typography variant="caption" color="text.secondary" display="block">F1</Typography>
-                        <Typography variant="h6">{(Number(metrics.f1) * 100).toFixed(1)}%</Typography>
+                        <Typography variant="caption" color="text.secondary" display="block">F1 Score</Typography>
+                        <Typography variant="h6">{((Number(metrics.f1_score || metrics.f1)) * 100).toFixed(1)}%</Typography>
+                      </Box>
+                    </Grid>
+                  )}
+                  {metrics.specificity != null && (
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                        <Typography variant="caption" color="text.secondary" display="block">Specificity</Typography>
+                        <Typography variant="h6">{(Number(metrics.specificity) * 100).toFixed(1)}%</Typography>
+                      </Box>
+                    </Grid>
+                  )}
+                  {metrics.sensitivity != null && (
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                        <Typography variant="caption" color="text.secondary" display="block">Sensitivity</Typography>
+                        <Typography variant="h6">{(Number(metrics.sensitivity) * 100).toFixed(1)}%</Typography>
+                      </Box>
+                    </Grid>
+                  )}
+                  {metrics.npv != null && (
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                        <Typography variant="caption" color="text.secondary" display="block">NPV</Typography>
+                        <Typography variant="h6">{(Number(metrics.npv) * 100).toFixed(1)}%</Typography>
+                      </Box>
+                    </Grid>
+                  )}
+                  {metrics.mcc != null && (
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                        <Typography variant="caption" color="text.secondary" display="block">MCC</Typography>
+                        <Typography variant="h6">{Number(metrics.mcc).toFixed(3)}</Typography>
+                      </Box>
+                    </Grid>
+                  )}
+                  {metrics.roc_auc != null && (
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                        <Typography variant="caption" color="text.secondary" display="block">ROC AUC</Typography>
+                        <Typography variant="h6">{Number(metrics.roc_auc).toFixed(3)}</Typography>
+                      </Box>
+                    </Grid>
+                  )}
+                  {metrics.pr_auc != null && (
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                        <Typography variant="caption" color="text.secondary" display="block">PR AUC</Typography>
+                        <Typography variant="h6">{Number(metrics.pr_auc).toFixed(3)}</Typography>
+                      </Box>
+                    </Grid>
+                  )}
+                  {metrics.total_support != null && (
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                        <Typography variant="caption" color="text.secondary" display="block">Total Samples</Typography>
+                        <Typography variant="h6">{Number(metrics.total_support).toLocaleString()}</Typography>
+                        {metrics.support_0 != null && metrics.support_1 != null && (
+                          <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                            Class 0: {Number(metrics.support_0).toLocaleString()}, Class 1: {Number(metrics.support_1).toLocaleString()}
+                          </Typography>
+                        )}
                       </Box>
                     </Grid>
                   )}
@@ -2091,6 +2349,9 @@ export default function ModelPage() {
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
                     <Chip label={`Status: ${testResults.status}`} color="success" size="small" />
                     <Chip label={`Samples: ${testResults.testing_samples?.toLocaleString() || 'N/A'}`} size="small" variant="outlined" />
+                    {testResults.testing_duration_seconds != null && (
+                      <Chip label={`Test Time: ${Number(testResults.testing_duration_seconds).toFixed(2)}s`} size="small" variant="outlined" />
+                    )}
                   </Stack>
                   {testResults.metrics && (
                     <Grid container spacing={2}>
@@ -2115,6 +2376,67 @@ export default function ModelPage() {
                           <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
                             <Typography variant="caption" color="text.secondary" display="block">Recall</Typography>
                             <Typography variant="h6">{(Number(testResults.metrics.recall) * 100).toFixed(1)}%</Typography>
+                          </Box>
+                        </Grid>
+                      )}
+                      {(testResults.metrics.f1_score != null || testResults.metrics.f1 != null) && (
+                        <Grid size={{ xs: 6, sm: 3 }}>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">F1 Score</Typography>
+                            <Typography variant="h6">{((Number(testResults.metrics.f1_score || testResults.metrics.f1)) * 100).toFixed(1)}%</Typography>
+                          </Box>
+                        </Grid>
+                      )}
+                      {testResults.metrics.specificity != null && (
+                        <Grid size={{ xs: 6, sm: 3 }}>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">Specificity</Typography>
+                            <Typography variant="h6">{(Number(testResults.metrics.specificity) * 100).toFixed(1)}%</Typography>
+                          </Box>
+                        </Grid>
+                      )}
+                      {testResults.metrics.sensitivity != null && (
+                        <Grid size={{ xs: 6, sm: 3 }}>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">Sensitivity</Typography>
+                            <Typography variant="h6">{(Number(testResults.metrics.sensitivity) * 100).toFixed(1)}%</Typography>
+                          </Box>
+                        </Grid>
+                      )}
+                      {testResults.metrics.mcc != null && (
+                        <Grid size={{ xs: 6, sm: 3 }}>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">MCC</Typography>
+                            <Typography variant="h6">{Number(testResults.metrics.mcc).toFixed(3)}</Typography>
+                          </Box>
+                        </Grid>
+                      )}
+                      {testResults.metrics.roc_auc != null && (
+                        <Grid size={{ xs: 6, sm: 3 }}>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">ROC AUC</Typography>
+                            <Typography variant="h6">{Number(testResults.metrics.roc_auc).toFixed(3)}</Typography>
+                          </Box>
+                        </Grid>
+                      )}
+                      {testResults.metrics.pr_auc != null && (
+                        <Grid size={{ xs: 6, sm: 3 }}>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">PR AUC</Typography>
+                            <Typography variant="h6">{Number(testResults.metrics.pr_auc).toFixed(3)}</Typography>
+                          </Box>
+                        </Grid>
+                      )}
+                      {testResults.metrics.total_support != null && (
+                        <Grid size={{ xs: 6, sm: 3 }}>
+                          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">Total Samples</Typography>
+                            <Typography variant="h6">{Number(testResults.metrics.total_support).toLocaleString()}</Typography>
+                            {testResults.metrics.support_0 != null && testResults.metrics.support_1 != null && (
+                              <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                                Class 0: {Number(testResults.metrics.support_0).toLocaleString()}, Class 1: {Number(testResults.metrics.support_1).toLocaleString()}
+                              </Typography>
+                            )}
                           </Box>
                         </Grid>
                       )}
@@ -2176,6 +2498,16 @@ export default function ModelPage() {
                     endIcon={<ChevronRightRoundedIcon />}
                   >
                     Next
+                  </Button>
+                  <Button
+                    size="small"
+                    color="error"
+                    onClick={handleDeleteClick}
+                    disabled={modelDetailsLoading || !currentModel}
+                    startIcon={<DeleteSweepRoundedIcon />}
+                    sx={{ ml: 1 }}
+                  >
+                    Delete
                   </Button>
                 </Stack>
               </Stack>
@@ -2280,12 +2612,78 @@ export default function ModelPage() {
                     </Box>
                   )}
 
+                  {/* Loss History Graph - Show at top if available */}
+                  {(() => {
+                    // Check for loss_history in training_params
+                    const lossHistory = currentModelMetrics?.training_params?.loss_history;
+                    
+                    if (!lossHistory || !Array.isArray(lossHistory) || lossHistory.length === 0) {
+                      return null;
+                    }
+                    
+                    const iterations = lossHistory.map((item: any) => {
+                      // Handle both object format {iteration: X, loss: Y} and array format
+                      if (typeof item === 'object' && item !== null) {
+                        return Number(item.iteration || item[0]);
+                      }
+                      return Number(item);
+                    }).filter((v: number) => !isNaN(v));
+                    
+                    const losses = lossHistory.map((item: any) => {
+                      // Handle both object format {iteration: X, loss: Y} and array format
+                      if (typeof item === 'object' && item !== null) {
+                        return Number(item.loss || item[1]);
+                      }
+                      return Number(item);
+                    }).filter((v: number) => !isNaN(v));
+                    
+                    if (iterations.length === 0 || losses.length === 0 || iterations.length !== losses.length) {
+                      console.warn('Loss history data format issue in Model Data Overview:', { iterations, losses, lossHistory });
+                      return null;
+                    }
+                    
+                    return (
+                      <Card variant="outlined" sx={{ mb: 3, borderLeft: '3px solid', borderLeftColor: 'primary.main' }}>
+                        <CardContent>
+                          <Typography variant="subtitle2" sx={{ mb: 2, fontWeight: 600 }}>
+                            Training Loss History
+                          </Typography>
+                          <Box sx={{ width: '100%', height: 300 }}>
+                            <LineChart
+                              xAxis={[{
+                                data: iterations,
+                                label: 'Iteration',
+                                scaleType: 'linear',
+                              }]}
+                              yAxis={[{
+                                label: 'Loss (MSE)',
+                                scaleType: 'linear',
+                              }]}
+                              series={[{
+                                data: losses,
+                                label: 'Loss',
+                                color: '#1976d2',
+                                curve: 'monotone',
+                                showMark: true,
+                              }]}
+                              width={undefined}
+                              height={300}
+                              margin={{ top: 20, right: 20, bottom: 40, left: 50 }}
+                              grid={{ vertical: true, horizontal: true }}
+                            />
+                          </Box>
+                        </CardContent>
+                      </Card>
+                    );
+                  })()}
+
                   {/* Model Metrics from /model/metrics */}
                   {currentModelMetrics && currentModelMetrics.metrics && (
                     <Box sx={{ pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
                       <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
                         Model Metrics
                       </Typography>
+                      
                       <Grid container spacing={2}>
                         {currentModelMetrics.metrics.accuracy != null && (
                           <Grid size={{ xs: 6, sm: 3 }}>
@@ -2311,11 +2709,72 @@ export default function ModelPage() {
                             </Box>
                           </Grid>
                         )}
-                        {currentModelMetrics.metrics.f1 != null && (
+                        {(currentModelMetrics.metrics.f1_score != null || currentModelMetrics.metrics.f1 != null) && (
                           <Grid size={{ xs: 6, sm: 3 }}>
                             <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
                               <Typography variant="caption" color="text.secondary" display="block">F1 Score</Typography>
-                              <Typography variant="h6">{(Number(currentModelMetrics.metrics.f1) * 100).toFixed(1)}%</Typography>
+                              <Typography variant="h6">{((Number(currentModelMetrics.metrics.f1_score || currentModelMetrics.metrics.f1)) * 100).toFixed(1)}%</Typography>
+                            </Box>
+                          </Grid>
+                        )}
+                        {currentModelMetrics.metrics.specificity != null && (
+                          <Grid size={{ xs: 6, sm: 3 }}>
+                            <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                              <Typography variant="caption" color="text.secondary" display="block">Specificity</Typography>
+                              <Typography variant="h6">{(Number(currentModelMetrics.metrics.specificity) * 100).toFixed(1)}%</Typography>
+                            </Box>
+                          </Grid>
+                        )}
+                        {currentModelMetrics.metrics.sensitivity != null && (
+                          <Grid size={{ xs: 6, sm: 3 }}>
+                            <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                              <Typography variant="caption" color="text.secondary" display="block">Sensitivity</Typography>
+                              <Typography variant="h6">{(Number(currentModelMetrics.metrics.sensitivity) * 100).toFixed(1)}%</Typography>
+                            </Box>
+                          </Grid>
+                        )}
+                        {currentModelMetrics.metrics.npv != null && (
+                          <Grid size={{ xs: 6, sm: 3 }}>
+                            <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                              <Typography variant="caption" color="text.secondary" display="block">NPV</Typography>
+                              <Typography variant="h6">{(Number(currentModelMetrics.metrics.npv) * 100).toFixed(1)}%</Typography>
+                            </Box>
+                          </Grid>
+                        )}
+                        {currentModelMetrics.metrics.mcc != null && (
+                          <Grid size={{ xs: 6, sm: 3 }}>
+                            <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                              <Typography variant="caption" color="text.secondary" display="block">MCC</Typography>
+                              <Typography variant="h6">{Number(currentModelMetrics.metrics.mcc).toFixed(3)}</Typography>
+                            </Box>
+                          </Grid>
+                        )}
+                        {currentModelMetrics.metrics.roc_auc != null && (
+                          <Grid size={{ xs: 6, sm: 3 }}>
+                            <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                              <Typography variant="caption" color="text.secondary" display="block">ROC AUC</Typography>
+                              <Typography variant="h6">{Number(currentModelMetrics.metrics.roc_auc).toFixed(3)}</Typography>
+                            </Box>
+                          </Grid>
+                        )}
+                        {currentModelMetrics.metrics.pr_auc != null && (
+                          <Grid size={{ xs: 6, sm: 3 }}>
+                            <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                              <Typography variant="caption" color="text.secondary" display="block">PR AUC</Typography>
+                              <Typography variant="h6">{Number(currentModelMetrics.metrics.pr_auc).toFixed(3)}</Typography>
+                            </Box>
+                          </Grid>
+                        )}
+                        {currentModelMetrics.metrics.total_support != null && (
+                          <Grid size={{ xs: 6, sm: 3 }}>
+                            <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+                              <Typography variant="caption" color="text.secondary" display="block">Total Samples</Typography>
+                              <Typography variant="h6">{Number(currentModelMetrics.metrics.total_support).toLocaleString()}</Typography>
+                              {currentModelMetrics.metrics.support_0 != null && currentModelMetrics.metrics.support_1 != null && (
+                                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                                  Class 0: {Number(currentModelMetrics.metrics.support_0).toLocaleString()}, Class 1: {Number(currentModelMetrics.metrics.support_1).toLocaleString()}
+                                </Typography>
+                              )}
                             </Box>
                           </Grid>
                         )}
@@ -2455,6 +2914,27 @@ export default function ModelPage() {
           <Button onClick={() => setClearConfirmOpen(false)} disabled={clearLoading}>Cancel</Button>
           <Button onClick={handleClearConfirm} color="error" variant="contained" disabled={clearLoading} startIcon={clearLoading ? <CircularProgress size={16} color="inherit" /> : undefined}>
             {clearLoading ? 'Clearing…' : 'Confirm'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={deleteConfirmOpen} onClose={handleDeleteCancel}>
+        <DialogTitle>Delete Model?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Are you sure you want to delete the model "{modelToDelete}"? This will permanently delete the model file, metadata, and all associated files (scaler, attack category model, etc.). This action cannot be undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleDeleteCancel} disabled={deleting}>Cancel</Button>
+          <Button 
+            onClick={handleDeleteConfirm} 
+            color="error" 
+            variant="contained" 
+            disabled={deleting} 
+            startIcon={deleting ? <CircularProgress size={16} color="inherit" /> : <DeleteSweepRoundedIcon />}
+          >
+            {deleting ? 'Deleting…' : 'Delete'}
           </Button>
         </DialogActions>
       </Dialog>

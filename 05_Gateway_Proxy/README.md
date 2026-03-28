@@ -21,11 +21,28 @@ The API Gateway provides rate limiting, caching, and request proxying for all ba
   - `X-Cache: MISS` for fresh responses
 - **Smart caching**: Automatically skips caching for write operations (POST, PUT, DELETE, PATCH)
 
-### Request Proxying
-Routes requests to appropriate backend services:
+### Request Proxying & Load Balancing
+Routes requests to appropriate backend services and performs simple round-robin load balancing:
 - **Data Ingestion Service** (port 8000): `/upload`, `/view`, `/training`, `/testing`, `/validate`, `/insert`, `/stats`, `/type-stats`
 - **Model Service** (port 8001): `/train`, `/test`, `/predict`, `/models`, `/model-types`, `/model/status`, `/model/metrics`
 - **User Service** (port 8002): `/users`, `/history`, `/network-logs`, `/set-model`, `/get-model`, `/publish`
+
+Each service supports **multiple upstream instances** via comma-separated environment variables:
+
+- `DATA_INGESTION_SERVICE` (default: `http://127.0.0.1:8000`)
+- `MODEL_SERVICE` (default: `http://127.0.0.1:8001`)
+- `USER_SERVICE` (default: `http://127.0.0.1:8002`)
+
+Example (docker-compose override or k8s):
+
+```yaml
+environment:
+  - DATA_INGESTION_SERVICE=http://data-ingestion-1:8000,http://data-ingestion-2:8000
+  - MODEL_SERVICE=http://model-service-1:8001,http://model-service-2:8001
+  - USER_SERVICE=http://user-service-1:8002,http://user-service-2:8002
+```
+
+The gateway will round-robin across the configured upstreams for each request. This is a **per-process, in-memory** L4-style load balancer (no shared state across multiple gateway instances).
 
 ## Configuration
 

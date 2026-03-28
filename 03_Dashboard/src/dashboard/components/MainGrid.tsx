@@ -13,10 +13,6 @@ import PageViewsBarChart from './PageViewsBarChart';
 import AttackCategoryChart from './AttackCategoryChart';
 import ProtocolDistChart from './ProtocolDistChart';
 import StatCard, { StatCardProps } from './StatCard';
-import LiveActivityTicker from './LiveActivityTicker';
-import AnimatedCounterTile from './AnimatedCounterTile';
-import PulsingHeartbeatTile from './PulsingHeartbeatTile';
-import AnimatedGaugeTile from './AnimatedGaugeTile';
 import FlowStatsLiveTile from './FlowStatsLiveTile';
 import TrafficSummaryLiveTile from './TrafficSummaryLiveTile';
 import ModelDataOverviewTile from './ModelDataOverviewTile';
@@ -192,7 +188,7 @@ export default function MainGrid() {
         if (dsNames.length === 0) return;
         const ds = dsNames[0];
         const viewRes = await fetch(`${GATEWAY_BASE}/view?limit=3000&offset=0`, {
-          headers: { 'dataset-name': ds },
+          headers: { dataset_name: ds },
         });
         const viewJson = (await viewRes.json()) as {
           data?: { id: number; data: Record<string, unknown> }[];
@@ -366,25 +362,6 @@ export default function MainGrid() {
               fillHeight
             />
           </Box>
-        </Grid>
-      </Grid>
-
-      {/* Live tiles at bottom: animated counter, heartbeat, gauge, activity ticker */}
-      <Typography component="h2" variant="h6" sx={{ mt: 4, mb: 1 }}>
-        Live
-      </Typography>
-      <Grid container spacing={2} columns={12} sx={{ mb: 3 }}>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <AnimatedCounterTile />
-        </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <PulsingHeartbeatTile />
-        </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <AnimatedGaugeTile />
-        </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <LiveActivityTicker />
         </Grid>
       </Grid>
 

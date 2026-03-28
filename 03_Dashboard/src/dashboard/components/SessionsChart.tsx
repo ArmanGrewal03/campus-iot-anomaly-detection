@@ -67,7 +67,7 @@ export default function SessionsChart() {
         }
 
         const viewRes = await fetch(`${GATEWAY_BASE}/view?limit=5000&offset=0`, {
-          headers: { 'dataset-name': firstDataset },
+          headers: { dataset_name: firstDataset },
         });
         const viewJson = (await viewRes.json()) as {
           status?: string;

@@ -190,16 +190,30 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
             # Check content-type
             if "application/json" in content_type:
                 try:
-                    # Only read body if it's manageable size for validation
-                    # For very large JSON, we should stream or skip basic validation
-                    content_length = request.headers.get("content-length")
-                    if content_length and int(content_length) > 10 * 1024 * 1024:
-                        logger.warning(f"JSON body too large ({content_length} bytes), bypassing gateway validation")
+                    body = await request.body()
+                    
+                    # Check body size (10MB limit)
+                    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
+                    if len(body) > MAX_BODY_SIZE:
+                        validation_errors.append(f"Request body too large. Maximum size: {MAX_BODY_SIZE / (1024*1024):.1f}MB")
                     else:
-                        body = await request.body()
                         # Validate JSON structure
                         try:
                             json_data = json.loads(body.decode('utf-8'))
+                            
+                            # Basic JSON validation - check for common issues
+                            if isinstance(json_data, dict):
+                                # Check for SQL injection patterns in string values (only warn, don't block)
+                                sql_keywords = ["DROP", "DELETE", "INSERT", "UPDATE", "SELECT", "UNION", "--", "/*", "*/"]
+                                for key, value in json_data.items():
+                                    if isinstance(value, str):
+                                        value_upper = value.upper()
+                                        for keyword in sql_keywords:
+                                            if keyword in value_upper and len(value) > 100:
+                                                # Only log warning, don't block (could be legitimate data)
+                                                logger.warning(f"Potential SQL injection pattern detected in field '{key}' (logging only)")
+                                                break
+                            
                             # Store validated body for later use
                             request.state.validated_body = body
                             request.state.validated_json = json_data
@@ -207,17 +221,21 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
                             validation_errors.append(f"Invalid JSON: {str(e)}")
                 except Exception as e:
                     validation_errors.append(f"Error reading request body: {str(e)}")
-            elif "multipart/form-data" in content_type or "text/csv" in content_type:
-                # For file uploads, we'll let the backend handle validation via streaming
+            elif "multipart/form-data" in content_type:
+                # For file uploads, we'll let the backend handle validation
+                # But check Content-Length header if present
                 content_length = request.headers.get("content-length")
                 if content_length:
                     try:
                         size = int(content_length)
-                        MAX_UPLOAD_SIZE = 500 * 1024 * 1024  # Increased to 500MB
+                        MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB for file uploads
                         if size > MAX_UPLOAD_SIZE:
                             validation_errors.append(f"Upload too large. Maximum size: {MAX_UPLOAD_SIZE / (1024*1024):.1f}MB")
                     except ValueError:
-                        pass
+                        pass  # Invalid content-length, let backend handle it
+            elif content_type and request.method in ["POST", "PUT", "PATCH"]:
+                # Warn about unexpected content types (but don't block)
+                logger.warning(f"Unexpected content-type for {request.method}: {content_type}")
         
         # Validate path parameters (basic sanitization)
         # Check for path traversal attempts
@@ -249,10 +267,60 @@ app.add_middleware(InputValidationMiddleware)
 
 # Configuration
 USERS_DB = os.path.join(os.path.dirname(__file__), "..", "04_User_Service", "users.db")
+
+# Upstream service configuration
+# You can provide a single URL or a comma-separated list of URLs for basic L4-style load balancing.
+# Example:
+#   DATA_INGESTION_SERVICE="http://data-ingestion-1:8000,http://data-ingestion-2:8000"
 DATA_INGESTION_SERVICE = os.getenv("DATA_INGESTION_SERVICE", "http://127.0.0.1:8000")
 MODEL_SERVICE = os.getenv("MODEL_SERVICE", "http://127.0.0.1:8001")
 USER_SERVICE = os.getenv("USER_SERVICE", "http://127.0.0.1:8002")
 GATEWAY_PORT = int(os.getenv("GATEWAY_PORT", "8003"))
+
+# Parsed upstream lists for simple round-robin load balancing
+def _parse_upstream_list(value: str) -> List[str]:
+    """Parse a comma-separated list of upstream URLs into a clean list."""
+    if not value:
+        return []
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    return parts or [value.strip()]
+
+DATA_INGESTION_UPSTREAMS: List[str] = _parse_upstream_list(DATA_INGESTION_SERVICE)
+MODEL_SERVICE_UPSTREAMS: List[str] = _parse_upstream_list(MODEL_SERVICE)
+USER_SERVICE_UPSTREAMS: List[str] = _parse_upstream_list(USER_SERVICE)
+
+# Round-robin indices (simple in-memory counters; per-process, not shared)
+_data_ingestion_rr_index = 0
+_model_service_rr_index = 0
+_user_service_rr_index = 0
+
+
+def _get_next_upstream(upstreams: List[str], index_attr_name: str, service_label: str) -> str:
+    """
+    Very simple round-robin upstream selector.
+    This is per-process and not strictly thread-safe, but good enough for this gateway.
+    """
+    global _data_ingestion_rr_index, _model_service_rr_index, _user_service_rr_index
+
+    if not upstreams:
+        raise RuntimeError(f"No upstreams configured for {service_label}")
+
+    # Select and advance index
+    if index_attr_name == "data_ingestion":
+        idx = _data_ingestion_rr_index % len(upstreams)
+        _data_ingestion_rr_index += 1
+    elif index_attr_name == "model":
+        idx = _model_service_rr_index % len(upstreams)
+        _model_service_rr_index += 1
+    elif index_attr_name == "user":
+        idx = _user_service_rr_index % len(upstreams)
+        _user_service_rr_index += 1
+    else:
+        # Fallback: first upstream
+        idx = 0
+
+    upstream = upstreams[idx]
+    return upstream
 
 # Rate limiting configuration
 RATE_LIMIT_WINDOW = 60  # seconds
@@ -416,13 +484,11 @@ def check_rate_limit(identifier: str, rate_limit: int) -> bool:
 
 
 def get_cache_key(request: Request) -> str:
-    """Generate cache key from request including dataset/model headers"""
+    """Generate cache key from request"""
     path = request.url.path
     query = str(sorted(request.query_params.items()))
     method = request.method
-    ds = request.headers.get("dataset-name", "")
-    mn = request.headers.get("model-name", "")
-    return hashlib.md5(f"{method}:{path}:{query}:{ds}:{mn}".encode()).hexdigest()
+    return hashlib.md5(f"{method}:{path}:{query}".encode()).hexdigest()
 
 
 def get_cached_response(cache_key: str, path: str = "") -> Optional[Dict]:
@@ -465,25 +531,29 @@ def set_cached_response(cache_key: str, response: Dict, ttl: int = CACHE_TTL, pa
 
 
 def get_target_service(path: str) -> str:
-    """Determine which backend service to route to based on path"""
+    """
+    Determine which backend service to route to based on path
+    and select an upstream instance using simple round-robin.
+    """
     # Remove leading slash for comparison
     path_clean = path.lstrip("/")
     
     # Data Ingestion Service routes
     if (path_clean.startswith("api/data") or path_clean.startswith("upload") or 
         path_clean.startswith("view") or path_clean.startswith("training") or 
-        path_clean.startswith("testing") or path_clean.startswith("validate") or 
+        path_clean.startswith("testing") or path_clean.startswith("random-test") or 
+        path_clean.startswith("validate") or 
         path_clean.startswith("insert") or path_clean.startswith("stats") or 
         path_clean.startswith("type-stats") or 
         (path_clean.startswith("health") and "data" in path_clean.lower())):
-        return DATA_INGESTION_SERVICE
+        return _get_next_upstream(DATA_INGESTION_UPSTREAMS, "data_ingestion", "Data Ingestion Service")
     
     # Model Service routes
     elif (path_clean.startswith("api/model") or path_clean.startswith("train") or 
           path_clean.startswith("test") or path_clean.startswith("predict") or 
           path_clean.startswith("models") or path_clean.startswith("model-types") or 
           path_clean.startswith("model/status") or path_clean.startswith("model/metrics")):
-        return MODEL_SERVICE
+        return _get_next_upstream(MODEL_SERVICE_UPSTREAMS, "model", "Model Service")
     
     # User Service routes
     elif (
@@ -498,10 +568,10 @@ def get_target_service(path: str) -> str:
         or path_clean.startswith("recompute-predictions")
         or path_clean.startswith("dashboard-kpis")
     ):
-        return USER_SERVICE
+        return _get_next_upstream(USER_SERVICE_UPSTREAMS, "user", "User Service")
     
     # Default to data ingestion service
-    return DATA_INGESTION_SERVICE
+    return _get_next_upstream(DATA_INGESTION_UPSTREAMS, "data_ingestion", "Data Ingestion Service")
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -599,10 +669,9 @@ async def proxy_request(request: Request, path: str):
     
     skip_cache_paths = [
         "/train", "/test", "/predict", "/upload", "/validate", "/insert", "/publish",
-        "/history", "/network-logs", "/get-model", "/set-model", "/models", "/model-types",
-        "/model/status", "/model/metrics", "/recompute-predictions", "/dashboard-kpis",
-        "/tables", "/fields", "/new", "/clear", "/view", "/stats", "/type-stats"
+        "/history", "/network-logs", "/get-model", "/set-model", "/models", "/recompute-predictions", "/dashboard-kpis"
     ]
+    # Note: /models (list) and /model-types are cacheable, but /model/status and /model/metrics are not
     # Check if path (without query) starts with any skip path
     should_cache = not any(path_without_query.startswith(skip) for skip in skip_cache_paths)
     
@@ -670,7 +739,7 @@ async def proxy_request(request: Request, path: str):
     headers = dict(request.headers)
     headers.pop("host", None)
     headers.pop("connection", None)
-    # headers.pop("content-length", None)  # KEEP content-length for large uploads
+    headers.pop("content-length", None)
     
     # Forward request to backend service
     try:
@@ -837,11 +906,12 @@ async def proxy_request(request: Request, path: str):
     except httpx.ConnectError as e:
         # Determine service name for better error message
         service_name = "Unknown"
-        if target_service == DATA_INGESTION_SERVICE:
+        # Map based on which upstream list contains the base URL (best-effort)
+        if any(str(target_service).startswith(u) for u in DATA_INGESTION_UPSTREAMS):
             service_name = "Data Ingestion Service"
-        elif target_service == MODEL_SERVICE:
+        elif any(str(target_service).startswith(u) for u in MODEL_SERVICE_UPSTREAMS):
             service_name = "Model Service"
-        elif target_service == USER_SERVICE:
+        elif any(str(target_service).startswith(u) for u in USER_SERVICE_UPSTREAMS):
             service_name = "User Service"
         
         logger.error(f"Connection error proxying {request.method} {path} to {target_url} - {service_name} appears to be down: {e}", exc_info=True)
@@ -882,7 +952,9 @@ async def proxy_request(request: Request, path: str):
 
 async def connect_to_data_generation_websocket():
     """Connect to the data generation WebSocket endpoint in User Service"""
-    ws_url = f"{USER_SERVICE.replace('http://', 'ws://')}/ws/generate-data"
+    # Use the first configured User Service upstream for WebSocket connection
+    user_ws_base = USER_SERVICE_UPSTREAMS[0] if USER_SERVICE_UPSTREAMS else USER_SERVICE
+    ws_url = f"{user_ws_base.replace('http://', 'ws://')}/ws/generate-data"
     reconnect_delay = 5  # Start with 5 seconds
     max_delay = 60  # Maximum delay of 60 seconds
     consecutive_failures = 0
@@ -892,7 +964,7 @@ async def connect_to_data_generation_websocket():
             # Check if User Service is up before attempting WebSocket connection
             try:
                 async with httpx.AsyncClient(timeout=2.0) as client:
-                    health_check = await client.get(f"{USER_SERVICE}/health")
+                    health_check = await client.get(f"{user_ws_base}/health")
                     if health_check.status_code != 200:
                         raise Exception("Health check failed")
             except Exception:

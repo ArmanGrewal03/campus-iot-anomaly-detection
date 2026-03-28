@@ -9,7 +9,6 @@ import HomeRoundedIcon from '@mui/icons-material/HomeRounded';
 import PsychologyRoundedIcon from '@mui/icons-material/PsychologyRounded';
 import AnalyticsRoundedIcon from '@mui/icons-material/AnalyticsRounded';
 import PeopleRoundedIcon from '@mui/icons-material/PeopleRounded';
-import AssignmentRoundedIcon from '@mui/icons-material/AssignmentRounded';
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded';
 import InfoRoundedIcon from '@mui/icons-material/InfoRounded';
 
@@ -18,7 +17,6 @@ const mainListItems = [
   { text: 'Model', icon: <PsychologyRoundedIcon />, path: '/model' },
   { text: 'Analytics', icon: <AnalyticsRoundedIcon />, path: '/analytics' },
   { text: 'Clients', icon: <PeopleRoundedIcon />, path: '/clients' },
-  { text: 'Tasks', icon: <AssignmentRoundedIcon />, path: '/tasks' },
 ];
 
 const secondaryListItems = [
