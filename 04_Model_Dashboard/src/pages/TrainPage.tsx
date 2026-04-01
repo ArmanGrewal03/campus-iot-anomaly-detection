@@ -118,7 +118,7 @@ export default function TrainPage() {
       if (response.ok) {
         setProgress(100);
         setMessage(
-          `✅ Model "${params.modelName}" trained successfully!\n` +
+          `Model "${params.modelName}" trained successfully!\n` +
           `Dataset: ${params.datasetName} | Model type: ${params.modelType} | Features: ${data.n_features}\n` +
           `Training duration: ${data.training_duration_seconds}s`
         );
@@ -126,12 +126,12 @@ export default function TrainPage() {
         setParams({ ...params, modelName: '', datasetName: '' });
         setTimeout(() => setProgress(0), 500);
       } else {
-        setMessage(`❌ Training failed: ${data.detail || 'Unknown error'}`);
+        setMessage(`Training failed: ${data.detail || 'Unknown error'}`);
         setMessageType('error');
         setProgress(0);
       }
     } catch (error) {
-      setMessage(`❌ Error: ${error}`);
+      setMessage(`Error: ${error}`);
       setMessageType('error');
       setProgress(0);
     } finally {

@@ -65,7 +65,7 @@ export default function MenuContent({ onNavigate }: MenuContentProps) {
     >
       <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0' }}>
         <Typography variant="h6" sx={{ fontWeight: 'bold', color: '#1976d2' }}>
-          🤖 ML-Ops
+          ML-Ops
         </Typography>
       </Box>
 

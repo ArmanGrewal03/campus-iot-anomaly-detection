@@ -75,7 +75,7 @@ export default function UploadPage() {
       }
     } catch (error) {
       console.error('Failed to fetch datasets:', error);
-      setMessage(`❌ Error loading datasets: ${error}`);
+      setMessage(`Error loading datasets: ${error}`);
       setMessageType('error');
     } finally {
       setLoadingDatasets(false);
@@ -114,7 +114,7 @@ export default function UploadPage() {
       const data = await response.json();
 
       if (response.ok) {
-        setMessage(`✅ Dataset "${datasetName}" uploaded successfully!`);
+        setMessage(`Dataset "${datasetName}" uploaded successfully!`);
         setMessageType('success');
         setFile(null);
         setDatasetName('');
@@ -123,11 +123,11 @@ export default function UploadPage() {
         // Refresh datasets after short delay
         setTimeout(() => fetchDatasets(), 500);
       } else {
-        setMessage(`❌ Upload failed: ${data.detail || 'Unknown error'}`);
+        setMessage(`Upload failed: ${data.detail || 'Unknown error'}`);
         setMessageType('error');
       }
     } catch (error) {
-      setMessage(`❌ Error uploading file: ${error}`);
+      setMessage(`Error uploading file: ${error}`);
       setMessageType('error');
     } finally {
       setLoading(false);
@@ -152,17 +152,17 @@ export default function UploadPage() {
       });
 
       if (response.ok) {
-        setMessage(`✅ Dataset "${selectedForDelete}" deleted successfully!`);
+        setMessage(`Dataset "${selectedForDelete}" deleted successfully!`);
         setMessageType('success');
         // Add delay to ensure deletion is fully committed before fetching
         setTimeout(() => fetchDatasets(), 800);
       } else {
         const data = await response.json();
-        setMessage(`❌ Delete failed: ${data.detail || 'Unknown error'}`);
+        setMessage(`Delete failed: ${data.detail || 'Unknown error'}`);
         setMessageType('error');
       }
     } catch (error) {
-      setMessage(`❌ Error: ${error}`);
+      setMessage(`Error: ${error}`);
       setMessageType('error');
     } finally {
       setDeleting(false);
@@ -213,7 +213,7 @@ export default function UploadPage() {
               <label htmlFor="file-input" style={{ cursor: 'pointer', width: '100%', display: 'block' }}>
                 <CloudUploadIcon sx={{ fontSize: 48, color: '#1976d2', mb: 1 }} />
                 <Typography variant="body1" sx={{ mb: 1 }}>
-                  {file ? `📄 ${file.name}` : 'Click to select CSV file'}
+                  {file ? file.name : 'Click to select CSV file'}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   or drag and drop

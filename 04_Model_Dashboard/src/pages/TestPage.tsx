@@ -127,16 +127,16 @@ export default function TestPage() {
           testingDuration: data.testing_duration_seconds,
           metrics,
         });
-        setMessage(`✅ Model tested successfully!`);
+        setMessage(`Model tested successfully!`);
         setMessageType('success');
         setTimeout(() => setProgress(0), 500);
       } else {
-        setMessage(`❌ Testing failed: ${data.detail || 'Unknown error'}`);
+        setMessage(`Testing failed: ${data.detail || 'Unknown error'}`);
         setMessageType('error');
         setProgress(0);
       }
     } catch (error) {
-      setMessage(`❌ Error: ${error}`);
+      setMessage(`Error: ${error}`);
       setMessageType('error');
       setProgress(0);
     } finally {

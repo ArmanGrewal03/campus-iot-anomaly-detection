@@ -53,7 +53,7 @@ export default function ModelRegistryPage() {
         setModels(data.models);
       }
     } catch (error) {
-      setMessage(`❌ Failed to fetch models: ${error}`);
+      setMessage(`Failed to fetch models: ${error}`);
       setMessageType('error');
     } finally {
       setLoading(false);
@@ -75,16 +75,16 @@ export default function ModelRegistryPage() {
       });
 
       if (response.ok) {
-        setMessage(`✅ Model "${selectedModel}" deleted successfully!`);
+        setMessage(`Model "${selectedModel}" deleted successfully!`);
         setMessageType('success');
         fetchModels();
       } else {
         const data = await response.json();
-        setMessage(`❌ Delete failed: ${data.detail || 'Unknown error'}`);
+        setMessage(`Delete failed: ${data.detail || 'Unknown error'}`);
         setMessageType('error');
       }
     } catch (error) {
-      setMessage(`❌ Error: ${error}`);
+      setMessage(`Error: ${error}`);
       setMessageType('error');
     } finally {
       setDeleting(false);
