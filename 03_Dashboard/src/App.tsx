@@ -7,7 +7,6 @@ import CircularProgress from '@mui/material/CircularProgress';
 import Dashboard from './dashboard/Dashboard';
 
 // Lazy load pages to avoid Three.js/react-spring initialization issues on direct load
-const HomePage = lazy(() => import('./pages/HomePage'));
 const TestPage = lazy(() => import('./pages/TestPage'));
 const ModelPage = lazy(() => import('./pages/ModelPage'));
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
