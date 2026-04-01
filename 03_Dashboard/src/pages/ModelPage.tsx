@@ -59,7 +59,8 @@ const createMockRows = (count: number) =>
 const MOCK_INITIAL_ROWS = createMockRows(12);
 
 const GATEWAY_BASE = 'http://127.0.0.1:8003'; // API Gateway
-const API_BASE = `${GATEWAY_BASE}`; // Data Ingestion Service via Gateway
+const DATA_INGESTION_BASE = 'http://127.0.0.1:8000'; // Direct connection to Data Ingestion (for file uploads)
+const API_BASE = `${DATA_INGESTION_BASE}`; // Data Ingestion Service - use direct connection for stability
 const MODEL_API_BASE = `${GATEWAY_BASE}`; // Model Service via Gateway
 
 export default function ModelPage() {
@@ -231,10 +232,11 @@ export default function ModelPage() {
       }
       setSnackbar({ open: true, message, severity: 'success' });
       setSelectedFile(null);
+      setDatasetName('');
       if (datasetName.trim()) {
-        const id = `ds-${Date.now()}`;
-        setDatasets((d) => [...d, { id, name: datasetName.trim() }]);
-        setSelectedDatasetId(id);
+        // Refresh the datasets list after successful upload
+        setAvailableDatasets((d) => [...d, datasetName.trim()]);
+        setSelectedDataset(datasetName.trim());
       }
       setPaginationModel({ page: 0, pageSize: paginationModel.pageSize });
     } catch (err) {
