@@ -1107,13 +1107,14 @@ async def list_models():
                     metadata_filename = f"{model_name}_metadata.json"
                     metadata_path = os.path.join(MODEL_DIR, metadata_filename)
                     
-                    model_info = {
-                        "model_name": model_name,
-                        "model_file": filename,
-                        "has_metadata": os.path.exists(metadata_path)
-                    }
-                    
+                    # Only include models that have metadata (i.e., trained models, not helper files)
                     if os.path.exists(metadata_path):
+                        model_info = {
+                            "model_name": model_name,
+                            "model_file": filename,
+                            "has_metadata": True
+                        }
+                        
                         try:
                             with open(metadata_path, 'r') as f:
                                 metadata = json.load(f)
@@ -1123,12 +1124,12 @@ async def list_models():
                                     model_info["accuracy"] = metadata["metrics"].get("accuracy")
                         except Exception as e:
                             logger.warning(f"Error reading metadata for {model_name}: {e}")
-                    
-                    model_files.append(model_info)
+                        
+                        model_files.append(model_info)
         
         model_files.sort(key=lambda x: x["model_name"])
         
-        logger.info(f"Retrieved {len(model_files)} models")
+        logger.info(f"Retrieved {len(model_files)} trained models")
         
         return JSONResponse(
             content={

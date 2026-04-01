@@ -14,7 +14,6 @@ import InfoRoundedIcon from '@mui/icons-material/InfoRounded';
 
 const mainListItems = [
   { text: 'Home', icon: <HomeRoundedIcon />, path: '/home' },
-  { text: 'Model', icon: <PsychologyRoundedIcon />, path: '/model' },
   { text: 'Analytics', icon: <AnalyticsRoundedIcon />, path: '/analytics' },
   { text: 'Clients', icon: <PeopleRoundedIcon />, path: '/clients' },
 ];

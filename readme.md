@@ -14,43 +14,85 @@ The primary objective of this system is to provide a robust framework for securi
 
 The project is structured into specialized microservices:
 
-- **Data Ingestion (01)**: Port 8000. Manages network traffic persistence.
-- **Model Service (02)**: Port 8001. Handles ML training, evaluation, and deployment.
-- **Dashboard (03)**: Port 5173 / 8080. A React/Vite visualization interface.
-- **User Service (04)**: Port 8002. Provides authentication and WebSocket data streams.
-- **Gateway & Metrics (05, 06)**: Handles service proxying and real-time metric tracking.
+- **Data Ingestion (01)**: Port 8000. Manages CSV uploads, validation, and data persistence in SQLite.
+- **Model Service (02)**: Port 8001. ML model training, testing, and predictions (Random Forest, Isolation Forest, Autoencoders).
+- **Dashboard (03)**: Port 5173. React/Vite frontend for real-time monitoring and analytics.
+- **Model Dashboard (04)**: Port 5174. **NEW** - Separate React UI for model management (training, testing, registry).
+- **User Service (04)**: Port 8002. User management, WebSocket data streams, network telemetry.
+- **API Gateway (05)**: Port 8003. Central request routing, caching, and validation.
+- **ML-Ops Service (07)**: Port 8004. Dedicated backend service for model lifecycle management and training.
+- **Live Metrics (06)**: Port 8010. Real-time metric generation and streaming.
+
+### Data Flow
+```
+Raw Network Data → Data Ingestion (8000)
+                    ↓
+               SQLite Database
+                    ↓
+          Model Service (8001) ← ML-Ops Service (8004)
+                    ↓
+            Real-time Predictions
+                    ↓
+       Dashboard (5173) ← User Service (8002) ← Kafka Message Queue
+```
+
+### Key Features
+- **Modular Architecture**: Each service independently deployable
+- **Separation of Concerns**: Dashboard focuses on monitoring, ML-Ops on model management
+- **Real-Time Processing**: WebSocket streams + Kafka message queue
+- **Model Flexibility**: Support for supervised and unsupervised ML approaches
+- **Scalable**: Docker containerization ready for cloud deployment
+
+## Documentation
+
+Detailed setup and configuration guides are available in the `docs/` directory:
+- **[Docker Setup](docs/DOCKER_SETUP.md)** - Containerized deployment with Docker/Docker Compose
+- **[Kafka Configuration](docs/KAFKA_SETUP.md)** - Message broker setup and topic management
+- **[Kafka Quick Start](docs/KAFKA_QUICK_START.md)** - Fast 5-minute Kafka setup
+- **[gRPC Setup](docs/GRPC_SETUP.md)** - Service-to-service communication
+- **[Model Explanation](docs/MODEL_EXPLANATION.md)** - How the anomaly detection models work
+
+Reference materials are located in `Reference Maps/`.
 
 ## Getting Started
 
 ### Prerequisites
 - **Python 3.10+**
 - **Node.js & npm**
-- **PowerShell** (optional, for automation scripts)
+- **Docker & Docker Compose** (for containerized deployment)
 
-### Automated Startup
-Use the scripts in the `scripts/` directory to launch the environment:
-- **Run all services**: `.\scripts\run-all-services.ps1`
-- **Individual services**: e.g., `.\scripts\run-02-model-service.ps1`
+### Quick Start (Bash/macOS/Linux)
+```bash
+bash scripts/start_all.sh
+# Main Dashboard opens at http://localhost:5173
+# Model Dashboard opens at http://localhost:5174
+```
 
-### Manual Startup
-Launch services in the following order:
+### Automated Startup (Windows PowerShell)
+```powershell
+.\scripts\run-all-services.ps1
+# Main Dashboard opens at http://localhost:5173
+# Model Dashboard opens at http://localhost:5174
+```
 
-1. **Backend Services (01, 02, 04)**:
-   ```bash
-   # Navigate to service directory
-   cd 02_Model_Service
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   python model_api.py
-   ```
+### Service URLs
+All services available at:
+- **Main Dashboard** (Monitoring): http://localhost:5173
+- **Model Management Dashboard** (ML-Ops UI): http://localhost:5174
+- **Data Ingestion API**: http://localhost:8000
+- **Model Service API**: http://localhost:8001
+- **User Service**: http://localhost:8002
+- **API Gateway**: http://localhost:8003
+- **ML-Ops Service (Backend)**: http://localhost:8004/docs
+- **Live Metrics**: http://localhost:8010
 
-2. **Frontend Dashboard (03)**:
-   ```bash
-   cd 03_Dashboard
-   npm install
-   npm run dev
-   ```
+### Docker Deployment
+To run all services in containers:
+```bash
+docker-compose up -d
+```
+
+See [Docker Setup](docs/DOCKER_SETUP.md) for details.
 
 ## Troubleshooting
 
