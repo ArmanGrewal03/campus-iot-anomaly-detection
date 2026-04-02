@@ -304,7 +304,7 @@ export default function ValidatePage() {
           <Box sx={{ p: 2 }}>
             {datasets.map((ds) => (
               <Typography key={ds} variant="body2" sx={{ py: 0.5 }}>
-                📊 {ds}
+                {ds}
               </Typography>
             ))}
           </Box>
