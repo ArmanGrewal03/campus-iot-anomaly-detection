@@ -284,8 +284,11 @@ async def fetch_all_data(endpoint: str, label_type: str = "all", database_name: 
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
                     url,
-                    params={"limit": limit, "offset": page_offset},
-                    headers=headers
+                    headers={
+                        **headers,
+                        "X-Limit": str(limit),
+                        "X-Offset": str(page_offset),
+                    }
                 )
             
             if response.status_code >= 400:
@@ -311,12 +314,15 @@ async def fetch_all_data(endpoint: str, label_type: str = "all", database_name: 
     
     try:
         # Fetch first page to get total_rows
-        logger.info(f"Requesting {url} with params: limit={limit}, offset=0, headers={headers}")
+        logger.info(f"Requesting {url} with headers: {{...,'X-Limit': {limit}, 'X-Offset': 0}}")
         async with httpx.AsyncClient(timeout=30.0) as client:
             first_response = await client.get(
                 url,
-                params={"limit": limit, "offset": 0},
-                headers=headers
+                headers={
+                    **headers,
+                    "X-Limit": str(limit),
+                    "X-Offset": "0",
+                }
             )
         
         logger.info(f"Backend API response: {first_response.status_code} for {endpoint}")
