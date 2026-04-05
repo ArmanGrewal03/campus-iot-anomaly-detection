@@ -633,9 +633,11 @@ export default function ModelPage() {
       setViewLoading(true);
       // Don't reset total_rows - keep it to maintain pagination state
       try {
-        const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
         const headers: Record<string, string> = {};
         headers['dataset_name'] = selectedDataset.trim();
+        // Send pagination via headers per API contract
+        headers['X-Limit'] = String(limit);
+        headers['X-Offset'] = String(offset);
         
         // Determine which endpoint to call based on filterMode
         // Note: These are GET endpoints from Data Ingestion Service, not POST /train from Model Service
@@ -646,7 +648,7 @@ export default function ModelPage() {
           endpoint = '/testing';  // GET endpoint from Data Ingestion Service
         }
         
-        const res = await fetch(`${API_BASE}${endpoint}?${params}`, { headers });
+        const res = await fetch(`${API_BASE}${endpoint}`, { headers });
         const json = (await res.json()) as {
           status?: string;
           data?: { id: number; upload_timestamp?: string; data: Record<string, unknown>; T?: unknown }[];
@@ -976,10 +978,11 @@ export default function ModelPage() {
 
       if (useTestData) {
         // Fetch testing data from backend
-        const params = new URLSearchParams({ limit: '100', offset: '0' });
         const headers: Record<string, string> = {};
         if (selectedDataset.trim()) headers['dataset_name'] = selectedDataset.trim();
-        const res = await fetch(`${API_BASE}/testing?${params}`, { headers });
+        headers['X-Limit'] = '100';
+        headers['X-Offset'] = '0';
+        const res = await fetch(`${API_BASE}/testing`, { headers });
         const json = await res.json();
         if (!res.ok) throw new Error(json.detail || 'Failed to fetch testing data');
         dataToPredict = (json.data || []).map((item: any) => item.data);

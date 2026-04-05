@@ -559,17 +559,17 @@ async def upload_csv(
 
 @app.get("/view")
 async def view_data(
-    limit: int = 100, 
+    limit: int = 100000000, 
     offset: int = 0,
     dataset_name: str = Depends(get_dataset_name)
 ):
     # Frontend controls limits - backend just validates reasonable bounds
-    if limit < 1:
-        limit = 100  # Default to 100 if invalid
-    if limit > 10000:  # Cap at reasonable maximum to prevent abuse
-        limit = 10000
-    if offset < 0:
-        offset = 0
+    # if limit < 1:
+    #     limit = 100  # Default to 100 if invalid
+    # if limit > 10000:  # Cap at reasonable maximum to prevent abuse
+    #     limit = 10000
+    # if offset < 0:
+    #     offset = 0
     
     logger.info(f"Viewing data: limit={limit}, offset={offset}")
     
@@ -661,11 +661,13 @@ async def view_data(
 
 @app.get("/training")
 async def get_training_data(
-    limit: int = 100, 
-    offset: int = 0,
-    dataset_name: str = Depends(get_dataset_name)
+    dataset_name: str = Depends(get_dataset_name),
+    limit_header: Optional[int] = Header(None, alias="X-Limit"),
+    offset_header: Optional[int] = Header(None, alias="X-Offset")
 ):
     # Frontend controls limits - backend just validates reasonable bounds
+    limit = limit_header if limit_header is not None else 100
+    offset = offset_header if offset_header is not None else 0
     if limit < 1:
         limit = 100  # Default to 100 if invalid
     if limit > 10000:  # Cap at reasonable maximum to prevent abuse
@@ -777,11 +779,13 @@ async def get_training_data(
 
 @app.get("/testing")
 async def get_testing_data(
-    limit: int = 100, 
-    offset: int = 0,
-    dataset_name: str = Depends(get_dataset_name)
+    dataset_name: str = Depends(get_dataset_name),
+    limit_header: Optional[int] = Header(None, alias="X-Limit"),
+    offset_header: Optional[int] = Header(None, alias="X-Offset")
 ):
     # Frontend controls limits - backend just validates reasonable bounds
+    limit = limit_header if limit_header is not None else 100
+    offset = offset_header if offset_header is not None else 0
     if limit < 1:
         limit = 100  # Default to 100 if invalid
     if limit > 10000:  # Cap at reasonable maximum to prevent abuse
