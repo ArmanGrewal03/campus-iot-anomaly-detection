@@ -11,6 +11,15 @@ import {
 } from '@mui/material';
 import PsychologyRoundedIcon from '@mui/icons-material/PsychologyRounded';
 
+// Local PageLoader to match previous UX and avoid undefined reference
+function PageLoader() {
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', py: 3 }}>
+      <CircularProgress size={28} />
+    </Box>
+  );
+}
+
 // Lazy load the model management pages
 const UploadPage = lazy(() => import('./model/UploadPage'));
 const ValidatePage = lazy(() => import('./model/ValidatePage'));
@@ -27,61 +36,27 @@ interface TabPanelProps {
 function TabPanel(props: TabPanelProps) {
   const { children, value, index, ...other } = props;
 
-  const fetchViewData = React.useCallback(
-    async (limit: number, offset: number) => {
-      if (!selectedDataset.trim()) {
-        setSnackbar({ open: true, message: 'Please select a dataset to view.', severity: 'warning' });
-        return;
-      }
-      setViewLoading(true);
-      // Don't reset total_rows - keep it to maintain pagination state
-      try {
-        const headers: Record<string, string> = {};
-        headers['dataset_name'] = selectedDataset.trim();
-        // Send pagination via headers per API contract
-        headers['X-Limit'] = String(limit);
-        headers['X-Offset'] = String(offset);
-        
-        // Determine which endpoint to call based on filterMode
-        // Note: These are GET endpoints from Data Ingestion Service, not POST /train from Model Service
-        let endpoint = '/view';
-        if (filterMode === 'training') {
-          endpoint = '/training';  // GET endpoint from Data Ingestion Service
-        } else if (filterMode === 'testing') {
-          endpoint = '/testing';  // GET endpoint from Data Ingestion Service
-        }
-        
-        const res = await fetch(`${API_BASE}${endpoint}`, { headers });
-        const json = (await res.json()) as {
-          status?: string;
-          data?: { id: number; upload_timestamp?: string; data: Record<string, unknown>; T?: unknown }[];
-          total_rows?: number;
-          returned_rows?: number;
-        };
-        if (!res.ok) {
-          const detail = (json as { detail?: string | { msg?: string }[] }).detail;
-          const msg = Array.isArray(detail) ? detail.map((d) => d.msg ?? '').join('; ') : String(detail ?? res.statusText);
-          setSnackbar({ open: true, message: `View data failed: ${msg}`, severity: 'error' });
-          setViewLoading(false);
-          return;
-        }
-        const raw = json.data ?? [];
-        const gridRows: Record<string, unknown>[] = raw.map((item) => ({
-          id: item.id,
-          ...item.data,
-          ...(item.upload_timestamp != null && { upload_timestamp: item.upload_timestamp }),
-          ...(item.T != null && { T: item.T }),
-        }));
-        setRows(gridRows);
-        if (typeof json.total_rows === 'number') setViewTotalRows(json.total_rows);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Failed to load view data.';
-        setSnackbar({ open: true, message, severity: 'error' });
-      } finally {
-        setViewLoading(false);
-      }
-    },
-    [selectedDataset, filterMode]
+  if (value !== index) {
+    return (
+      <div
+        role="tabpanel"
+        hidden
+        id={`model-tabpanel-${index}`}
+        aria-labelledby={`model-tab-${index}`}
+        {...other}
+      />
+    );
+  }
+
+  return (
+    <div
+      role="tabpanel"
+      id={`model-tabpanel-${index}`}
+      aria-labelledby={`model-tab-${index}`}
+      {...other}
+    >
+      <Box sx={{ pt: 2 }}>{children}</Box>
+    </div>
   );
 }
 
@@ -161,6 +136,15 @@ function a11yProps(index: number) {
         console.log('First prediction:', result.predictions[0]);
         console.log('attack_cat in first prediction:', result.predictions[0]?.attack_cat);
       }
+
+      // Finish
+      setPredicting(false);
+    } catch (e: any) {
+      console.error(e);
+      setSnackbar({ open: true, message: String(e?.message || e || 'Prediction failed'), severity: 'error' });
+      setPredicting(false);
+    }
+  };
 
 export default function ModelPage() {
   const [tabValue, setTabValue] = useState(0);

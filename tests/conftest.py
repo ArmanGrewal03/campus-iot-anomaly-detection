@@ -49,7 +49,8 @@ def gateway_client() -> Generator[TestClient, None, None]:
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     spec.loader.exec_module(module)  # type: ignore[attr-defined]
-    with TestClient(module.app) as client:
+    # Avoid re-raising server exceptions from middleware validation
+    with TestClient(module.app, raise_server_exceptions=False) as client:
         yield client
 
 

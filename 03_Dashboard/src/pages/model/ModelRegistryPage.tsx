@@ -21,7 +21,10 @@ import {
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import StorageIcon from '@mui/icons-material/Storage';
+import VisibilityIcon from '@mui/icons-material/Visibility';
 
+// Direct connection to Model Service (align with Analytics page)
+const MODEL_API_BASE = 'http://127.0.0.1:8001';
 interface Model {
   model_name: string;
   model_file: string;
@@ -29,6 +32,14 @@ interface Model {
   training_date?: string;
   n_features?: number;
   accuracy?: number;
+}
+
+interface ModelMetricsResponse {
+  status?: string;
+  metrics?: Record<string, number>;
+  training_params?: {
+    loss_history?: { epoch?: number; step?: number; timestamp?: string; loss: number }[];
+  };
 }
 
 export default function ModelRegistryPage() {
@@ -39,6 +50,10 @@ export default function ModelRegistryPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [viewOpen, setViewOpen] = useState(false);
+  const [viewLoading, setViewLoading] = useState(false);
+  const [viewModelName, setViewModelName] = useState<string | null>(null);
+  const [viewData, setViewData] = useState<ModelMetricsResponse | null>(null);
 
   useEffect(() => {
     fetchModels();
@@ -47,7 +62,7 @@ export default function ModelRegistryPage() {
   const fetchModels = async () => {
     setLoading(true);
     try {
-      const response = await fetch('http://localhost:8004/models');
+      const response = await fetch(`${MODEL_API_BASE}/models`);
       const data = await response.json();
       if (data.models) {
         setModels(data.models);
@@ -93,6 +108,58 @@ export default function ModelRegistryPage() {
     }
   };
 
+  const handleViewClick = async (modelName: string) => {
+    setViewModelName(modelName);
+    setViewOpen(true);
+    setViewLoading(true);
+    setViewData(null);
+    try {
+      const res = await fetch(`${MODEL_API_BASE}/model/metrics`, {
+        headers: { 'model_name': modelName }
+      });
+      const json = (await res.json()) as ModelMetricsResponse;
+      if (!res.ok) throw new Error((json as any)?.detail || 'Failed to fetch metrics');
+      setViewData(json);
+    } catch (e: any) {
+      setMessage(`Failed to load model details: ${e?.message || e}`);
+      setMessageType('error');
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
+  const renderLossChart = (history?: { loss: number }[]) => {
+    if (!history || history.length === 0) {
+      return <Typography color="text.secondary">No loss history recorded for this model.</Typography>;
+    }
+    const width = 520;
+    const height = 160;
+    const padding = 24;
+    const xs = history.map((_, i) => i);
+    const ys = history.map((h) => h.loss);
+    const xMin = 0;
+    const xMax = Math.max(1, xs[xs.length - 1]);
+    const yMin = Math.min(...ys);
+    const yMax = Math.max(...ys);
+    const xScale = (x: number) => padding + (x - xMin) / (xMax - xMin || 1) * (width - 2 * padding);
+    const yScale = (y: number) => height - padding - (y - yMin) / (yMax - yMin || 1) * (height - 2 * padding);
+    const d = xs.map((x, i) => `${i === 0 ? 'M' : 'L'} ${xScale(x)} ${yScale(ys[i])}`).join(' ');
+    return (
+      <Box sx={{ mt: 2 }}>
+        <svg width={width} height={height}>
+          <rect x="0" y="0" width={width} height={height} fill="#fafafa" stroke="#eee" />
+          <path d={d} fill="none" stroke="#1976d2" strokeWidth="2" />
+          {/* Axis labels */}
+          <text x={padding} y={height - 6} fontSize="10" fill="#666">0</text>
+          <text x={width - padding - 10} y={height - 6} fontSize="10" fill="#666">{xMax}</text>
+          <text x={6} y={yScale(yMax)} fontSize="10" fill="#666">{yMax.toFixed(3)}</text>
+          <text x={6} y={yScale(yMin)} fontSize="10" fill="#666">{yMin.toFixed(3)}</text>
+        </svg>
+        <Typography variant="caption" color="text.secondary">Loss vs. Step</Typography>
+      </Box>
+    );
+  };
+
   return (
     <Box sx={{ p: 3 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
@@ -118,7 +185,15 @@ export default function ModelRegistryPage() {
       ) : (
         <TableContainer component={Card}>
           <Table>
-            <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
+            <TableHead
+              sx={{
+                backgroundColor: 'transparent', // transparent header background
+                '& .MuiTableCell-root': {
+                  color: 'text.primary',
+                  fontWeight: 700,
+                },
+              }}
+            >
               <TableRow>
                 <TableCell sx={{ fontWeight: 'bold' }}>Model Name</TableCell>
                 <TableCell align="right">Features</TableCell>
@@ -140,7 +215,7 @@ export default function ModelRegistryPage() {
                   .map((model) => (
                     <TableRow key={model.model_name} hover>
                       <TableCell>
-                        <Typography sx={{ fontWeight: 500 }}>{model.model_name}</Typography>
+                        <Typography sx={{ fontWeight: 500, color: 'primary.main' }}>{model.model_name}</Typography>
                       </TableCell>
                       <TableCell align="right">{model.n_features || 'N/A'}</TableCell>
                       <TableCell align="right">
@@ -154,6 +229,15 @@ export default function ModelRegistryPage() {
                           : 'Unknown'}
                       </TableCell>
                       <TableCell align="center">
+                        <IconButton
+                          size="small"
+                          color="primary"
+                          onClick={() => handleViewClick(model.model_name)}
+                          title="View details"
+                          sx={{ mr: 1 }}
+                        >
+                          <VisibilityIcon />
+                        </IconButton>
                         <IconButton
                           size="small"
                           color="error"
@@ -171,6 +255,47 @@ export default function ModelRegistryPage() {
         </TableContainer>
       )}
 
+      {/* View Details Dialog */}
+      <Dialog open={viewOpen} onClose={() => setViewOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>{viewModelName || 'Model'} Details</DialogTitle>
+        <DialogContent dividers>
+          {viewLoading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+              <CircularProgress />
+            </Box>
+          ) : (
+            <>
+              {/* Metrics */}
+              {viewData?.metrics ? (
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>Metrics</Typography>
+                  <Table size="small">
+                    <TableBody>
+                      {Object.entries(viewData.metrics).map(([k, v]) => (
+                        <TableRow key={k}>
+                          <TableCell sx={{ width: 260 }}>{k}</TableCell>
+                          <TableCell>{typeof v === 'number' ? v.toFixed(4) : String(v)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </Box>
+              ) : (
+                <Typography color="text.secondary">No metrics available.</Typography>
+              )}
+
+              {/* Loss history chart */}
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>Training Loss</Typography>
+                {renderLossChart(viewData?.training_params?.loss_history?.map(h => ({ loss: h.loss })) )}
+              </Box>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setViewOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
       <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)}>
         <DialogTitle>Delete Model?</DialogTitle>
         <DialogContent>
