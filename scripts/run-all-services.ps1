@@ -24,6 +24,8 @@ $script04 = Join-Path $scriptDir "run-04-user-service.ps1"
 $script03 = Join-Path $scriptDir "run-03-dashboard.ps1"
 $script05 = Join-Path $scriptDir "run-05-gateway.ps1"
 $script06 = Join-Path $scriptDir "run-06-live-metrics.ps1"
+$script07 = Join-Path $scriptDir "run-07-ml-ops.ps1"
+$script08 = Join-Path $scriptDir "run-04-model-dashboard.ps1"
 
 # Check if scripts exist
 if (-not (Test-Path $script01)) {
@@ -52,12 +54,14 @@ if (-not (Test-Path $script06)) {
 Write-Host "Starting services in separate PowerShell windows..." -ForegroundColor Green
 Write-Host ""
 Write-Host "Service URLs:" -ForegroundColor Cyan
-Write-Host "  - Data Ingestion API: http://127.0.0.1:8000" -ForegroundColor White
-Write-Host "  - Model API:          http://127.0.0.1:8001" -ForegroundColor White
-Write-Host "  - User Service:       http://127.0.0.1:8002 (WebSocket: ws://127.0.0.1:8002/ws/data-stream)" -ForegroundColor White
-Write-Host "  - API Gateway:        http://127.0.0.1:8003 (optional)" -ForegroundColor White
-Write-Host "  - Live Metrics:       http://127.0.0.1:8010 (optional)" -ForegroundColor White
-Write-Host "  - Dashboard:          http://127.0.0.1:5173 (will open automatically)" -ForegroundColor White
+Write-Host "  - Data Ingestion API:      http://127.0.0.1:8000" -ForegroundColor White
+Write-Host "  - Model API:               http://127.0.0.1:8001" -ForegroundColor White
+Write-Host "  - User Service:            http://127.0.0.1:8002 (WebSocket: ws://127.0.0.1:8002/ws/data-stream)" -ForegroundColor White
+Write-Host "  - API Gateway:             http://127.0.0.1:8003 (optional)" -ForegroundColor White
+Write-Host "  - ML-Ops Service:          http://127.0.0.1:8004 (model management backend)" -ForegroundColor White
+Write-Host "  - Live Metrics:            http://127.0.0.1:8010 (optional)" -ForegroundColor White
+Write-Host "  - Main Dashboard:          http://127.0.0.1:5173 (monitoring)" -ForegroundColor White
+Write-Host "  - Model Management:        http://127.0.0.1:5174 (ML-Ops)" -ForegroundColor White
 Write-Host ""
 
 # Store process IDs for later termination
@@ -81,7 +85,12 @@ Start-Sleep -Seconds 2
 
 Write-Host "Starting Dashboard..." -ForegroundColor Yellow
 $proc03 = Start-Process powershell -ArgumentList "-NoExit", "-File", "`"$script03`"" -PassThru
-$processIds += $proc03.Id
+$processIds += $proc03
+
+Write-Host "Starting Model Management Dashboard..." -ForegroundColor Yellow
+$proc08 = Start-Process powershell -ArgumentList "-NoExit", "-File", "`"$script08`"" -PassThru
+$processIds += $proc08.Id
+Start-Sleep -Seconds 2.Id
 Start-Sleep -Seconds 2
 
 # Start Gateway if script exists (optional)
@@ -97,6 +106,14 @@ if (Test-Path $script06) {
     Write-Host "Starting Live Metrics Service..." -ForegroundColor Yellow
     $proc06 = Start-Process powershell -ArgumentList "-NoExit", "-File", "`"$script06`"" -PassThru
     $processIds += $proc06.Id
+    Start-Sleep -Seconds 2
+}
+
+# Start ML-Ops Service if script exists
+if (Test-Path $script07) {
+    Write-Host "Starting ML-Ops Service..." -ForegroundColor Yellow
+    $proc07 = Start-Process powershell -ArgumentList "-NoExit", "-File", "`"$script07`"" -PassThru
+    $processIds += $proc07.Id
     Start-Sleep -Seconds 2
 }
 
@@ -122,7 +139,8 @@ Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Services are running!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+Write-Host ""Main Dashboard:         PID $($proc03.Id)" -ForegroundColor White
+Write-Host "  - Model Management:       PID $($proc08
 Write-Host "Process IDs:" -ForegroundColor Cyan
 Write-Host "  - Data Ingestion Service: PID $($proc01.Id)" -ForegroundColor White
 Write-Host "  - Model Service:          PID $($proc02.Id)" -ForegroundColor White

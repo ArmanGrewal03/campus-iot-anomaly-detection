@@ -249,10 +249,13 @@ class TrainRequest(BaseModel):
     include_fields: Optional[List[str]] = None
     exclude_fields: Optional[List[str]] = None
     model_type: Optional[str] = None  # e.g., "RFv1", "IFv1", "AEv1"
-    contamination: Optional[float] = 0.1  # For Isolation Forest
+    # Tuned default for IF anomaly proportion from project benchmarking.
+    contamination: Optional[float] = 0.25  # For Isolation Forest
     hidden_layers: Optional[str] = "64,32,32,64"  # For Autoencoder (comma-separated)
     ae_train_normal_only: Optional[bool] = True
-    ae_threshold_percentile: Optional[float] = 99.0
+    # Tuned default for AE anomaly thresholding. Lower percentile increases anomaly recall
+    # and matched the best-performing dashboard run in this project.
+    ae_threshold_percentile: Optional[float] = 85.0
     ae_max_iterations: Optional[int] = 300
     ae_patience: Optional[int] = 20
     ae_min_improvement: Optional[float] = 1e-5
@@ -1113,13 +1116,14 @@ async def list_models():
                     metadata_filename = f"{model_name}_metadata.json"
                     metadata_path = os.path.join(MODEL_DIR, metadata_filename)
                     
-                    model_info = {
-                        "model_name": model_name,
-                        "model_file": filename,
-                        "has_metadata": os.path.exists(metadata_path)
-                    }
-                    
+                    # Only include models that have metadata (i.e., trained models, not helper files)
                     if os.path.exists(metadata_path):
+                        model_info = {
+                            "model_name": model_name,
+                            "model_file": filename,
+                            "has_metadata": True
+                        }
+                        
                         try:
                             with open(metadata_path, 'r') as f:
                                 metadata = json.load(f)
@@ -1129,12 +1133,12 @@ async def list_models():
                                     model_info["accuracy"] = metadata["metrics"].get("accuracy")
                         except Exception as e:
                             logger.warning(f"Error reading metadata for {model_name}: {e}")
-                    
-                    model_files.append(model_info)
+                        
+                        model_files.append(model_info)
         
         model_files.sort(key=lambda x: x["model_name"])
         
-        logger.info(f"Retrieved {len(model_files)} models")
+        logger.info(f"Retrieved {len(model_files)} trained models")
         
         return JSONResponse(
             content={
@@ -1508,7 +1512,7 @@ async def train(
             }
         elif model_type == "IFv1":
             # Isolation Forest
-            contamination = train_request.contamination if train_request.contamination is not None else 0.1
+            contamination = train_request.contamination if train_request.contamination is not None else 0.25
             model = train_if_model(
                 X_train, y_train,
                 n_estimators=train_request.n_estimators,
@@ -1542,7 +1546,7 @@ async def train(
                 patience=int(train_request.ae_patience or 20),
                 min_improvement=float(train_request.ae_min_improvement or 1e-5)
             )
-            threshold_percentile = float(train_request.ae_threshold_percentile or 99.0)
+            threshold_percentile = float(train_request.ae_threshold_percentile or 85.0)
             training_params = {
                 'model_type': 'AEv1',  # Use AEv1 for consistency
                 'hidden_layers': hidden_layers,

@@ -674,6 +674,35 @@ async def clear_history():
 _kpi_cache: dict = {"data": None, "ts": 0}
 _KPI_CACHE_TTL = 5  # seconds
 
+
+def _is_prediction_unsafe(prediction: dict) -> bool:
+    """Normalize model outputs and decide whether a prediction should be treated as anomaly/unsafe."""
+    if not isinstance(prediction, dict):
+        return False
+
+    # 1) Binary outputs used by some models
+    pred_value = prediction.get("prediction")
+    if pred_value in (1, "1", True):
+        return True
+
+    # 2) Label-based outputs used by other models
+    label = str(prediction.get("label") or "").strip().lower()
+    if label:
+        if any(token in label for token in ["unsafe", "anomaly", "attack", "malicious"]):
+            return True
+        if any(token in label for token in ["safe", "normal", "benign"]):
+            return False
+
+    # 3) Probability fallback when only scores are available
+    prob_unsafe = prediction.get("probability_unsafe")
+    try:
+        if prob_unsafe is not None and float(prob_unsafe) >= 0.5:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    return False
+
 @app.get("/dashboard-kpis")
 async def get_dashboard_kpis():
     """
@@ -790,7 +819,7 @@ async def get_dashboard_kpis():
                     preds = pr_obj.get("predictions") or []
                     if preds and isinstance(preds, list):
                         first = preds[0]
-                        if isinstance(first, dict) and first.get("prediction") == 1:
+                        if _is_prediction_unsafe(first):
                             anom_by_day[d] = anom_by_day.get(d, 0) + 1
                 except Exception:
                     continue
@@ -816,7 +845,7 @@ async def get_dashboard_kpis():
                 preds = pr_obj.get("predictions") or []
                 if preds and isinstance(preds, list):
                     first = preds[0]
-                    if isinstance(first, dict) and first.get("prediction") == 1:
+                    if _is_prediction_unsafe(first):
                         total_anomalies += 1
             except Exception:
                 continue

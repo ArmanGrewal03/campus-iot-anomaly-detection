@@ -1201,7 +1201,9 @@ async def validate_data(
             updated_training = 0
             updated_testing = 0
             
-            for row_id, _ in row_data_list:
+            # Update training/testing labels for all rows
+            for row in all_rows:
+                row_id = row['id']
                 if row_id in training_ids:
                     cursor.execute(f"UPDATE {csv_table} SET T = ? WHERE id = ?", ("training", row_id))
                     updated_training += 1
@@ -1679,3 +1681,14 @@ async def get_type_stats(dataset_name: str = Depends(get_dataset_name)):
             content={"error": str(e), "type_distribution": {}},
             status_code=500
         )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info("Starting Campus IoT Anomaly Detection API on port 8000...")
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=8000,
+        log_level="info"
+    )

@@ -1,0 +1,322 @@
+/*** ACCENT CUSTOM STYLES ***/
+
+/*  Variables */
+
+/*  Primary Colors */
+
+.res-local-header-wrapper {
+    background-color: #004C9B;
+}
+
+.res-local-header .site-heading a {
+    color: #ffffff;
+}
+
+.resButtons .res-buttons .style1 .row .row-height .outside-full-height .inside-full-height,
+.resButtons .res-buttons .style1 .row .row-height .outside-full-height a {
+    background-color: #004C9B;
+    color: #ffffff;
+    border: none;
+}
+
+.resTable table.table.table-bordered th,
+.resTable table.table.table-striped th {
+    background-color: #004C9B;
+    color: #ffffff;
+}
+
+.resTable table.table.table-bordered th a,
+.resTable table.table.table-striped th a {
+    color: #ffffff;
+}
+
+.resImageText .thumbnail .overlayText {
+    background-color: #004C9B;
+    color: #ffffff;
+}
+
+.resImageText .thumbnail a .overlayText {
+    color: #ffffff;
+}
+
+.nav-tabs>li {
+    background-color: #004C9B;
+}
+
+.nav>li>a:focus,
+.nav>li>a:hover {
+    background-color: #004C9B;
+    border: 1px solid #004C9B;
+}
+
+.nav-tabs>li a {
+    color: #ffffff;
+}
+
+.resBiography .bioDisplay2 .bioInside .bioStrip .bioStripItemContainer .bioStripItem {
+    background-color: #004C9B;
+    color: #ffffff;
+}
+
+.resBiography .bioDisplay2 .bioInside .bioStrip .bioStripItemContainer .bioStripItem a {
+    color: #ffffff;
+}
+
+.resAnnouncement .infoContainer.style1 {
+    background-color: #004C9B;
+    color: #ffffff;
+}
+
+.resAnnouncement .infoContainer.style1 a {
+    color: #ffffff;
+}
+
+.resSection .res-section.background-primary {
+    background-color: #004C9B;
+}
+
+.resSection .res-section.background-primary .resText .res-text:not(.background-opaque) {
+    color: #ffffff;
+}
+
+.resSection .res-section.background-primary .resText .res-text:not(.background-opaque) :not(.optionalButton) a {
+    color: #ffffff;
+}
+
+.resSection .res-section.background-primary .background-FFFFFF .resText .res-text:not(.background-opaque) {
+    color: inherit;
+}
+
+.resSection .res-section.background-primary .background-FFFFFF .resText .res-text:not(.background-opaque) :not(.optionalButton) a {
+    color: inherit;
+}
+
+.resFullWidthColour .res-fullwidth.background-primary {
+    background-color: #004C9B;
+    color: #ffffff;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-primary {
+    background-color: #004C9B;
+    color: #ffffff;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-primary .pma-container-title-body .pma-spacer {
+    background-color: #ffffff;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-primary .pma-container-button .pma-button a {
+    border: 1px solid #ffffff;
+    color: #ffffff;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-primary .pma-container-button .pma-button a:hover,
+.resPrimaryMarketingArea .res-primarymarketingarea.background-primary .pma-container-button .pma-button a:focus {
+    border: 1px solid #004C9B;
+    color: #004C9B;
+    background-color: #ffffff;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-primary .pma-container-button .pma-button a:hover svg path,
+.resPrimaryMarketingArea .res-primarymarketingarea.background-primary .pma-container-button .pma-button a:focus svg path {
+    fill: #004C9B;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-primary .pma-container-button .pma-button a svg path {
+    fill: #ffffff;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content:has(.tab.active.background-primary) {
+    background-color: #004C9B;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-primary {
+    background-color: #004C9B;
+    color: #ffffff;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-primary .pma-container-button .pma-button a {
+    border: 1px solid #ffffff;
+    color: #ffffff;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-primary .pma-container-button .pma-button a:hover,
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-primary .pma-container-button .pma-button a:focus {
+    border: 1px solid #004C9B;
+    color: #004C9B;
+    background-color: #ffffff;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-primary .pma-container-button .pma-button a:hover svg path,
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-primary .pma-container-button .pma-button a:focus svg path {
+    fill: #004C9B;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-primary .pma-container-button .pma-button a svg path {
+    fill: #ffffff;
+}
+
+.resNewsEmbed.resNews:has(.newsStyle2):has(.background-primary) {
+    background: #004C9B;
+}
+
+.resNewsEmbed.resNews:has(.newsStyle2):has(.background-primary) .news-content {
+    color: #ffffff;
+}
+
+.resNewsEmbed.resNews:has(.newsStyle2):has(.background-primary) .newsDivider {
+    border-color: #ffffff !important;
+}
+
+/*  Secondary Colors */
+
+.resButtons .res-buttons .row .row-height .outside-full-height .inside-full-height {
+    background-color: #004C9B;
+    border-color: #004C9B;
+}
+
+.resButtons .res-buttons .row .row-height .outside-full-height a {
+    color: #ffffff;
+}
+
+.resAnnouncement .infoContainer.style2 {
+    border: 3px solid #004C9B;
+}
+
+.resFullWidthColour .res-fullwidth {
+    color: #ffffff;
+    background-color: #004C9B;
+}
+
+.resFullWidthColour .res-fullwidth a {
+    color: #ffffff;
+}
+
+.optionalButton {
+    border-color: #004C9B;
+}
+
+.optionalButton:hover {
+    border-color: #004C9B;
+    background-color: #004C9B;
+}
+
+.optionalButton .btn:hover,
+.optionalButton .btn-default:hover,
+.optionalButton .btn-block:hover {
+    color: #ffffff;
+}
+
+.resBackgroundImage .res-backgroundimage .background-image .scroll-container .scroll-button,
+.resBackgroundVideo .res-backgroundvideo .background-video .scroll-container .scroll-button {
+    color: #ffffff;
+    background-color: #004C9B;
+}
+
+.resSection .res-section.background-secondary {
+    background-color: #004C9B;
+}
+
+.resSection .res-section.background-secondary .resText .res-text:not(.background-opaque) {
+    color: #ffffff;
+}
+
+.resSection .res-section.background-secondary .resText .res-text:not(.background-opaque) :not(.optionalButton) a {
+    color: #ffffff;
+}
+
+.resSection .res-section.background-secondary .background-FFFFFF .resText .res-text:not(.background-opaque) {
+    color: inherit;
+}
+
+.resSection .res-section.background-secondary .background-FFFFFF .resText .res-text:not(.background-opaque) :not(.optionalButton) a {
+    color: inherit;
+}
+
+.resSearch .accent .resSearchQ {
+    border: solid 1px #004C9B;
+}
+
+.resSearch .accent .input-group-btn:last-child>.btn {
+    background: #004C9B;
+    border: solid 4px #004C9B;
+    color: #ffffff;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-secondary {
+    background-color: #004C9B;
+    color: #ffffff;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-secondary .pma-container-title-body .pma-spacer {
+    background-color: #ffffff;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-secondary .pma-container-button .pma-button a {
+    border: 1px solid #ffffff;
+    color: #ffffff;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-secondary .pma-container-button .pma-button a:hover,
+.resPrimaryMarketingArea .res-primarymarketingarea.background-secondary .pma-container-button .pma-button a:focus {
+    border: 1px solid #004C9B;
+    color: #004C9B;
+    background-color: #ffffff;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-secondary .pma-container-button .pma-button a:hover svg path,
+.resPrimaryMarketingArea .res-primarymarketingarea.background-secondary .pma-container-button .pma-button a:focus svg path {
+    fill: #004C9B;
+}
+
+.resPrimaryMarketingArea .res-primarymarketingarea.background-secondary .pma-container-button .pma-button a svg path {
+    fill: #ffffff;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content:has(.tab.active.background-secondary) {
+    background-color: #004C9B;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-secondary {
+    background-color: #004C9B;
+    color: #ffffff;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-secondary .pma-container-button .pma-button a {
+    border: 1px solid #ffffff;
+    color: #ffffff;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-secondary .pma-container-button .pma-button a:hover,
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-secondary .pma-container-button .pma-button a:focus {
+    border: 1px solid #004C9B;
+    color: #004C9B;
+    background-color: #ffffff;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-secondary .pma-container-button .pma-button a:hover svg path,
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-secondary .pma-container-button .pma-button a:focus svg path {
+    fill: #004C9B;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-content .tab.background-secondary .pma-container-button .pma-button a svg path {
+    fill: #ffffff;
+}
+
+.resTextImageTab .res-textimagetab .textimagetab-bar .textimagetab-menu .textimagetab-btn:hover,
+.resTextImageTab .res-textimagetab .textimagetab-bar .textimagetab-menu .textimagetab-btn:focus,
+.resTextImageTab .res-textimagetab .textimagetab-bar .textimagetab-menu .textimagetab-btn.active {
+    border-bottom: 10px solid #004C9B;
+}
+
+.resNewsEmbed.resNews:has(.newsStyle2):has(.background-secondary) {
+    background: #004C9B;
+}
+
+.resNewsEmbed.resNews:has(.newsStyle2):has(.background-secondary) .news-content {
+    color: #ffffff;
+}
+
+.resNewsEmbed.resNews:has(.newsStyle2):has(.background-secondary) .newsDivider {
+    border-color: #ffffff !important;
+}
