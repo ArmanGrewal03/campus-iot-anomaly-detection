@@ -154,7 +154,16 @@ export default function TrainPage() {
         Train Model
       </Typography>
 
-      <Card sx={{ mb: 3, maxWidth: 600 }}>
+      <Card
+        sx={{
+          mb: 3,
+          maxWidth: 600,
+          borderLeft: '4px solid',
+          borderLeftColor: '#F59E0B',
+          borderTopLeftRadius: 0,
+          borderBottomLeftRadius: 0,
+        }}
+      >
         <CardContent>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <FormControl fullWidth>
@@ -226,10 +235,47 @@ export default function TrainPage() {
               variant="contained"
               color="primary"
               onClick={handleTrain}
-              disabled={loading || !params.datasetName || !params.modelName}
-              sx={{ py: 1.5 }}
+              disabled={loading}
+              startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <SchoolIcon />}
+              sx={(theme) => ({
+                py: 1.5,
+                fontWeight: 600,
+                boxShadow: 'none !important',
+                backgroundColor: '#F59E0B !important',
+                backgroundImage: 'none',
+                color: '#F8FAFC !important',
+                border: 'none !important',
+                outline: 'none !important',
+                transition: 'background-color 0.2s ease, transform 0.15s ease',
+                '&:hover:not(.Mui-disabled)': {
+                  backgroundColor: '#D97706 !important',
+                  border: 'none !important',
+                  outline: 'none !important',
+                  boxShadow: 'none !important',
+                  transform: 'translateY(-1px)',
+                },
+                '&:active:not(.Mui-disabled)': {
+                  backgroundColor: '#B45309 !important',
+                  border: 'none !important',
+                  outline: 'none !important',
+                  boxShadow: 'none !important',
+                  transform: 'translateY(0)',
+                },
+                '&:focus, &:focus-visible': {
+                  border: 'none !important',
+                  outline: 'none !important',
+                  boxShadow: 'none !important',
+                },
+                '&.Mui-disabled': {
+                  color: `${theme.palette.mode === 'dark' ? '#F9FAFB' : '#111827'} !important`,
+                  backgroundColor: `${theme.palette.mode === 'dark' ? '#374151' : '#D1D5DB'} !important`,
+                  backgroundImage: 'none !important',
+                  border: '1px solid',
+                  borderColor: theme.palette.mode === 'dark' ? '#4B5563' : '#9CA3AF',
+                  opacity: '1 !important',
+                },
+              })}
             >
-              {loading ? <CircularProgress size={24} sx={{ mr: 1 }} /> : null}
               {loading ? 'Training...' : 'Start Training'}
             </Button>
           </Box>

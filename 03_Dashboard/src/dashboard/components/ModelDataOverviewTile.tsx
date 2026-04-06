@@ -35,6 +35,7 @@ interface ModelMetrics {
 }
 
 export default function ModelDataOverviewTile() {
+  const [selectedModelName, setSelectedModelName] = React.useState<string>('—');
   const [model, setModel] = React.useState<ModelInfo | null>(null);
   const [status, setStatus] = React.useState<ModelStatus | null>(null);
   const [metrics, setMetrics] = React.useState<ModelMetrics | null>(null);
@@ -46,18 +47,27 @@ export default function ModelDataOverviewTile() {
     const fetchOverview = async () => {
       try {
         setError(null);
-        const modelsRes = await fetch(`${GATEWAY_BASE}/models?t=${Date.now()}`);
+        const [selectedRes, modelsRes] = await Promise.all([
+          fetch(`${GATEWAY_BASE}/get-model?t=${Date.now()}`),
+          fetch(`${GATEWAY_BASE}/models?t=${Date.now()}`),
+        ]);
+        const selectedJson = await selectedRes.json() as { status?: string; model_name?: string; detail?: string };
         const modelsJson = await modelsRes.json() as { status?: string; models?: ModelInfo[]; detail?: string };
         if (cancelled) return;
         if (!modelsRes.ok || modelsJson.status !== 'success' || !Array.isArray(modelsJson.models) || modelsJson.models.length === 0) {
           setModel(null);
           setStatus(null);
           setMetrics(null);
+          setSelectedModelName(selectedJson.status === 'success' && selectedJson.model_name ? selectedJson.model_name : '—');
           return;
         }
-        const first = modelsJson.models[0];
-        setModel(first);
-        const headers: Record<string, string> = { 'model-name': first.model_name };
+        const activeModelName = selectedRes.ok && selectedJson.status === 'success' && selectedJson.model_name
+          ? selectedJson.model_name
+          : modelsJson.models[0].model_name;
+        const activeModel = modelsJson.models.find((entry) => entry.model_name === activeModelName) ?? modelsJson.models[0];
+        setSelectedModelName(activeModelName);
+        setModel(activeModel);
+        const headers: Record<string, string> = { 'model-name': activeModelName };
         const [statusRes, metricsRes] = await Promise.all([
           fetch(`${GATEWAY_BASE}/model/status?t=${Date.now()}`, { headers }),
           fetch(`${GATEWAY_BASE}/model/metrics?t=${Date.now()}`, { headers }).catch(() => null),
@@ -105,7 +115,7 @@ export default function ModelDataOverviewTile() {
         <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mb: 1 }}>
           <PsychologyRoundedIcon sx={{ fontSize: 18, color: 'primary.main' }} />
           <Typography variant="subtitle2" fontWeight={600}>
-            Model Data Overview
+            Active model overview
           </Typography>
         </Stack>
         {loading ? (
@@ -117,13 +127,18 @@ export default function ModelDataOverviewTile() {
             {error}
           </Typography>
         ) : !model ? (
-          <Typography variant="caption" color="text.secondary">
-            No models available
-          </Typography>
+          <Stack spacing={1}>
+            <Typography variant="caption" color="text.secondary">
+              No models available
+            </Typography>
+            <Typography variant="body2" fontWeight={600} noWrap title={selectedModelName}>
+              {selectedModelName}
+            </Typography>
+          </Stack>
         ) : (
           <Stack spacing={1.5}>
             <Box>
-              <Typography variant="caption" color="text.secondary" display="block">Model</Typography>
+              <Typography variant="caption" color="text.secondary" display="block">Selected model</Typography>
               <Typography variant="body2" fontWeight={600} noWrap title={model.model_name}>
                 {model.model_name}
               </Typography>
@@ -144,6 +159,14 @@ export default function ModelDataOverviewTile() {
                 <Typography variant="caption" color="text.secondary" display="block">Accuracy</Typography>
                 <Typography variant="body2" fontWeight={600}>
                   {(Number(accuracy) * 100).toFixed(1)}%
+                </Typography>
+              </Box>
+            )}
+            {model.training_date && (
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">Training date</Typography>
+                <Typography variant="body2" fontWeight={600}>
+                  {model.training_date}
                 </Typography>
               </Box>
             )}

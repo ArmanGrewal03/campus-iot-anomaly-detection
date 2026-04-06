@@ -9,6 +9,7 @@ import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded';
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import MenuButton from './MenuButton';
 import MenuContent from './MenuContent';
+import { useAuth } from '../../auth/AuthContext';
 
 interface SideMenuMobileProps {
   open: boolean | undefined;
@@ -16,6 +17,8 @@ interface SideMenuMobileProps {
 }
 
 export default function SideMenuMobile({ open, toggleDrawer }: SideMenuMobileProps) {
+  const { user, logoutToGuest } = useAuth();
+
   return (
     <Drawer
       anchor="right"
@@ -60,7 +63,7 @@ export default function SideMenuMobile({ open, toggleDrawer }: SideMenuMobilePro
               variant="body2"
               sx={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
             >
-              Campus IOT
+              {user.displayName}
             </Typography>
             <Typography
               variant="caption"
@@ -72,7 +75,7 @@ export default function SideMenuMobile({ open, toggleDrawer }: SideMenuMobilePro
                 display: 'block',
               }}
             >
-              CampusIOT@gmail.com
+              {user.email}
             </Typography>
           </Stack>
           <MenuButton showBadge>
@@ -80,7 +83,7 @@ export default function SideMenuMobile({ open, toggleDrawer }: SideMenuMobilePro
           </MenuButton>
         </Stack>
         <Stack sx={{ p: 2 }}>
-          <Button variant="outlined" fullWidth startIcon={<LogoutRoundedIcon />}>
+          <Button variant="outlined" fullWidth startIcon={<LogoutRoundedIcon />} onClick={logoutToGuest}>
             Logout
           </Button>
         </Stack>

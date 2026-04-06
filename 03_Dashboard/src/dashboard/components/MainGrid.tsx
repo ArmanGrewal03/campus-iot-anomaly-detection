@@ -313,7 +313,7 @@ export default function MainGrid() {
         >
           <LivePacketRateTile />
         </Grid>
-        {/* Training vs testing — left half; Flow + Traffic — right quarter; Model Data Overview — right quarter */}
+        {/* Training vs testing — left half; selected-model summary + model library — right quarter; active model overview — right quarter */}
         <Grid size={{ xs: 12, md: 6 }} sx={{ mt: 1 }}>
           <PageViewsBarChart />
         </Grid>

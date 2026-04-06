@@ -19,8 +19,11 @@ import {
   TableHead,
   TableRow,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 
 interface ValidationResult {
   status: string;
@@ -150,7 +153,16 @@ export default function ValidatePage() {
         Validate Dataset
       </Typography>
 
-      <Card sx={{ mb: 3, maxWidth: 600 }}>
+      <Card
+        sx={{
+          mb: 3,
+          maxWidth: 600,
+          borderLeft: '4px solid',
+          borderLeftColor: '#EC4899',
+          borderTopLeftRadius: 0,
+          borderBottomLeftRadius: 0,
+        }}
+      >
         <CardContent>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <Typography variant="body2" color="text.secondary">
@@ -193,10 +205,47 @@ export default function ValidatePage() {
               variant="contained"
               color="primary"
               onClick={handleValidate}
-              disabled={loading || !selectedDataset}
-              sx={{ py: 1.5 }}
+              disabled={loading}
+              startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <CheckCircleIcon />}
+              sx={(theme) => ({
+                py: 1.5,
+                fontWeight: 600,
+                boxShadow: 'none !important',
+                backgroundColor: '#EC4899 !important',
+                backgroundImage: 'none',
+                color: '#F8FAFC !important',
+                border: 'none !important',
+                outline: 'none !important',
+                transition: 'background-color 0.2s ease, transform 0.15s ease',
+                '&:hover:not(.Mui-disabled)': {
+                  backgroundColor: '#DB2777 !important',
+                  border: 'none !important',
+                  outline: 'none !important',
+                  boxShadow: 'none !important',
+                  transform: 'translateY(-1px)',
+                },
+                '&:active:not(.Mui-disabled)': {
+                  backgroundColor: '#BE185D !important',
+                  border: 'none !important',
+                  outline: 'none !important',
+                  boxShadow: 'none !important',
+                  transform: 'translateY(0)',
+                },
+                '&:focus, &:focus-visible': {
+                  border: 'none !important',
+                  outline: 'none !important',
+                  boxShadow: 'none !important',
+                },
+                '&.Mui-disabled': {
+                  color: `${theme.palette.mode === 'dark' ? '#F9FAFB' : '#111827'} !important`,
+                  backgroundColor: `${theme.palette.mode === 'dark' ? '#374151' : '#D1D5DB'} !important`,
+                  backgroundImage: 'none !important',
+                  border: '1px solid',
+                  borderColor: theme.palette.mode === 'dark' ? '#4B5563' : '#9CA3AF',
+                  opacity: '1 !important',
+                },
+              })}
             >
-              {loading ? <CircularProgress size={24} sx={{ mr: 1 }} /> : null}
               {loading ? 'Validating...' : 'Validate Dataset'}
             </Button>
           </Box>
@@ -227,7 +276,7 @@ export default function ValidatePage() {
             {validationResult.status === 'success' && (
               <TableContainer>
                 <Table size="small">
-                  <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
+                  <TableHead sx={{ backgroundColor: 'action.hover' }}>
                     <TableRow>
                       <TableCell sx={{ fontWeight: 'bold' }}>Metric</TableCell>
                       <TableCell align="right" sx={{ fontWeight: 'bold' }}>

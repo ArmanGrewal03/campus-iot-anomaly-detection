@@ -19,6 +19,7 @@ import {
   DialogActions,
   Chip,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -172,17 +173,40 @@ export default function UploadPage() {
   };
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Box sx={{ p: { xs: 2, md: 3 } }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4" sx={{ fontWeight: 'bold' }}>
+        <Typography variant="h5" sx={{ fontWeight: 700 }}>
           Upload Dataset
         </Typography>
-        <IconButton onClick={fetchDatasets} disabled={loadingDatasets} title="Refresh datasets">
+        <IconButton
+          onClick={fetchDatasets}
+          disabled={loadingDatasets}
+          title="Refresh datasets"
+          sx={(theme) => ({
+            transition: 'background-color 0.2s ease, transform 0.15s ease',
+            '&:hover': {
+              backgroundColor: alpha(theme.palette.info.main, 0.14),
+              transform: 'translateY(-1px)',
+            },
+          })}
+        >
           <RefreshIcon />
         </IconButton>
       </Box>
 
-      <Card sx={{ mb: 3, maxWidth: 600 }}>
+      <Card
+        variant="outlined"
+        sx={{
+          mb: 3,
+          maxWidth: 680,
+          borderRadius: 2,
+          borderColor: 'divider',
+          borderLeft: '4px solid',
+          borderLeftColor: 'info.main',
+          borderTopLeftRadius: 0,
+          borderBottomLeftRadius: 0,
+        }}
+      >
         <CardContent>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <TextField
@@ -194,14 +218,20 @@ export default function UploadPage() {
             />
 
             <Box
-              sx={{
-                border: '2px dashed #ccc',
+              sx={(t) => ({
+                border: '2px dashed',
+                borderColor: file ? 'primary.main' : 'divider',
                 borderRadius: 1,
                 p: 3,
                 textAlign: 'center',
                 cursor: 'pointer',
-                '&:hover': { backgroundColor: '#f5f5f5' },
-              }}
+                transition: 'all 0.2s ease',
+                backgroundColor: file ? alpha(t.palette.primary.main, 0.08) : 'transparent',
+                '&:hover': {
+                  backgroundColor: alpha(t.palette.primary.main, 0.08),
+                  borderColor: 'primary.main',
+                },
+              })}
             >
               <input
                 type="file"
@@ -211,7 +241,7 @@ export default function UploadPage() {
                 id="file-input"
               />
               <label htmlFor="file-input" style={{ cursor: 'pointer', width: '100%', display: 'block' }}>
-                <CloudUploadIcon sx={{ fontSize: 48, color: '#1976d2', mb: 1 }} />
+                <CloudUploadIcon sx={{ fontSize: 48, color: 'primary.main', mb: 1 }} />
                 <Typography variant="body1" sx={{ mb: 1 }}>
                   {file ? file.name : 'Click to select CSV file'}
                 </Typography>
@@ -225,10 +255,47 @@ export default function UploadPage() {
               variant="contained"
               color="primary"
               onClick={handleUpload}
-              disabled={loading || !file || !datasetName}
-              sx={{ py: 1.5 }}
+              disabled={loading}
+              startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <CloudUploadIcon />}
+              sx={(theme) => ({
+                py: 1.5,
+                fontWeight: 600,
+                boxShadow: 'none !important',
+                backgroundColor: '#0284C7 !important',
+                backgroundImage: 'none !important',
+                color: '#F8FAFC !important',
+                border: 'none !important',
+                outline: 'none !important',
+                transition: 'background-color 0.2s ease, transform 0.15s ease',
+                '&:hover:not(.Mui-disabled)': {
+                  backgroundColor: '#0369A1 !important',
+                  border: 'none !important',
+                  outline: 'none !important',
+                  boxShadow: 'none !important',
+                  transform: 'translateY(-1px)',
+                },
+                '&:active:not(.Mui-disabled)': {
+                  backgroundColor: '#075985 !important',
+                  border: 'none !important',
+                  outline: 'none !important',
+                  boxShadow: 'none !important',
+                  transform: 'translateY(0)',
+                },
+                '&:focus, &:focus-visible': {
+                  border: 'none !important',
+                  outline: 'none !important',
+                  boxShadow: 'none !important',
+                },
+                '&.Mui-disabled': {
+                  color: `${theme.palette.mode === 'dark' ? '#F9FAFB' : '#111827'} !important`,
+                  backgroundColor: `${theme.palette.mode === 'dark' ? '#374151' : '#D1D5DB'} !important`,
+                  backgroundImage: 'none !important',
+                  border: '1px solid',
+                  borderColor: theme.palette.mode === 'dark' ? '#4B5563' : '#9CA3AF',
+                  opacity: '1 !important',
+                },
+              })}
             >
-              {loading ? <CircularProgress size={24} sx={{ mr: 1 }} /> : null}
               {loading ? 'Uploading...' : 'Upload Dataset'}
             </Button>
           </Box>
@@ -237,7 +304,7 @@ export default function UploadPage() {
 
       {message && <Alert severity={messageType}>{message}</Alert>}
 
-      <Typography variant="h6" sx={{ mt: 4, mb: 2, fontWeight: 'bold' }}>
+      <Typography variant="h6" sx={{ mt: 4, mb: 2, fontWeight: 700 }}>
         Available Datasets
       </Typography>
 
@@ -262,10 +329,29 @@ export default function UploadPage() {
                     secondaryAction={
                       <IconButton
                         edge="end"
-                        color="error"
                         onClick={() => handleDeleteClick(dataset.name)}
                         disabled={deleting}
                         title="Delete dataset"
+                        sx={(t) => ({
+                          backgroundColor: '#DC2626',
+                          color: '#F8FAFC',
+                          border: 'none !important',
+                          outline: 'none !important',
+                          boxShadow: 'none !important',
+                          '&:hover': {
+                            backgroundColor: '#B91C1C',
+                            boxShadow: 'none !important',
+                          },
+                          '&:focus, &:focus-visible': {
+                            border: 'none !important',
+                            outline: 'none !important',
+                            boxShadow: 'none !important',
+                          },
+                          '&.Mui-disabled': {
+                            backgroundColor: `${t.palette.mode === 'dark' ? '#374151' : '#D1D5DB'} !important`,
+                            color: `${t.palette.mode === 'dark' ? '#F9FAFB' : '#111827'} !important`,
+                          },
+                        })}
                       >
                         <DeleteIcon />
                       </IconButton>
@@ -296,11 +382,47 @@ export default function UploadPage() {
           <Button onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
           <Button
             onClick={handleDeleteConfirm}
-            color="error"
             variant="contained"
             disabled={deleting}
+            startIcon={deleting ? <CircularProgress size={16} color="inherit" /> : <DeleteIcon />}
+            sx={(theme) => ({
+              backgroundColor: '#DC2626 !important',
+              backgroundImage: 'none',
+              color: '#F8FAFC !important',
+              border: 'none !important',
+              outline: 'none !important',
+              boxShadow: 'none !important',
+              transition: 'background-color 0.2s ease, transform 0.15s ease',
+              '&:hover:not(.Mui-disabled)': {
+                backgroundColor: '#B91C1C !important',
+                border: 'none !important',
+                outline: 'none !important',
+                boxShadow: 'none !important',
+                transform: 'translateY(-1px)',
+              },
+              '&:active:not(.Mui-disabled)': {
+                backgroundColor: '#991B1B !important',
+                border: 'none !important',
+                outline: 'none !important',
+                boxShadow: 'none !important',
+                transform: 'translateY(0)',
+              },
+              '&:focus, &:focus-visible': {
+                border: 'none !important',
+                outline: 'none !important',
+                boxShadow: 'none !important',
+              },
+              '&.Mui-disabled': {
+                color: `${theme.palette.mode === 'dark' ? '#F9FAFB' : '#111827'} !important`,
+                backgroundColor: `${theme.palette.mode === 'dark' ? '#374151' : '#D1D5DB'} !important`,
+                backgroundImage: 'none !important',
+                border: '1px solid',
+                borderColor: theme.palette.mode === 'dark' ? '#4B5563' : '#9CA3AF',
+                opacity: '1 !important',
+              },
+            })}
           >
-            {deleting ? <CircularProgress size={24} /> : 'Delete'}
+            {deleting ? 'Deleting...' : 'Delete'}
           </Button>
         </DialogActions>
       </Dialog>

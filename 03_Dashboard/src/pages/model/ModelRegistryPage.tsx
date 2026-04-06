@@ -19,9 +19,11 @@ import {
   DialogContent,
   DialogActions,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import DeleteIcon from '@mui/icons-material/Delete';
 import StorageIcon from '@mui/icons-material/Storage';
 import VisibilityIcon from '@mui/icons-material/Visibility';
+import RefreshIcon from '@mui/icons-material/Refresh';
 
 // Direct connection to Model Service (align with Analytics page)
 const MODEL_API_BASE = 'http://127.0.0.1:8001';
@@ -167,7 +169,23 @@ export default function ModelRegistryPage() {
           <StorageIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
           Model Registry
         </Typography>
-        <Button variant="outlined" onClick={fetchModels} disabled={loading}>
+        <Button
+          variant="contained"
+          onClick={fetchModels}
+          disabled={loading}
+          startIcon={loading ? <CircularProgress size={14} color="inherit" /> : <RefreshIcon />}
+          sx={(theme) => ({
+            backgroundColor: '#0369A1',
+            backgroundImage: 'none',
+            color: '#F8FAFC',
+            border: 'none',
+            transition: 'background-color 0.2s ease, border-color 0.2s ease, transform 0.15s ease',
+            '&:hover': {
+              backgroundColor: '#075985',
+              transform: 'translateY(-1px)',
+            },
+          })}
+        >
           Refresh
         </Button>
       </Box>
@@ -183,7 +201,7 @@ export default function ModelRegistryPage() {
           <CircularProgress />
         </Box>
       ) : (
-        <TableContainer component={Card}>
+        <TableContainer component={Card} sx={{ borderLeft: '4px solid', borderLeftColor: 'primary.main', borderTopLeftRadius: 0, borderBottomLeftRadius: 0 }}>
           <Table>
             <TableHead
               sx={{
@@ -234,15 +252,42 @@ export default function ModelRegistryPage() {
                           color="primary"
                           onClick={() => handleViewClick(model.model_name)}
                           title="View details"
-                          sx={{ mr: 1 }}
+                          sx={(theme) => ({
+                            mr: 1,
+                            transition: 'background-color 0.2s ease, transform 0.15s ease',
+                            '&:hover': {
+                              backgroundColor: alpha(theme.palette.primary.main, 0.14),
+                              transform: 'translateY(-1px)',
+                            },
+                          })}
                         >
                           <VisibilityIcon />
                         </IconButton>
                         <IconButton
                           size="small"
-                          color="error"
                           onClick={() => handleDeleteClick(model.model_name)}
                           disabled={deleting}
+                          sx={(theme) => ({
+                            backgroundColor: '#DC2626',
+                            color: '#F8FAFC',
+                            border: 'none !important',
+                            outline: 'none !important',
+                            boxShadow: 'none !important',
+                            transition: 'background-color 0.2s ease, transform 0.15s ease',
+                            '&:hover': {
+                              backgroundColor: '#B91C1C',
+                              transform: 'translateY(-1px)',
+                            },
+                            '&:focus, &:focus-visible': {
+                              border: 'none !important',
+                              outline: 'none !important',
+                              boxShadow: 'none !important',
+                            },
+                            '&.Mui-disabled': {
+                              backgroundColor: `${theme.palette.mode === 'dark' ? '#374151' : '#D1D5DB'} !important`,
+                              color: `${theme.palette.mode === 'dark' ? '#F9FAFB' : '#111827'} !important`,
+                            },
+                          })}
                         >
                           <DeleteIcon />
                         </IconButton>
@@ -311,8 +356,45 @@ export default function ModelRegistryPage() {
             color="error"
             variant="contained"
             disabled={deleting}
+            startIcon={deleting ? <CircularProgress size={16} color="inherit" /> : <DeleteIcon />}
+            sx={(theme) => ({
+              backgroundColor: '#DC2626',
+              backgroundImage: 'none',
+              color: '#F8FAFC',
+              border: 'none !important',
+              outline: 'none !important',
+              boxShadow: 'none !important',
+              transition: 'background-color 0.2s ease, transform 0.15s ease',
+              '&:hover:not(.Mui-disabled)': {
+                backgroundColor: '#B91C1C',
+                border: 'none !important',
+                outline: 'none !important',
+                boxShadow: 'none !important',
+                transform: 'translateY(-1px)',
+              },
+              '&:active:not(.Mui-disabled)': {
+                backgroundColor: '#991B1B',
+                border: 'none !important',
+                outline: 'none !important',
+                boxShadow: 'none !important',
+                transform: 'translateY(0)',
+              },
+              '&:focus, &:focus-visible': {
+                border: 'none !important',
+                outline: 'none !important',
+                boxShadow: 'none !important',
+              },
+              '&.Mui-disabled': {
+                color: `${theme.palette.mode === 'dark' ? '#F9FAFB' : '#111827'} !important`,
+                backgroundColor: `${theme.palette.mode === 'dark' ? '#374151' : '#D1D5DB'} !important`,
+                backgroundImage: 'none !important',
+                border: '1px solid',
+                borderColor: theme.palette.mode === 'dark' ? '#4B5563' : '#9CA3AF',
+                opacity: '1 !important',
+              },
+            })}
           >
-            {deleting ? <CircularProgress size={24} /> : 'Delete'}
+            {deleting ? 'Deleting...' : 'Delete'}
           </Button>
         </DialogActions>
       </Dialog>

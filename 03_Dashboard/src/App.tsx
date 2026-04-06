@@ -5,6 +5,7 @@ import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
 import Dashboard from './dashboard/Dashboard';
+import { useAuth } from './auth/AuthContext';
 
 // Lazy load pages to avoid Three.js/react-spring initialization issues on direct load
 const TestPage = lazy(() => import('./pages/TestPage'));
@@ -66,12 +67,21 @@ class ErrorBoundary extends React.Component<
 export { ErrorBoundary };
 
 export default function App() {
+  const { isAdmin } = useAuth();
+
   return (
     <Routes>
       <Route path="/" element={<Dashboard />}>
         <Route index element={<Navigate to="/home" replace />} />
         <Route path="home" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><TestPage /></Suspense></ErrorBoundary>} />
-        <Route path="model" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><ModelPage /></Suspense></ErrorBoundary>} />
+        <Route
+          path="model"
+          element={
+            isAdmin
+              ? <ErrorBoundary><Suspense fallback={<PageLoader />}><ModelPage /></Suspense></ErrorBoundary>
+              : <Navigate to="/home" replace />
+          }
+        />
         <Route path="analytics" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><AnalyticsPage /></Suspense></ErrorBoundary>} />
         <Route path="clients" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><ClientsPage /></Suspense></ErrorBoundary>} />
         <Route path="settings" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><SettingsPage /></Suspense></ErrorBoundary>} />
