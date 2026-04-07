@@ -37,9 +37,13 @@ function LiveQueryPerSecondTileComponent() {
     loading: true,
     error: null,
   });
+  // Defer state updates so they don't block animation frames
+  const deferredState = React.useDeferredValue(state);
 
   React.useEffect(() => {
     let cancelled = false;
+    let idleCallbackId: number | null = null;
+    
     const fetchMetrics = async () => {
       try {
         const res = await fetch(`${LIVE_METRICS_BASE}/metrics`);
@@ -70,19 +74,34 @@ function LiveQueryPerSecondTileComponent() {
         }
       }
     };
-    fetchMetrics();
-    const interval = setInterval(fetchMetrics, 2000);
+    
+    const scheduleFetch = () => {
+      if (cancelled) return;
+      // Use requestIdleCallback to defer fetch to idle time (doesn't block animation frame)
+      idleCallbackId = requestIdleCallback(
+        () => {
+          fetchMetrics();
+          // Schedule next fetch after idle completes
+          setTimeout(() => {
+            if (!cancelled) scheduleFetch();
+          }, 2000);
+        },
+        { timeout: 3000 } // Fallback timeout to ensure fetch happens
+      );
+    };
+    
+    scheduleFetch();
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      if (idleCallbackId !== null) cancelIdleCallback(idleCallbackId);
     };
   }, []);
 
   const xLabels = React.useMemo(
-    () => (state.labels.length === state.data.length ? state.labels : state.data.map((_, i) => String(i))),
-    [state.labels, state.data.length]
+    () => (deferredState.labels.length === deferredState.data.length ? deferredState.labels : deferredState.data.map((_, i) => String(i))),
+    [deferredState.labels, deferredState.data.length]
   );
-  const currentQps = React.useMemo(() => (state.data.length > 0 ? state.data[state.data.length - 1] : 0), [state.data]);
+  const currentQps = React.useMemo(() => (deferredState.data.length > 0 ? deferredState.data[deferredState.data.length - 1] : 0), [deferredState.data]);
   const teal = theme.palette.mode === 'light' ? '#009688' : '#4db6ac';
   
   // Memoize chart config
@@ -90,13 +109,13 @@ function LiveQueryPerSecondTileComponent() {
     () => ({
       xAxis: [{ scaleType: 'band' as const, data: xLabels, tickLabelStyle: { fontSize: 9 }, tickInterval: (_: any, i: number) => i % 12 === 0 || i === xLabels.length - 1 }],
       yAxis: [{ tickMinStep: 1, valueFormatter: (v: any) => String(Math.round(Number(v))) }],
-      series: [{ id: 'qps', data: state.data, label: 'QPS', color: teal }],
+      series: [{ id: 'qps', data: deferredState.data, label: 'QPS', color: teal }],
       margin: { top: 8, right: 8, bottom: 24, left: 28 } as const,
     }),
-    [xLabels, state.data, teal]
+    [xLabels, deferredState.data, teal]
   );
 
-  if (state.loading && state.data.length === 0) {
+  if (deferredState.loading && deferredState.data.length === 0) {
     return (
       <Card variant="outlined" sx={{ height: '100%', minHeight: 220 }}>
         <CardContent>
@@ -133,10 +152,10 @@ function LiveQueryPerSecondTileComponent() {
             <Chip size="small" label="Live" color="error" sx={{ fontSize: '0.625rem', height: 18 }} />
           </Stack>
         </Stack>
-        {state.error && (
-          <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>{state.error}</Typography>
+        {deferredState.error && (
+          <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>{deferredState.error}</Typography>
         )}
-        {state.data.length === 0 ? (
+        {deferredState.data.length === 0 ? (
           <Box sx={{ height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Typography variant="caption" color="text.secondary">No data</Typography>
           </Box>

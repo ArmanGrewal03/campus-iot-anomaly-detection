@@ -15,7 +15,7 @@ const PACKET_COLOR_BLUE = '#86d2ff';
 const PACKET_COLOR_RED = '#ff89a6';
 const CAMERA_DISTANCE = 2.8;
 const AUTO_ROTATE_SPEED = 0.3;
-const TRAIL_SEGMENTS = 6;
+const TRAIL_SEGMENTS = 4;
 
 function latLonToXYZ(lat: number, lon: number): [number, number, number] {
   const latRad = (lat * Math.PI) / 180;
@@ -82,7 +82,7 @@ function createRoute(start: [number, number], end: [number, number], phase: numb
 
   return {
     curve: new THREE.QuadraticBezierCurve3(startVec, mid, endVec),
-    speed: 0.12 + (phase % 3) * 0.015,
+    speed: 0.4 + (phase % 3) * 0.015,
     phase,
   };
 }
@@ -120,6 +120,10 @@ function DataPacketRoutes() {
   const packetRedRefs = useRef<Array<THREE.Mesh | null>>([]);
   const blueTrailRefs = useRef<Array<Array<THREE.Mesh | null>>>([]);
   const redTrailRefs = useRef<Array<Array<THREE.Mesh | null>>>([]);
+  const bluePosCacheRef = useRef<Array<THREE.Vector3>>([]);
+  const redPosCacheRef = useRef<Array<THREE.Vector3>>([]);
+  const blueTrailPosCacheRef = useRef<Array<Array<THREE.Vector3>>>([]);
+  const redTrailPosCacheRef = useRef<Array<Array<THREE.Vector3>>>([]);
 
   const wrap01 = (value: number): number => {
     if (value >= 0) return value % 1;
@@ -136,13 +140,17 @@ function DataPacketRoutes() {
       const redProgress = (t * (route.speed * 0.85) + route.phase + 0.5) % 1;
 
       if (bluePacket) {
-        const bluePos = route.curve.getPoint(blueProgress);
-        bluePacket.position.set(bluePos.x, bluePos.y, bluePos.z);
+        if (!bluePosCacheRef.current[idx]) bluePosCacheRef.current[idx] = new THREE.Vector3();
+        const bluePos = bluePosCacheRef.current[idx];
+        route.curve.getPoint(blueProgress, bluePos);
+        bluePacket.position.copy(bluePos);
       }
 
       if (redPacket) {
-        const redPos = route.curve.getPoint(redProgress);
-        redPacket.position.set(redPos.x, redPos.y, redPos.z);
+        if (!redPosCacheRef.current[idx]) redPosCacheRef.current[idx] = new THREE.Vector3();
+        const redPos = redPosCacheRef.current[idx];
+        route.curve.getPoint(redProgress, redPos);
+        redPacket.position.copy(redPos);
       }
 
       const blueTrail = blueTrailRefs.current[idx] || [];
@@ -150,8 +158,13 @@ function DataPacketRoutes() {
         const trailMesh = blueTrail[trailIdx];
         if (!trailMesh) continue;
         const trailProgress = wrap01(blueProgress - (trailIdx + 1) * 0.03);
-        const trailPos = route.curve.getPoint(trailProgress);
-        trailMesh.position.set(trailPos.x, trailPos.y, trailPos.z);
+        if (!blueTrailPosCacheRef.current[idx]) blueTrailPosCacheRef.current[idx] = [];
+        if (!blueTrailPosCacheRef.current[idx][trailIdx]) {
+          blueTrailPosCacheRef.current[idx][trailIdx] = new THREE.Vector3();
+        }
+        const trailPos = blueTrailPosCacheRef.current[idx][trailIdx];
+        route.curve.getPoint(trailProgress, trailPos);
+        trailMesh.position.copy(trailPos);
       }
 
       const redTrail = redTrailRefs.current[idx] || [];
@@ -159,8 +172,13 @@ function DataPacketRoutes() {
         const trailMesh = redTrail[trailIdx];
         if (!trailMesh) continue;
         const trailProgress = wrap01(redProgress - (trailIdx + 1) * 0.028);
-        const trailPos = route.curve.getPoint(trailProgress);
-        trailMesh.position.set(trailPos.x, trailPos.y, trailPos.z);
+        if (!redTrailPosCacheRef.current[idx]) redTrailPosCacheRef.current[idx] = [];
+        if (!redTrailPosCacheRef.current[idx][trailIdx]) {
+          redTrailPosCacheRef.current[idx][trailIdx] = new THREE.Vector3();
+        }
+        const trailPos = redTrailPosCacheRef.current[idx][trailIdx];
+        route.curve.getPoint(trailProgress, trailPos);
+        trailMesh.position.copy(trailPos);
       }
     });
   });
@@ -168,13 +186,13 @@ function DataPacketRoutes() {
   return (
     <group>
       {routes.map((route, idx) => {
-        const points = route.curve.getPoints(48);
+        const points = route.curve.getPoints(32);
         const routeColor = idx % 3 === 0 ? ROUTE_COLOR_RED : ROUTE_COLOR_BLUE;
         return (
           <React.Fragment key={idx}>
             <Line points={points} color={routeColor} transparent opacity={0.26} lineWidth={1} />
             <mesh ref={(el) => { packetBlueRefs.current[idx] = el; }}>
-              <sphereGeometry args={[0.0082, 10, 10]} />
+              <sphereGeometry args={[0.0082, 8, 8]} />
               <meshBasicMaterial
                 color={PACKET_COLOR_BLUE}
                 transparent
@@ -184,7 +202,7 @@ function DataPacketRoutes() {
               />
             </mesh>
             <mesh ref={(el) => { packetRedRefs.current[idx] = el; }}>
-              <sphereGeometry args={[0.0078, 10, 10]} />
+              <sphereGeometry args={[0.0078, 8, 8]} />
               <meshBasicMaterial
                 color={PACKET_COLOR_RED}
                 transparent
@@ -201,7 +219,7 @@ function DataPacketRoutes() {
                   blueTrailRefs.current[idx][trailIdx] = el;
                 }}
               >
-                <sphereGeometry args={[0.0068 - trailIdx * 0.0008, 8, 8]} />
+                <sphereGeometry args={[0.0068 - trailIdx * 0.0008, 6, 6]} />
                 <meshBasicMaterial
                   color={PACKET_COLOR_BLUE}
                   transparent
@@ -219,7 +237,7 @@ function DataPacketRoutes() {
                   redTrailRefs.current[idx][trailIdx] = el;
                 }}
               >
-                <sphereGeometry args={[0.0062 - trailIdx * 0.0007, 8, 8]} />
+                <sphereGeometry args={[0.0062 - trailIdx * 0.0007, 6, 6]} />
                 <meshBasicMaterial
                   color={PACKET_COLOR_RED}
                   transparent
@@ -238,10 +256,12 @@ function DataPacketRoutes() {
 
 function RotatingGlobeGroup() {
   const groupRef = useRef<THREE.Group>(null);
+  const baseRotationYRef = useRef<number>(0);
 
-  useFrame((_state, delta: number) => {
+  useFrame(({ clock }) => {
     if (groupRef.current) {
-      groupRef.current.rotation.y += AUTO_ROTATE_SPEED * delta;
+      // Time-based rotation avoids frame-time accumulation jitter.
+      groupRef.current.rotation.y = baseRotationYRef.current + clock.getElapsedTime() * AUTO_ROTATE_SPEED;
     }
   });
 
@@ -276,7 +296,7 @@ interface InteractiveGlobeProps {
   seamless?: boolean;
 }
 
-export default function InteractiveGlobe({ height = 340, seamless = true }: InteractiveGlobeProps) {
+function InteractiveGlobe({ height = 340, seamless = true }: InteractiveGlobeProps) {
   return (
     <Box
       sx={{
@@ -290,12 +310,12 @@ export default function InteractiveGlobe({ height = 340, seamless = true }: Inte
     >
       <Box sx={{ width: '100%', height }}>
         <Canvas
-          gl={{ antialias: true, alpha: true }}
+          gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
           onCreated={({ gl }) => {
             gl.setClearColor(0x000000, 0);
           }}
           camera={{ position: [0, 0, CAMERA_DISTANCE], fov: 45 }}
-          dpr={[1, 1.5]}
+          dpr={[1, 1.25]}
         >
           <Scene />
         </Canvas>
@@ -303,3 +323,5 @@ export default function InteractiveGlobe({ height = 340, seamless = true }: Inte
     </Box>
   );
 }
+
+export default React.memo(InteractiveGlobe);
