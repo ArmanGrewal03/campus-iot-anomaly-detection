@@ -119,3 +119,7 @@ campus_iot_data.db
 *.pkl
 02_Model_Service/feature_store/
 Data/processed/
+
+# Node
+node_modules/
+dist/
