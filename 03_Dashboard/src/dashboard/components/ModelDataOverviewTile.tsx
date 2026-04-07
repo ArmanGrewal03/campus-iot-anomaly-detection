@@ -26,12 +26,36 @@ interface ModelStatus {
 }
 
 interface ModelMetrics {
-  metrics?: {
-    accuracy?: number;
-    precision?: number;
-    recall?: number;
-    f1?: number;
-  };
+  metrics?: Record<string, unknown>;
+}
+
+function formatPercent(value: unknown): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  const pct = n <= 1 ? n * 100 : n;
+  return `${pct.toFixed(1)}%`;
+}
+
+function inferModelType(name: string | undefined): string {
+  if (!name) return '—';
+  const n = name.toLowerCase();
+  if (n.includes('rf')) return 'RFv1';
+  if (n.includes('if')) return 'IFv1';
+  if (n.includes('ae')) return 'AEv1';
+  if (n.includes('cnn')) return 'CNN';
+  if (n.includes('xgboost') || n.includes('xgb')) return 'XGBOOST';
+  if (n.includes('lightgbm') || n.includes('lgbm')) return 'LIGHTGBM';
+  if (n.includes('knn')) return 'KNN';
+  if (n.includes('kmeans')) return 'KMEANS';
+  return '—';
+}
+
+function pickMetric(metrics: Record<string, unknown> | undefined, keys: string[]): unknown {
+  if (!metrics) return undefined;
+  for (const key of keys) {
+    if (metrics[key] != null) return metrics[key];
+  }
+  return undefined;
 }
 
 export default function ModelDataOverviewTile() {
@@ -61,13 +85,14 @@ export default function ModelDataOverviewTile() {
           setSelectedModelName(selectedJson.status === 'success' && selectedJson.model_name ? selectedJson.model_name : '—');
           return;
         }
-        const activeModelName = selectedRes.ok && selectedJson.status === 'success' && selectedJson.model_name
+        const selectedName = selectedRes.ok && selectedJson.status === 'success' && selectedJson.model_name
           ? selectedJson.model_name
           : modelsJson.models[0].model_name;
-        const activeModel = modelsJson.models.find((entry) => entry.model_name === activeModelName) ?? modelsJson.models[0];
-        setSelectedModelName(activeModelName);
+        const activeModel = modelsJson.models.find((entry) => entry.model_name === selectedName) ?? modelsJson.models[0];
+        const resolvedModelName = activeModel.model_name;
+        setSelectedModelName(resolvedModelName);
         setModel(activeModel);
-        const headers: Record<string, string> = { 'model-name': activeModelName };
+        const headers: Record<string, string> = { model_name: resolvedModelName };
         const [statusRes, metricsRes] = await Promise.all([
           fetch(`${GATEWAY_BASE}/model/status?t=${Date.now()}`, { headers }),
           fetch(`${GATEWAY_BASE}/model/metrics?t=${Date.now()}`, { headers }).catch(() => null),
@@ -104,10 +129,10 @@ export default function ModelDataOverviewTile() {
     };
   }, []);
 
-  const accuracy = metrics?.metrics?.accuracy != null
-    ? metrics.metrics.accuracy
+  const accuracy = pickMetric(metrics?.metrics, ['accuracy']) != null
+    ? pickMetric(metrics?.metrics, ['accuracy'])
     : model?.accuracy;
-  const f1 = metrics?.metrics?.f1;
+  const f1 = pickMetric(metrics?.metrics, ['f1', 'f1_score', 'f1Score']);
 
   return (
     <Card variant="outlined" sx={{ height: '100%', borderLeft: '4px solid', borderLeftColor: 'primary.main' }}>
@@ -158,7 +183,7 @@ export default function ModelDataOverviewTile() {
               <Box>
                 <Typography variant="caption" color="text.secondary" display="block">Accuracy</Typography>
                 <Typography variant="body2" fontWeight={600}>
-                  {(Number(accuracy) * 100).toFixed(1)}%
+                  {formatPercent(accuracy)}
                 </Typography>
               </Box>
             )}
@@ -174,7 +199,7 @@ export default function ModelDataOverviewTile() {
               <Box>
                 <Typography variant="caption" color="text.secondary" display="block">F1 Score</Typography>
                 <Typography variant="body2" fontWeight={600}>
-                  {(Number(f1) * 100).toFixed(1)}%
+                  {formatPercent(f1)}
                 </Typography>
               </Box>
             )}
@@ -183,6 +208,14 @@ export default function ModelDataOverviewTile() {
                 <Typography variant="caption" color="text.secondary" display="block">Type</Typography>
                 <Typography variant="body2" noWrap title={status.model_type}>
                   {status.model_type}
+                </Typography>
+              </Box>
+            )}
+            {!status?.model_type && (
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">Type</Typography>
+                <Typography variant="body2" noWrap title={inferModelType(selectedModelName)}>
+                  {inferModelType(selectedModelName)}
                 </Typography>
               </Box>
             )}

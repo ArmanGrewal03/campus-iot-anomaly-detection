@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { addActivityLog } from '../dashboard/components/activityLog';
 
 export type AuthRole = 'guest' | 'admin';
 
@@ -29,9 +30,26 @@ const USER_BY_ROLE: Record<AuthRole, AuthUser> = {
 };
 
 const AuthContext = React.createContext<AuthContextValue | null>(null);
+const AUTH_ROLE_KEY = 'dashboard_auth_role';
+
+function getInitialRole(): AuthRole {
+  try {
+    const stored = localStorage.getItem(AUTH_ROLE_KEY);
+    if (stored === 'admin' || stored === 'guest') {
+      return stored;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return 'guest';
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [role, setRole] = React.useState<AuthRole>('guest');
+  const [role, setRole] = React.useState<AuthRole>(getInitialRole);
+
+  React.useEffect(() => {
+    localStorage.setItem(AUTH_ROLE_KEY, role);
+  }, [role]);
 
   const login = React.useCallback((username: string, password: string) => {
     const trimmedUser = username.trim().toLowerCase();
@@ -39,11 +57,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     if (trimmedUser === 'guest' && trimmedPass === 'guest') {
       setRole('guest');
+      addActivityLog('action', 'Logged in as GUEST');
       return { success: true };
     }
 
     if (trimmedUser === 'admin' && trimmedPass === 'admin') {
       setRole('admin');
+      addActivityLog('action', 'Logged in as ADMIN');
       return { success: true };
     }
 
@@ -52,6 +72,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logoutToGuest = React.useCallback(() => {
     setRole('guest');
+    addActivityLog('action', 'Switched to GUEST session');
   }, []);
 
   const value = React.useMemo<AuthContextValue>(() => ({

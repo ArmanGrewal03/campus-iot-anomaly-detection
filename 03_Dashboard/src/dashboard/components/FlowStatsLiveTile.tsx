@@ -26,12 +26,36 @@ interface ModelStatus {
 }
 
 interface ModelMetrics {
-  metrics?: {
-    accuracy?: number;
-    precision?: number;
-    recall?: number;
-    f1?: number;
-  };
+  metrics?: Record<string, unknown>;
+}
+
+function formatPercent(value: unknown): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  const pct = n <= 1 ? n * 100 : n;
+  return `${pct.toFixed(1)}%`;
+}
+
+function inferModelType(name: string | undefined): string {
+  if (!name) return '—';
+  const n = name.toLowerCase();
+  if (n.includes('rf')) return 'RFv1';
+  if (n.includes('if')) return 'IFv1';
+  if (n.includes('ae')) return 'AEv1';
+  if (n.includes('cnn')) return 'CNN';
+  if (n.includes('xgboost') || n.includes('xgb')) return 'XGBOOST';
+  if (n.includes('lightgbm') || n.includes('lgbm')) return 'LIGHTGBM';
+  if (n.includes('knn')) return 'KNN';
+  if (n.includes('kmeans')) return 'KMEANS';
+  return '—';
+}
+
+function pickMetric(metrics: Record<string, unknown> | undefined, keys: string[]): unknown {
+  if (!metrics) return undefined;
+  for (const key of keys) {
+    if (metrics[key] != null) return metrics[key];
+  }
+  return undefined;
 }
 
 export default function FlowStatsLiveTile() {
@@ -52,18 +76,19 @@ export default function FlowStatsLiveTile() {
         const selectedJson = await selectedRes.json() as { status?: string; model_name?: string };
         const modelsJson = await modelsRes.json() as { status?: string; models?: ModelInfo[] };
         if (cancelled) return;
-        const activeModelName = selectedRes.ok && selectedJson.status === 'success' && selectedJson.model_name
+        const selectedName = selectedRes.ok && selectedJson.status === 'success' && selectedJson.model_name
           ? selectedJson.model_name
           : (Array.isArray(modelsJson.models) && modelsJson.models[0]?.model_name) || '—';
         const activeModel = Array.isArray(modelsJson.models)
-          ? modelsJson.models.find((model) => model.model_name === activeModelName) ?? null
+          ? modelsJson.models.find((model) => model.model_name === selectedName) ?? modelsJson.models[0] ?? null
           : null;
+        const resolvedModelName = activeModel?.model_name ?? selectedName;
 
-        setSelectedModelName(activeModelName);
+        setSelectedModelName(resolvedModelName);
         setModelInfo(activeModel);
 
-        if (activeModelName && activeModelName !== '—') {
-          const headers: Record<string, string> = { 'model-name': activeModelName };
+        if (resolvedModelName && resolvedModelName !== '—') {
+          const headers: Record<string, string> = { model_name: resolvedModelName };
           const [statusRes, metricsRes] = await Promise.all([
             fetch(`${GATEWAY_BASE}/model/status?t=${Date.now()}`, { headers }),
             fetch(`${GATEWAY_BASE}/model/metrics?t=${Date.now()}`, { headers }).catch(() => null),
@@ -139,22 +164,24 @@ export default function FlowStatsLiveTile() {
           <Stack direction="row" justifyContent="space-between" alignItems="baseline">
             <Typography variant="caption" color="text.secondary">Accuracy</Typography>
             <Typography variant="body2" fontWeight={600}>
-              {metrics?.metrics?.accuracy != null
-                ? `${(Number(metrics.metrics.accuracy) * 100).toFixed(1)}%`
+              {pickMetric(metrics?.metrics, ['accuracy']) != null
+                ? formatPercent(pickMetric(metrics?.metrics, ['accuracy']))
                 : modelInfo?.accuracy != null
-                  ? `${(Number(modelInfo.accuracy) * 100).toFixed(1)}%`
+                  ? formatPercent(modelInfo.accuracy)
                   : '—'}
             </Typography>
           </Stack>
           <Stack direction="row" justifyContent="space-between" alignItems="baseline">
             <Typography variant="caption" color="text.secondary">F1 score</Typography>
             <Typography variant="body2" fontWeight={600}>
-              {metrics?.metrics?.f1 != null ? `${(Number(metrics.metrics.f1) * 100).toFixed(1)}%` : '—'}
+              {pickMetric(metrics?.metrics, ['f1', 'f1_score', 'f1Score']) != null
+                ? formatPercent(pickMetric(metrics?.metrics, ['f1', 'f1_score', 'f1Score']))
+                : '—'}
             </Typography>
           </Stack>
           <Stack direction="row" justifyContent="space-between" alignItems="baseline">
             <Typography variant="caption" color="text.secondary">Model type</Typography>
-            <Typography variant="body2" fontWeight={600}>{status?.model_type || '—'}</Typography>
+            <Typography variant="body2" fontWeight={600}>{status?.model_type || inferModelType(selectedModelName)}</Typography>
           </Stack>
           <Stack direction="row" justifyContent="space-between" alignItems="baseline">
             <Typography variant="caption" color="text.secondary">Features</Typography>

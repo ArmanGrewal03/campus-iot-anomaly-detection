@@ -9,6 +9,8 @@ import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import TextField from '@mui/material/TextField';
+import Chip from '@mui/material/Chip';
+import Stack from '@mui/material/Stack';
 import { paperClasses } from '@mui/material/Paper';
 import { listClasses } from '@mui/material/List';
 import Typography from '@mui/material/Typography';
@@ -30,6 +32,7 @@ export default function OptionsMenu() {
   const [username, setUsername] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [errorText, setErrorText] = React.useState('');
+  const usernameInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const open = Boolean(anchorEl);
   const handleClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -51,6 +54,15 @@ export default function OptionsMenu() {
     setLoginOpen(false);
     setErrorText('');
   };
+
+  React.useEffect(() => {
+    if (!loginOpen) return;
+    const timer = setTimeout(() => {
+      usernameInputRef.current?.focus();
+      usernameInputRef.current?.select();
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [loginOpen]);
 
   const handleLoginSubmit = () => {
     const result = login(username, password);
@@ -113,14 +125,33 @@ export default function OptionsMenu() {
         </MenuItem>
       </Menu>
 
-      <Dialog open={loginOpen} onClose={closeLoginDialog} fullWidth maxWidth="xs">
-        <DialogTitle>Login</DialogTitle>
+      <Dialog
+        open={loginOpen}
+        onClose={closeLoginDialog}
+        fullWidth
+        maxWidth="xs"
+        PaperProps={{
+          sx: {
+            borderRadius: 2,
+            border: '1px solid',
+            borderColor: 'divider',
+            backgroundImage: 'linear-gradient(180deg, rgba(25,118,210,0.08) 0%, rgba(25,118,210,0.00) 28%)',
+          },
+        }}
+      >
+        <DialogTitle sx={{ pb: 1 }}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Typography variant="h6" fontWeight={700}>Secure Login</Typography>
+            <Chip size="small" label={isAdmin ? 'ADMIN' : 'GUEST'} color={isAdmin ? 'warning' : 'default'} />
+          </Stack>
+        </DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ color: 'text.secondary', mb: 2 }}>
             Current user: {user.displayName} ({isAdmin ? 'admin' : 'guest'})
           </Typography>
           <TextField
             autoFocus
+            inputRef={usernameInputRef}
             margin="dense"
             label="Username"
             fullWidth

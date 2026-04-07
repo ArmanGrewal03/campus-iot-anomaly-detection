@@ -1284,7 +1284,7 @@ export default function AnalyticsPage() {
           }
           
           console.log('WebSocket message received:', data);
-          
+
           // Refresh history when new data arrives (keep current pagination)
           // But debounce to prevent rapid successive fetches (max once per second)
           const now = Date.now();
