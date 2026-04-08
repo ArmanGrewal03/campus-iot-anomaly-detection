@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useNavigate } from 'react-router-dom';
 import Grid from '@mui/material/Grid';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
@@ -46,6 +47,7 @@ function setCachedKpis(data: Record<string, unknown>) {
 }
 
 export default function MainGrid() {
+  const navigate = useNavigate();
   const [cards, setCards] = React.useState<StatCardProps[]>(fallbackCards);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -211,6 +213,10 @@ export default function MainGrid() {
     setDataGridLoaded(true);
   }, []);
 
+  const handleKpiCardClick = React.useCallback(() => {
+    navigate('/analytics');
+  }, [navigate]);
+
   return (
     <Box sx={{ width: '100%', maxWidth: { sm: '100%', md: '1700px' }, position: 'relative' }}>
       {/* Full-page loading overlay for initial load */}
@@ -233,7 +239,7 @@ export default function MainGrid() {
       </Backdrop>
 
       {/* cards */}
-      <Typography component="h2" variant="h5" sx={{ mt: 7, mb: -6 }}>
+      <Typography component="h2" variant="h5" sx={{ mt: 3, mb: -6 }}>
         Overview
       </Typography>
       {!initialLoading && loading && (
@@ -253,14 +259,14 @@ export default function MainGrid() {
         {/* Left: 4 KPI tiles shifted down so gap to Records by class = 16px (same as Users–Anomalies) */}
         <Grid size={{ xs: 12, md: 6 }} sx={{ mt: { xs: 0, md: 8 } }}>
           <Grid container spacing={2} columns={12}>
-            <Grid size={{ xs: 12, sm: 6 }}>{cards[0] && <StatCard {...cards[0]} />}</Grid>
-            <Grid size={{ xs: 12, sm: 6 }}>{cards[1] && <StatCard {...cards[1]} />}</Grid>
-            <Grid size={{ xs: 12, sm: 6 }}>{cards[2] && <StatCard {...cards[2]} />}</Grid>
-            <Grid size={{ xs: 12, sm: 6 }}>{cards[3] && <StatCard {...cards[3]} />}</Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>{cards[0] && <StatCard {...cards[0]} onClick={handleKpiCardClick} />}</Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>{cards[1] && <StatCard {...cards[1]} onClick={handleKpiCardClick} />}</Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>{cards[2] && <StatCard {...cards[2]} onClick={handleKpiCardClick} />}</Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>{cards[3] && <StatCard {...cards[3]} onClick={handleKpiCardClick} />}</Grid>
           </Grid>
         </Grid>
         {/* Top right: globe shifted down visually only (transform keeps layout/spacing unchanged) */}
-        <Grid size={{ xs: 12, md: 6 }} sx={{ position: 'relative', mt: -6, transform: 'translateY(24px)' }}>
+        <Grid size={{ xs: 12, md: 6 }} sx={{ position: 'relative', mt: -6, transform: { xs: 'none', md: 'translateY(40px)' } }}>
           <InteractiveGlobe height={640} seamless />
         </Grid>
       </Grid>
@@ -313,7 +319,7 @@ export default function MainGrid() {
         >
           <LivePacketRateTile />
         </Grid>
-        {/* Training vs testing — left half; Flow + Traffic — right quarter; Model Data Overview — right quarter */}
+        {/* Training vs testing — left half; selected-model summary + model library — right quarter; active model overview — right quarter */}
         <Grid size={{ xs: 12, md: 6 }} sx={{ mt: 1 }}>
           <PageViewsBarChart />
         </Grid>

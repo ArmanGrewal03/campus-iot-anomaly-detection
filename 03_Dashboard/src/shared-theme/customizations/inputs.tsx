@@ -60,31 +60,31 @@ export const inputsCustomizations: Components<Theme> = {
             },
             style: {
               color: 'white',
-              backgroundColor: gray[900],
-              backgroundImage: `linear-gradient(to bottom, ${gray[700]}, ${gray[800]})`,
-              boxShadow: `inset 0 1px 0 ${gray[600]}, inset 0 -1px 0 1px hsl(220, 0%, 0%)`,
-              border: `1px solid ${gray[700]}`,
+              backgroundColor: (theme.vars || theme).palette.primary.main,
+              backgroundImage: 'none',
+              boxShadow: 'none',
+              border: '1px solid transparent',
               '&:hover': {
                 backgroundImage: 'none',
-                backgroundColor: gray[700],
+                backgroundColor: (theme.vars || theme).palette.primary.dark,
                 boxShadow: 'none',
               },
               '&:active': {
-                backgroundColor: gray[800],
+                backgroundColor: (theme.vars || theme).palette.primary.dark,
               },
               ...theme.applyStyles('dark', {
-                color: 'black',
-                backgroundColor: gray[50],
-                backgroundImage: `linear-gradient(to bottom, ${gray[100]}, ${gray[50]})`,
-                boxShadow: 'inset 0 -1px 0  hsl(220, 30%, 80%)',
-                border: `1px solid ${gray[50]}`,
+                color: 'white',
+                backgroundColor: (theme.vars || theme).palette.primary.main,
+                backgroundImage: 'none',
+                boxShadow: 'none',
+                border: '1px solid transparent',
                 '&:hover': {
                   backgroundImage: 'none',
-                  backgroundColor: gray[300],
+                  backgroundColor: (theme.vars || theme).palette.primary.dark,
                   boxShadow: 'none',
                 },
                 '&:active': {
-                  backgroundColor: gray[400],
+                  backgroundColor: (theme.vars || theme).palette.primary.dark,
                 },
               }),
             },
@@ -96,10 +96,10 @@ export const inputsCustomizations: Components<Theme> = {
             },
             style: {
               color: 'white',
-              backgroundColor: brand[300],
-              backgroundImage: `linear-gradient(to bottom, ${alpha(brand[400], 0.8)}, ${brand[500]})`,
-              boxShadow: `inset 0 2px 0 ${alpha(brand[200], 0.2)}, inset 0 -2px 0 ${alpha(brand[700], 0.4)}`,
-              border: `1px solid ${brand[500]}`,
+              backgroundColor: brand[500],
+              backgroundImage: 'none',
+              boxShadow: 'none',
+              border: '1px solid transparent',
               '&:hover': {
                 backgroundColor: brand[700],
                 boxShadow: 'none',
@@ -108,6 +108,71 @@ export const inputsCustomizations: Components<Theme> = {
                 backgroundColor: brand[700],
                 backgroundImage: 'none',
               },
+              ...theme.applyStyles('dark', {
+                backgroundColor: brand[400],
+                '&:hover': {
+                  backgroundColor: brand[500],
+                },
+                '&:active': {
+                  backgroundColor: brand[500],
+                },
+              }),
+            },
+          },
+          {
+            props: {
+              color: 'info',
+              variant: 'contained',
+            },
+            style: {
+              color: 'white',
+              backgroundColor: '#0EA5E9',
+              backgroundImage: 'none',
+              border: '1px solid transparent',
+              '&:hover': { backgroundColor: '#0284C7' },
+              '&:active': { backgroundColor: '#0369A1' },
+            },
+          },
+          {
+            props: {
+              color: 'warning',
+              variant: 'contained',
+            },
+            style: {
+              color: 'white',
+              backgroundColor: '#F59E0B',
+              backgroundImage: 'none',
+              border: '1px solid transparent',
+              '&:hover': { backgroundColor: '#D97706' },
+              '&:active': { backgroundColor: '#B45309' },
+            },
+          },
+          {
+            props: {
+              color: 'error',
+              variant: 'contained',
+            },
+            style: {
+              color: 'white',
+              backgroundColor: '#DC2626',
+              backgroundImage: 'none',
+              border: '1px solid transparent',
+              '&:hover': { backgroundColor: '#B91C1C' },
+              '&:active': { backgroundColor: '#991B1B' },
+            },
+          },
+          {
+            props: {
+              color: 'success',
+              variant: 'contained',
+            },
+            style: {
+              color: 'white',
+              backgroundColor: '#10B981',
+              backgroundImage: 'none',
+              border: '1px solid transparent',
+              '&:hover': { backgroundColor: '#059669' },
+              '&:active': { backgroundColor: '#047857' },
             },
           },
           {

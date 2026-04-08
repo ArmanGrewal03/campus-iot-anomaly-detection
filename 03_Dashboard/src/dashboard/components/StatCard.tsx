@@ -22,6 +22,7 @@ export type StatCardProps = {
   data: number[];
   chartVariant?: 'sparkline' | 'progress' | 'bar';
   gaugeValue?: number;
+  onClick?: () => void;
 };
 
 function getXAxisLabels(length: number): string[] {
@@ -66,6 +67,7 @@ export default function StatCard({
   data,
   chartVariant = 'bar',
   gaugeValue = 0,
+  onClick,
 }: StatCardProps) {
   const theme = useTheme();
   const isLight = theme.palette.mode === 'light';
@@ -108,6 +110,15 @@ export default function StatCard({
   return (
     <Card
       variant="outlined"
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onClick();
+        }
+      } : undefined}
       sx={{
         height: '100%',
         flexGrow: 1,
@@ -116,6 +127,14 @@ export default function StatCard({
         borderTopColor: accentColor,
         display: 'flex',
         flexDirection: 'column',
+        cursor: onClick ? 'pointer' : 'default',
+        transition: onClick ? 'transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease' : undefined,
+        '&:hover': onClick
+          ? {
+              transform: 'translateY(-2px)',
+              boxShadow: 4,
+            }
+          : undefined,
       }}
     >
       <CardContent

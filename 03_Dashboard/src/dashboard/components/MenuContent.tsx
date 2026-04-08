@@ -11,6 +11,7 @@ import AnalyticsRoundedIcon from '@mui/icons-material/AnalyticsRounded';
 import PeopleRoundedIcon from '@mui/icons-material/PeopleRounded';
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded';
 import InfoRoundedIcon from '@mui/icons-material/InfoRounded';
+import { useAuth } from '../../auth/AuthContext';
 
 const mainListItems = [
   { text: 'Home', icon: <HomeRoundedIcon />, path: '/home' },
@@ -25,10 +26,15 @@ const secondaryListItems = [
 ];
 
 export default function MenuContent() {
+  const { isAdmin } = useAuth();
+  const visibleMainListItems = isAdmin
+    ? mainListItems
+    : mainListItems.filter((item) => item.path !== '/model');
+
   return (
     <Stack sx={{ flexGrow: 1, p: 1, justifyContent: 'space-between' }}>
       <List dense>
-        {mainListItems.map((item) => (
+        {visibleMainListItems.map((item) => (
           <ListItem key={item.path} disablePadding sx={{ display: 'block' }}>
             <ListItemButton
               component={NavLink}

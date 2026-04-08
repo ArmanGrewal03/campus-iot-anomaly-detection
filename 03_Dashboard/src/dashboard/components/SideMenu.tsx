@@ -8,6 +8,7 @@ import Typography from '@mui/material/Typography';
 import SensorsIcon from '@mui/icons-material/Sensors';
 import MenuContent from './MenuContent';
 import OptionsMenu from './OptionsMenu';
+import { useAuth } from '../../auth/AuthContext';
 
 const drawerWidth = 240;
 
@@ -23,6 +24,8 @@ const Drawer = styled(MuiDrawer)({
 });
 
 export default function SideMenu() {
+  const { user } = useAuth();
+
   return (
     <Drawer
       variant="permanent"
@@ -76,7 +79,7 @@ export default function SideMenu() {
             variant="body2"
             sx={{ fontWeight: 500, lineHeight: '16px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >
-            Campus IOT
+            {user.displayName}
           </Typography>
           <Typography
             variant="caption"
@@ -88,7 +91,7 @@ export default function SideMenu() {
               display: 'block',
             }}
           >
-            CampusIOT@gmail.com
+            {user.email}
           </Typography>
         </Box>
         <OptionsMenu />

@@ -1,0 +1,94 @@
+import * as React from 'react';
+import { addActivityLog } from '../dashboard/components/activityLog';
+
+export type AuthRole = 'guest' | 'admin';
+
+type AuthUser = {
+  role: AuthRole;
+  displayName: string;
+  email: string;
+};
+
+type AuthContextValue = {
+  user: AuthUser;
+  isAdmin: boolean;
+  login: (username: string, password: string) => { success: boolean; message?: string };
+  logoutToGuest: () => void;
+};
+
+const USER_BY_ROLE: Record<AuthRole, AuthUser> = {
+  guest: {
+    role: 'guest',
+    displayName: 'C_IOT GUEST',
+    email: 'guest@campusiot.local',
+  },
+  admin: {
+    role: 'admin',
+    displayName: 'C_IOT ADMIN',
+    email: 'admin@campusiot.local',
+  },
+};
+
+const AuthContext = React.createContext<AuthContextValue | null>(null);
+const AUTH_ROLE_KEY = 'dashboard_auth_role';
+
+function getInitialRole(): AuthRole {
+  try {
+    const stored = localStorage.getItem(AUTH_ROLE_KEY);
+    if (stored === 'admin' || stored === 'guest') {
+      return stored;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return 'guest';
+}
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [role, setRole] = React.useState<AuthRole>(getInitialRole);
+
+  React.useEffect(() => {
+    localStorage.setItem(AUTH_ROLE_KEY, role);
+  }, [role]);
+
+  const login = React.useCallback((username: string, password: string) => {
+    const trimmedUser = username.trim().toLowerCase();
+    const trimmedPass = password.trim().toLowerCase();
+
+    if (trimmedUser === 'guest' && trimmedPass === 'guest') {
+      setRole('guest');
+      addActivityLog('action', 'Logged in as GUEST');
+      return { success: true };
+    }
+
+    if (trimmedUser === 'admin' && trimmedPass === 'admin') {
+      setRole('admin');
+      addActivityLog('action', 'Logged in as ADMIN');
+      return { success: true };
+    }
+
+    return { success: false, message: 'Invalid username or password.' };
+  }, []);
+
+  const logoutToGuest = React.useCallback(() => {
+    setRole('guest');
+    addActivityLog('action', 'Switched to GUEST session');
+  }, []);
+
+  const value = React.useMemo<AuthContextValue>(() => ({
+    user: USER_BY_ROLE[role],
+    isAdmin: role === 'admin',
+    login,
+    logoutToGuest,
+  }), [role, login, logoutToGuest]);
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth() {
+  const ctx = React.useContext(AuthContext);
+  if (!ctx) {
+    throw new Error('useAuth must be used within AuthProvider');
+  }
+  return ctx;
+}

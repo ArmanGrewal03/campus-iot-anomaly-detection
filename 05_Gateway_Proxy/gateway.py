@@ -668,7 +668,7 @@ async def proxy_request(request: Request, path: str):
     path_without_query = normalized_path.split("?")[0] if "?" in normalized_path else normalized_path
     
     skip_cache_paths = [
-        "/train", "/test", "/predict", "/upload", "/validate", "/insert", "/publish",
+        "/train", "/test", "/predict", "/upload", "/validate", "/insert", "/publish", "/new",
         "/history", "/network-logs", "/get-model", "/set-model", "/models", "/recompute-predictions", "/dashboard-kpis"
     ]
     # Note: /models (list) and /model-types are cacheable, but /model/status and /model/metrics are not
@@ -739,7 +739,10 @@ async def proxy_request(request: Request, path: str):
     headers = dict(request.headers)
     headers.pop("host", None)
     headers.pop("connection", None)
-    headers.pop("content-length", None)
+    # IMPORTANT: Don't remove Content-Length for multipart uploads - it's needed for file transfers
+    # Only remove it if it might conflict with chunked encoding
+    if request.headers.get("transfer-encoding") == "chunked":
+        headers.pop("content-length", None)
     
     # Forward request to backend service
     try:

@@ -26,15 +26,40 @@ interface ModelStatus {
 }
 
 interface ModelMetrics {
-  metrics?: {
-    accuracy?: number;
-    precision?: number;
-    recall?: number;
-    f1?: number;
-  };
+  metrics?: Record<string, unknown>;
+}
+
+function formatPercent(value: unknown): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  const pct = n <= 1 ? n * 100 : n;
+  return `${pct.toFixed(1)}%`;
+}
+
+function inferModelType(name: string | undefined): string {
+  if (!name) return '—';
+  const n = name.toLowerCase();
+  if (n.includes('rf')) return 'RFv1';
+  if (n.includes('if')) return 'IFv1';
+  if (n.includes('ae')) return 'AEv1';
+  if (n.includes('cnn')) return 'CNN';
+  if (n.includes('xgboost') || n.includes('xgb')) return 'XGBOOST';
+  if (n.includes('lightgbm') || n.includes('lgbm')) return 'LIGHTGBM';
+  if (n.includes('knn')) return 'KNN';
+  if (n.includes('kmeans')) return 'KMEANS';
+  return '—';
+}
+
+function pickMetric(metrics: Record<string, unknown> | undefined, keys: string[]): unknown {
+  if (!metrics) return undefined;
+  for (const key of keys) {
+    if (metrics[key] != null) return metrics[key];
+  }
+  return undefined;
 }
 
 export default function ModelDataOverviewTile() {
+  const [selectedModelName, setSelectedModelName] = React.useState<string>('—');
   const [model, setModel] = React.useState<ModelInfo | null>(null);
   const [status, setStatus] = React.useState<ModelStatus | null>(null);
   const [metrics, setMetrics] = React.useState<ModelMetrics | null>(null);
@@ -46,18 +71,28 @@ export default function ModelDataOverviewTile() {
     const fetchOverview = async () => {
       try {
         setError(null);
-        const modelsRes = await fetch(`${GATEWAY_BASE}/models?t=${Date.now()}`);
+        const [selectedRes, modelsRes] = await Promise.all([
+          fetch(`${GATEWAY_BASE}/get-model?t=${Date.now()}`),
+          fetch(`${GATEWAY_BASE}/models?t=${Date.now()}`),
+        ]);
+        const selectedJson = await selectedRes.json() as { status?: string; model_name?: string; detail?: string };
         const modelsJson = await modelsRes.json() as { status?: string; models?: ModelInfo[]; detail?: string };
         if (cancelled) return;
         if (!modelsRes.ok || modelsJson.status !== 'success' || !Array.isArray(modelsJson.models) || modelsJson.models.length === 0) {
           setModel(null);
           setStatus(null);
           setMetrics(null);
+          setSelectedModelName(selectedJson.status === 'success' && selectedJson.model_name ? selectedJson.model_name : '—');
           return;
         }
-        const first = modelsJson.models[0];
-        setModel(first);
-        const headers: Record<string, string> = { 'model-name': first.model_name };
+        const selectedName = selectedRes.ok && selectedJson.status === 'success' && selectedJson.model_name
+          ? selectedJson.model_name
+          : modelsJson.models[0].model_name;
+        const activeModel = modelsJson.models.find((entry) => entry.model_name === selectedName) ?? modelsJson.models[0];
+        const resolvedModelName = activeModel.model_name;
+        setSelectedModelName(resolvedModelName);
+        setModel(activeModel);
+        const headers: Record<string, string> = { model_name: resolvedModelName };
         const [statusRes, metricsRes] = await Promise.all([
           fetch(`${GATEWAY_BASE}/model/status?t=${Date.now()}`, { headers }),
           fetch(`${GATEWAY_BASE}/model/metrics?t=${Date.now()}`, { headers }).catch(() => null),
@@ -94,10 +129,10 @@ export default function ModelDataOverviewTile() {
     };
   }, []);
 
-  const accuracy = metrics?.metrics?.accuracy != null
-    ? metrics.metrics.accuracy
+  const accuracy = pickMetric(metrics?.metrics, ['accuracy']) != null
+    ? pickMetric(metrics?.metrics, ['accuracy'])
     : model?.accuracy;
-  const f1 = metrics?.metrics?.f1;
+  const f1 = pickMetric(metrics?.metrics, ['f1', 'f1_score', 'f1Score']);
 
   return (
     <Card variant="outlined" sx={{ height: '100%', borderLeft: '4px solid', borderLeftColor: 'primary.main' }}>
@@ -105,7 +140,7 @@ export default function ModelDataOverviewTile() {
         <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mb: 1 }}>
           <PsychologyRoundedIcon sx={{ fontSize: 18, color: 'primary.main' }} />
           <Typography variant="subtitle2" fontWeight={600}>
-            Model Data Overview
+            Active model overview
           </Typography>
         </Stack>
         {loading ? (
@@ -117,13 +152,18 @@ export default function ModelDataOverviewTile() {
             {error}
           </Typography>
         ) : !model ? (
-          <Typography variant="caption" color="text.secondary">
-            No models available
-          </Typography>
+          <Stack spacing={1}>
+            <Typography variant="caption" color="text.secondary">
+              No models available
+            </Typography>
+            <Typography variant="body2" fontWeight={600} noWrap title={selectedModelName}>
+              {selectedModelName}
+            </Typography>
+          </Stack>
         ) : (
           <Stack spacing={1.5}>
             <Box>
-              <Typography variant="caption" color="text.secondary" display="block">Model</Typography>
+              <Typography variant="caption" color="text.secondary" display="block">Selected model</Typography>
               <Typography variant="body2" fontWeight={600} noWrap title={model.model_name}>
                 {model.model_name}
               </Typography>
@@ -143,7 +183,15 @@ export default function ModelDataOverviewTile() {
               <Box>
                 <Typography variant="caption" color="text.secondary" display="block">Accuracy</Typography>
                 <Typography variant="body2" fontWeight={600}>
-                  {(Number(accuracy) * 100).toFixed(1)}%
+                  {formatPercent(accuracy)}
+                </Typography>
+              </Box>
+            )}
+            {model.training_date && (
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">Training date</Typography>
+                <Typography variant="body2" fontWeight={600}>
+                  {model.training_date}
                 </Typography>
               </Box>
             )}
@@ -151,7 +199,7 @@ export default function ModelDataOverviewTile() {
               <Box>
                 <Typography variant="caption" color="text.secondary" display="block">F1 Score</Typography>
                 <Typography variant="body2" fontWeight={600}>
-                  {(Number(f1) * 100).toFixed(1)}%
+                  {formatPercent(f1)}
                 </Typography>
               </Box>
             )}
@@ -160,6 +208,14 @@ export default function ModelDataOverviewTile() {
                 <Typography variant="caption" color="text.secondary" display="block">Type</Typography>
                 <Typography variant="body2" noWrap title={status.model_type}>
                   {status.model_type}
+                </Typography>
+              </Box>
+            )}
+            {!status?.model_type && (
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">Type</Typography>
+                <Typography variant="body2" noWrap title={inferModelType(selectedModelName)}>
+                  {inferModelType(selectedModelName)}
                 </Typography>
               </Box>
             )}

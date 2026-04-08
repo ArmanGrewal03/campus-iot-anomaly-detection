@@ -38,9 +38,13 @@ function LivePacketRateTileComponent() {
     loading: true,
     error: null,
   });
+  // Defer state updates so they don't block animation frames
+  const deferredState = React.useDeferredValue(state);
 
   React.useEffect(() => {
     let cancelled = false;
+    let idleCallbackId: number | null = null;
+    
     const fetchMetrics = async () => {
       try {
         const res = await fetch(`${LIVE_METRICS_BASE}/metrics?t=${Date.now()}`);
@@ -87,17 +91,32 @@ function LivePacketRateTileComponent() {
         }
       }
     };
-    fetchMetrics();
-    const interval = setInterval(fetchMetrics, 2000);
+    
+    const scheduleFetch = () => {
+      if (cancelled) return;
+      // Use requestIdleCallback to defer fetch to idle time (doesn't block animation frame)
+      idleCallbackId = requestIdleCallback(
+        () => {
+          fetchMetrics();
+          // Schedule next fetch after idle completes
+          setTimeout(() => {
+            if (!cancelled) scheduleFetch();
+          }, 2000);
+        },
+        { timeout: 3000 } // Fallback timeout to ensure fetch happens
+      );
+    };
+    
+    scheduleFetch();
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      if (idleCallbackId !== null) cancelIdleCallback(idleCallbackId);
     };
   }, []);
 
   const xLabels = React.useMemo(
-    () => (state.labels.length === state.data.length ? state.labels : state.data.map((_, i) => String(i))),
-    [state.labels, state.data.length]
+    () => (deferredState.labels.length === deferredState.data.length ? deferredState.labels : deferredState.data.map((_, i) => String(i))),
+    [deferredState.labels, deferredState.data.length]
   );
   const barColor = theme.palette.mode === 'dark' ? '#ba68c8' : '#7b1fa2';
   
@@ -106,13 +125,13 @@ function LivePacketRateTileComponent() {
     () => ({
       xAxis: [{ scaleType: 'band' as const, data: xLabels, tickLabelStyle: { fontSize: 9 }, tickInterval: (_: any, i: number) => i % 12 === 0 || i === xLabels.length - 1 }],
       yAxis: [{ tickMinStep: 1, valueFormatter: (v: any) => String(Math.round(Number(v))) }],
-      series: [{ id: 'packets', data: state.data, label: 'Packets', color: barColor }],
+      series: [{ id: 'packets', data: deferredState.data, label: 'Packets', color: barColor }],
       margin: { top: 8, right: 8, bottom: 24, left: 36 } as const,
     }),
-    [xLabels, state.data, barColor]
+    [xLabels, deferredState.data, barColor]
   );
 
-  if (state.loading && state.data.length === 0) {
+  if (deferredState.loading && deferredState.data.length === 0) {
     return (
       <Card variant="outlined" sx={{ height: '100%', minHeight: 220 }}>
         <CardContent>
@@ -144,18 +163,18 @@ function LivePacketRateTileComponent() {
             Packet Rate
           </Typography>
           <Stack direction="row" alignItems="center" spacing={1}>
-            {state.maxVal > 0 && (
+            {deferredState.maxVal > 0 && (
               <Typography variant="caption" color="text.secondary">
-                Max <strong>{Math.round(state.maxVal)}</strong>
+                Max <strong>{Math.round(deferredState.maxVal)}</strong>
               </Typography>
             )}
             <Chip size="small" label="Live" color="error" sx={{ fontSize: '0.625rem', height: 18 }} />
           </Stack>
         </Stack>
-        {state.error && (
-          <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>{state.error}</Typography>
+        {deferredState.error && (
+          <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>{deferredState.error}</Typography>
         )}
-        {state.data.length === 0 ? (
+        {deferredState.data.length === 0 ? (
           <Box sx={{ height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Typography variant="caption" color="text.secondary">No data</Typography>
           </Box>

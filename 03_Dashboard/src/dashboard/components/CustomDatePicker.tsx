@@ -1,25 +1,43 @@
 import * as React from 'react';
-import dayjs, { Dayjs } from 'dayjs';
-import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
-import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
-import { DatePicker } from '@mui/x-date-pickers/DatePicker';
+import Stack from '@mui/material/Stack';
+import Typography from '@mui/material/Typography';
+import CalendarMonthRoundedIcon from '@mui/icons-material/CalendarMonthRounded';
 
 export default function CustomDatePicker() {
-  const [value, setValue] = React.useState<Dayjs | null>(dayjs('2023-04-17'));
+  const [today, setToday] = React.useState<Date>(new Date());
+
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      setToday(new Date());
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const formatted = React.useMemo(
+    () => today.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }),
+    [today],
+  );
 
   return (
-    <LocalizationProvider dateAdapter={AdapterDayjs}>
-      <DatePicker
-        value={value}
-        onChange={(newValue) => setValue(newValue)}
-        slotProps={{
-          textField: { size: 'small' },
-          nextIconButton: { size: 'small' },
-          previousIconButton: { size: 'small' },
-        }}
-        views={['day', 'month', 'year']}
-        sx={{ minWidth: 180 }}
-      />
-    </LocalizationProvider>
+    <Stack
+      direction="row"
+      spacing={0.75}
+      alignItems="center"
+      sx={{
+        minWidth: 210,
+        px: 1.25,
+        py: 0.75,
+        border: '1px solid',
+        borderColor: 'divider',
+        borderRadius: 1,
+        bgcolor: 'background.paper',
+      }}
+      aria-label="Current date"
+    >
+      <CalendarMonthRoundedIcon fontSize="small" sx={{ color: 'text.secondary' }} />
+      <Typography variant="body2" sx={{ whiteSpace: 'nowrap' }}>
+        {formatted}
+      </Typography>
+    </Stack>
   );
 }

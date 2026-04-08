@@ -559,17 +559,17 @@ async def upload_csv(
 
 @app.get("/view")
 async def view_data(
-    limit: int = 100, 
+    limit: int = 100000000, 
     offset: int = 0,
     dataset_name: str = Depends(get_dataset_name)
 ):
     # Frontend controls limits - backend just validates reasonable bounds
-    if limit < 1:
-        limit = 100  # Default to 100 if invalid
-    if limit > 10000:  # Cap at reasonable maximum to prevent abuse
-        limit = 10000
-    if offset < 0:
-        offset = 0
+    # if limit < 1:
+    #     limit = 100  # Default to 100 if invalid
+    # if limit > 10000:  # Cap at reasonable maximum to prevent abuse
+    #     limit = 10000
+    # if offset < 0:
+    #     offset = 0
     
     logger.info(f"Viewing data: limit={limit}, offset={offset}")
     
@@ -661,11 +661,13 @@ async def view_data(
 
 @app.get("/training")
 async def get_training_data(
-    limit: int = 100, 
-    offset: int = 0,
-    dataset_name: str = Depends(get_dataset_name)
+    dataset_name: str = Depends(get_dataset_name),
+    limit_header: Optional[int] = Header(None, alias="X-Limit"),
+    offset_header: Optional[int] = Header(None, alias="X-Offset")
 ):
     # Frontend controls limits - backend just validates reasonable bounds
+    limit = limit_header if limit_header is not None else 100
+    offset = offset_header if offset_header is not None else 0
     if limit < 1:
         limit = 100  # Default to 100 if invalid
     if limit > 10000:  # Cap at reasonable maximum to prevent abuse
@@ -777,11 +779,13 @@ async def get_training_data(
 
 @app.get("/testing")
 async def get_testing_data(
-    limit: int = 100, 
-    offset: int = 0,
-    dataset_name: str = Depends(get_dataset_name)
+    dataset_name: str = Depends(get_dataset_name),
+    limit_header: Optional[int] = Header(None, alias="X-Limit"),
+    offset_header: Optional[int] = Header(None, alias="X-Offset")
 ):
     # Frontend controls limits - backend just validates reasonable bounds
+    limit = limit_header if limit_header is not None else 100
+    offset = offset_header if offset_header is not None else 0
     if limit < 1:
         limit = 100  # Default to 100 if invalid
     if limit > 10000:  # Cap at reasonable maximum to prevent abuse
@@ -1197,7 +1201,9 @@ async def validate_data(
             updated_training = 0
             updated_testing = 0
             
-            for row_id, _ in row_data_list:
+            # Update training/testing labels for all rows
+            for row in all_rows:
+                row_id = row['id']
                 if row_id in training_ids:
                     cursor.execute(f"UPDATE {csv_table} SET T = ? WHERE id = ?", ("training", row_id))
                     updated_training += 1
@@ -1675,3 +1681,14 @@ async def get_type_stats(dataset_name: str = Depends(get_dataset_name)):
             content={"error": str(e), "type_distribution": {}},
             status_code=500
         )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info("Starting Campus IoT Anomaly Detection API on port 8000...")
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=8000,
+        log_level="info"
+    )
