@@ -37,6 +37,7 @@ from sklearn.metrics import (
     average_precision_score,
     matthews_corrcoef
 )
+
 import joblib
 import json
 import os
@@ -54,6 +55,16 @@ warnings.filterwarnings('ignore', category=UserWarning, module='sklearn.utils.pa
 warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 # Suppress joblib warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='joblib')
+
+# LightGBM and XGBoost imports
+try:
+    import lightgbm as lgb
+except ImportError:
+    lgb = None
+try:
+    import xgboost as xgb
+except ImportError:
+    xgb = None
 
 app = FastAPI(title="Campus IoT Anomaly Detection Model API", version="1.0.0")
 
@@ -600,6 +611,46 @@ def train_rf_model(X_train: pd.DataFrame, y_train: np.ndarray,
     logger.info("Random Forest model training completed")
     return model
 
+# LightGBM training
+def train_lightgbm_model(X_train: pd.DataFrame, y_train: np.ndarray,
+                        n_estimators: int = 100, max_depth: Optional[int] = -1,
+                        learning_rate: float = 0.1, random_state: int = 42) -> 'lgb.LGBMClassifier':
+    if lgb is None:
+        raise ImportError("lightgbm is not installed.")
+    logger.info(f"Training LightGBM model with n_estimators={n_estimators}, max_depth={max_depth}, learning_rate={learning_rate}")
+    model = lgb.LGBMClassifier(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        learning_rate=learning_rate,
+        random_state=random_state,
+        n_jobs=-1,
+        verbose=1
+    )
+    model.fit(X_train, y_train)
+    logger.info("LightGBM model training completed")
+    return model
+
+# XGBoost training
+def train_xgboost_model(X_train: pd.DataFrame, y_train: np.ndarray,
+                       n_estimators: int = 100, max_depth: Optional[int] = 6,
+                       learning_rate: float = 0.1, random_state: int = 42) -> 'xgb.XGBClassifier':
+    if xgb is None:
+        raise ImportError("xgboost is not installed.")
+    logger.info(f"Training XGBoost model with n_estimators={n_estimators}, max_depth={max_depth}, learning_rate={learning_rate}")
+    model = xgb.XGBClassifier(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        learning_rate=learning_rate,
+        random_state=random_state,
+        n_jobs=-1,
+        verbosity=1,
+        use_label_encoder=False,
+        eval_metric='logloss'
+    )
+    model.fit(X_train, y_train)
+    logger.info("XGBoost model training completed")
+    return model
+
 def train_if_model(X_train: pd.DataFrame, y_train: np.ndarray,
                    n_estimators: int = 100, contamination: float = 0.1,
                    random_state: int = 42) -> IsolationForest:
@@ -757,6 +808,96 @@ def evaluate_rf_model(model: RandomForestClassifier, X_test: pd.DataFrame,
         'feature_importance': importance_df.head(20).to_dict('records')
     }
     
+    return metrics
+
+# LightGBM evaluation (same as RF)
+def evaluate_lightgbm_model(model, X_test: pd.DataFrame, y_test: np.ndarray) -> Dict[str, Any]:
+    y_pred = model.predict(X_test)
+    proba = model.predict_proba(X_test)
+    if proba.shape[1] == 1:
+        y_pred_proba = proba[:, 0]
+    elif proba.shape[1] >= 2:
+        y_pred_proba = proba[:, 1]
+    else:
+        y_pred_proba = y_pred.astype(float)
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred, zero_division=0)
+    recall = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+    cm = confusion_matrix(y_test, y_pred)
+    try:
+        unique_classes = np.unique(y_test)
+        if len(unique_classes) >= 2:
+            roc_auc = roc_auc_score(y_test, y_pred_proba)
+            pr_auc = average_precision_score(y_test, y_pred_proba)
+        else:
+            roc_auc = 0.0
+            pr_auc = 0.0
+    except ValueError as e:
+        logger.warning(f"Could not calculate AUC metrics: {e}")
+        roc_auc = 0.0
+        pr_auc = 0.0
+    feature_importance = model.feature_importances_
+    feature_names = X_test.columns
+    importance_df = pd.DataFrame({
+        'feature': feature_names,
+        'importance': feature_importance
+    }).sort_values('importance', ascending=False)
+    metrics = {
+        'accuracy': float(accuracy),
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1_score': float(f1),
+        'confusion_matrix': cm.tolist(),
+        'roc_auc': float(roc_auc),
+        'pr_auc': float(pr_auc),
+        'feature_importance': importance_df.head(20).to_dict('records')
+    }
+    return metrics
+
+# XGBoost evaluation (same as RF)
+def evaluate_xgboost_model(model, X_test: pd.DataFrame, y_test: np.ndarray) -> Dict[str, Any]:
+    y_pred = model.predict(X_test)
+    proba = model.predict_proba(X_test)
+    if proba.shape[1] == 1:
+        y_pred_proba = proba[:, 0]
+    elif proba.shape[1] >= 2:
+        y_pred_proba = proba[:, 1]
+    else:
+        y_pred_proba = y_pred.astype(float)
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred, zero_division=0)
+    recall = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+    cm = confusion_matrix(y_test, y_pred)
+    try:
+        unique_classes = np.unique(y_test)
+        if len(unique_classes) >= 2:
+            roc_auc = roc_auc_score(y_test, y_pred_proba)
+            pr_auc = average_precision_score(y_test, y_pred_proba)
+        else:
+            roc_auc = 0.0
+            pr_auc = 0.0
+    except ValueError as e:
+        logger.warning(f"Could not calculate AUC metrics: {e}")
+        roc_auc = 0.0
+        pr_auc = 0.0
+    feature_importance = model.feature_importances_
+    feature_names = X_test.columns
+    importance_df = pd.DataFrame({
+        'feature': feature_names,
+        'importance': feature_importance
+    }).sort_values('importance', ascending=False)
+    metrics = {
+        'accuracy': float(accuracy),
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1_score': float(f1),
+        'confusion_matrix': cm.tolist(),
+        'roc_auc': float(roc_auc),
+        'pr_auc': float(pr_auc),
+        'feature_importance': importance_df.head(20).to_dict('records')
+    }
     return metrics
 
 def evaluate_if_model(model: IsolationForest, X_test: pd.DataFrame, 
@@ -931,6 +1072,10 @@ def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: np.ndarray,
             model_type_str = "IFv1"
         elif "MLPRegressor" in model_class_name:
             model_type_str = "AEv1"
+        elif "XGBClassifier" in model_class_name or model_class_name == "XGBOOST":
+            model_type_str = "XGBOOST"
+        elif "LGBMClassifier" in model_class_name or model_class_name == "LIGHTGBM":
+            model_type_str = "LIGHTGBM"
         else:
             # Default to RF evaluation (will fail if not compatible)
             logger.warning(f"Unknown model type: {model_class_name}, attempting Random Forest evaluation")
@@ -946,8 +1091,13 @@ def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: np.ndarray,
         if scaler is None:
             raise ValueError("Scaler is required for Autoencoder model evaluation")
         return evaluate_ae_model(model, scaler, X_test, y_test, threshold_override=ae_threshold_override)
+    elif model_type_str == "XGBOOST":
+        return evaluate_xgboost_model(model, X_test, y_test)
+    elif model_type_str == "LIGHTGBM":
+        return evaluate_lightgbm_model(model, X_test, y_test)
     else:
         # Fallback: try to infer model type from instance
+        model_class_name = type(model).__name__
         if isinstance(model, MLPRegressor):
             if scaler is None:
                 raise ValueError("Scaler is required for Autoencoder model evaluation")
@@ -959,8 +1109,14 @@ def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: np.ndarray,
         elif isinstance(model, RandomForestClassifier):
             logger.warning(f"Unknown model type {model_type_str}, but detected RandomForestClassifier - using Random Forest evaluation")
             return evaluate_rf_model(model, X_test, y_test)
+        elif "XGBClassifier" in model_class_name:
+            logger.warning(f"Unknown model type {model_type_str}, but detected XGBClassifier - using XGBoost evaluation")
+            return evaluate_xgboost_model(model, X_test, y_test)
+        elif "LGBMClassifier" in model_class_name:
+            logger.warning(f"Unknown model type {model_type_str}, but detected LGBMClassifier - using LightGBM evaluation")
+            return evaluate_lightgbm_model(model, X_test, y_test)
         else:
-            raise ValueError(f"Unknown model type {model_type_str} and cannot infer from model instance. Model class: {type(model).__name__}")
+            raise ValueError(f"Unknown model type {model_type_str} and cannot infer from model instance. Model class: {model_class_name}")
 
 def save_model(model: Any, feature_names: List[str], 
                metrics: Dict[str, Any], training_params: Dict[str, Any],
@@ -1470,30 +1626,23 @@ async def train(
     try:
         attack_cat_model = None
         attack_cat_classes = None
-        
+        # --- Random Forest ---
         if model_type == "RFv1":
-            # Random Forest for binary classification (label)
             model = train_rf_model(
                 X_train, y_train,
                 n_estimators=train_request.n_estimators,
                 max_depth=train_request.max_depth,
                 random_state=train_request.random_state
             )
-            # Train separate model for attack category using the 'attack_cat' column if available
             if y_attack_cat_train is not None and len(y_attack_cat_train) > 0:
-                # Only train on unsafe samples (label == 1) for attack category
                 unsafe_mask = (y_train == 1)
                 if unsafe_mask.sum() > 0:
                     X_unsafe = X_train[unsafe_mask]
                     y_attack_cat_unsafe = y_attack_cat_train[unsafe_mask]
-                    
-                    # Filter out "Normal" category from unsafe samples (unsafe samples shouldn't be "Normal")
                     non_normal_mask = (y_attack_cat_unsafe != "Normal") & (y_attack_cat_unsafe != "")
                     if non_normal_mask.sum() > 0:
                         X_attack_train = X_unsafe[non_normal_mask]
                         y_attack_train = y_attack_cat_unsafe[non_normal_mask]
-                        
-                        # Encode string labels to numeric for Random Forest
                         label_encoder = LabelEncoder()
                         y_attack_train_encoded = label_encoder.fit_transform(y_attack_train.values)
                         attack_cat_model = train_rf_model(
@@ -1510,6 +1659,39 @@ async def train(
                 'max_depth': train_request.max_depth,
                 'random_state': train_request.random_state
             }
+        # --- LightGBM ---
+        elif model_type == "LIGHTGBM":
+            model = train_lightgbm_model(
+                X_train, y_train,
+                n_estimators=getattr(train_request, 'n_estimators', 100),
+                max_depth=getattr(train_request, 'max_depth', -1),
+                learning_rate=getattr(train_request, 'learning_rate', 0.1),
+                random_state=getattr(train_request, 'random_state', 42)
+            )
+            training_params = {
+                'model_type': 'LIGHTGBM',
+                'n_estimators': getattr(train_request, 'n_estimators', 100),
+                'max_depth': getattr(train_request, 'max_depth', -1),
+                'learning_rate': getattr(train_request, 'learning_rate', 0.1),
+                'random_state': getattr(train_request, 'random_state', 42)
+            }
+        # --- XGBoost ---
+        elif model_type == "XGBOOST":
+            model = train_xgboost_model(
+                X_train, y_train,
+                n_estimators=getattr(train_request, 'n_estimators', 100),
+                max_depth=getattr(train_request, 'max_depth', 6),
+                learning_rate=getattr(train_request, 'learning_rate', 0.1),
+                random_state=getattr(train_request, 'random_state', 42)
+            )
+            training_params = {
+                'model_type': 'XGBOOST',
+                'n_estimators': getattr(train_request, 'n_estimators', 100),
+                'max_depth': getattr(train_request, 'max_depth', 6),
+                'learning_rate': getattr(train_request, 'learning_rate', 0.1),
+                'random_state': getattr(train_request, 'random_state', 42)
+            }
+        # --- Isolation Forest ---
         elif model_type == "IFv1":
             # Isolation Forest
             contamination = train_request.contamination if train_request.contamination is not None else 0.25
@@ -1572,7 +1754,7 @@ async def train(
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported model type: {model_type}. Supported types: RFv1, IFv1, AEv1"
+                detail=f"Unsupported model type: {model_type}. Supported types: RFv1, IFv1, AEv1, XGBOOST, LIGHTGBM"
             )
     except HTTPException:
         raise
@@ -1750,7 +1932,7 @@ async def test(
     try:
         # Get model_type from metadata or infer from model class
         model_type = metadata.get('model_type')
-        if model_type and model_type not in ['RFv1', 'IFv1', 'AEv1']:
+        if model_type and model_type not in ['RFv1', 'IFv1', 'AEv1', 'XGBOOST', 'LIGHTGBM']:
             # Convert class name to model type string
             if 'RandomForest' in model_type:
                 model_type = 'RFv1'
@@ -1758,9 +1940,13 @@ async def test(
                 model_type = 'IFv1'
             elif 'MLPRegressor' in model_type:
                 model_type = 'AEv1'
+            elif 'XGBClassifier' in model_type or model_type == 'XGBOOST':
+                model_type = 'XGBOOST'
+            elif 'LGBMClassifier' in model_type or model_type == 'LIGHTGBM':
+                model_type = 'LIGHTGBM'
         
         # If model_type is still not set, infer from model instance
-        if not model_type or model_type not in ['RFv1', 'IFv1', 'AEv1']:
+        if not model_type or model_type not in ['RFv1', 'IFv1', 'AEv1', 'XGBOOST', 'LIGHTGBM']:
             if isinstance(model, RandomForestClassifier):
                 model_type = 'RFv1'
             elif isinstance(model, IsolationForest):
@@ -1776,6 +1962,10 @@ async def test(
                     model_type = 'IFv1'
                 elif 'MLPRegressor' in model_class_name:
                     model_type = 'AEv1'
+                elif 'XGBClassifier' in model_class_name:
+                    model_type = 'XGBOOST'
+                elif 'LGBMClassifier' in model_class_name:
+                    model_type = 'LIGHTGBM'
                 else:
                     raise HTTPException(
                         status_code=500,
@@ -1911,7 +2101,7 @@ async def predict(
     try:
         # Get model_type from metadata or infer from model class
         model_type = metadata.get('model_type')
-        if model_type and model_type not in ['RFv1', 'IFv1', 'AEv1']:
+        if model_type and model_type not in ['RFv1', 'IFv1', 'AEv1', 'XGBOOST', 'LIGHTGBM']:
             # Convert class name or display name to model type string
             if 'RandomForest' in model_type:
                 model_type = 'RFv1'
@@ -1919,9 +2109,13 @@ async def predict(
                 model_type = 'IFv1'
             elif 'MLPRegressor' in model_type or model_type == 'Autoencoder':
                 model_type = 'AEv1'
+            elif 'XGBClassifier' in model_type or model_type == 'XGBOOST':
+                model_type = 'XGBOOST'
+            elif 'LGBMClassifier' in model_type or model_type == 'LIGHTGBM':
+                model_type = 'LIGHTGBM'
         
         # Infer from model class if not in metadata
-        if not model_type or model_type not in ['RFv1', 'IFv1', 'AEv1']:
+        if not model_type or model_type not in ['RFv1', 'IFv1', 'AEv1', 'XGBOOST', 'LIGHTGBM']:
             if isinstance(model, RandomForestClassifier):
                 model_type = 'RFv1'
             elif isinstance(model, IsolationForest):
@@ -1937,6 +2131,10 @@ async def predict(
                     model_type = 'IFv1'
                 elif 'MLPRegressor' in model_class_name:
                     model_type = 'AEv1'
+                elif 'XGBClassifier' in model_class_name:
+                    model_type = 'XGBOOST'
+                elif 'LGBMClassifier' in model_class_name:
+                    model_type = 'LIGHTGBM'
                 else:
                     raise HTTPException(
                         status_code=500,
@@ -1947,8 +2145,8 @@ async def predict(
         
         results = []
         
-        if model_type == 'RFv1':
-            # Random Forest: supervised model with predict_proba
+        if model_type in ['RFv1', 'XGBOOST', 'LIGHTGBM']:
+            # Supervised models with predict_proba (Random Forest, XGBoost, LightGBM)
             predictions_raw = model.predict(X)
             proba = model.predict_proba(X)
             
