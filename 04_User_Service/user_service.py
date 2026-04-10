@@ -740,88 +740,81 @@ async def get_dashboard_kpis():
         # Random values in the 50s–70s so the Events bar chart shows clear up/down variation
         events_per_day = [random.randint(50, 79) for _ in seven_dates_iso]
 
-        # Predictions per day (rows with prediction_results)
+        # Predictions / anomalies counts use the same status rules as the analytics page:
+        # numeric prediction takes precedence, but label text is also accepted.
         cursor_logs.execute(
             """
-            SELECT date(timestamp) as d, COUNT(*) as c
+            SELECT date(timestamp) as d, prediction_results
             FROM websocket_data
             WHERE prediction_results IS NOT NULL AND prediction_results != ''
               AND timestamp >= date('now', '-6 days')
-            GROUP BY date(timestamp)
-            ORDER BY d
+            ORDER BY timestamp
             """
         )
-        preds_by_day = {row["d"]: row["c"] for row in cursor_logs.fetchall()}
-        predictions_per_day = [preds_by_day.get(d, 0) for d in seven_dates_iso]
-
-        # Anomalies per day (rows where first prediction == 1); use JSON if available, else Python
-        try:
-            cursor_logs.execute(
-                """
-                SELECT date(timestamp) as d, COUNT(*) as c
-                FROM websocket_data
-                WHERE prediction_results IS NOT NULL AND prediction_results != ''
-                  AND timestamp >= date('now', '-6 days')
-                  AND json_extract(prediction_results, '$.predictions[0].prediction') = 1
-                GROUP BY date(timestamp)
-                ORDER BY d
-                """
-            )
-            anom_by_day = {row["d"]: row["c"] for row in cursor_logs.fetchall()}
-            anomalies_per_day = [anom_by_day.get(d, 0) for d in seven_dates_iso]
-        except sqlite3.OperationalError:
-            # SQLite without json_extract or different JSON shape: compute in Python
-            cursor_logs.execute(
-                """
-                SELECT date(timestamp) as d, prediction_results
-                FROM websocket_data
-                WHERE prediction_results IS NOT NULL AND prediction_results != ''
-                  AND timestamp >= date('now', '-6 days')
-                """
-            )
-            anom_by_day = {d: 0 for d in seven_dates_iso}
-            for row in cursor_logs.fetchall():
-                d = row["d"]
-                if d not in anom_by_day:
-                    continue
-                try:
-                    pr = row["prediction_results"]
-                    pr_obj = json.loads(pr) if isinstance(pr, str) else pr
-                    preds = pr_obj.get("predictions") or []
-                    if preds and isinstance(preds, list):
-                        first = preds[0]
-                        if isinstance(first, dict) and first.get("prediction") == 1:
-                            anom_by_day[d] = anom_by_day.get(d, 0) + 1
-                except Exception:
-                    continue
-            anomalies_per_day = [anom_by_day.get(d, 0) for d in seven_dates_iso]
-
-        # Total predictions and total anomalies (existing logic)
-        cursor_logs.execute(
-            """
-            SELECT prediction_results
-            FROM websocket_data
-            WHERE prediction_results IS NOT NULL AND prediction_results != ''
-            """
-        )
-        rows = cursor_logs.fetchall()
+        prediction_rows = cursor_logs.fetchall()
         conn_logs.close()
 
-        total_predictions = len(rows)
+        predictions_per_day_map = {d: 0 for d in seven_dates_iso}
+        anomalies_per_day_map = {d: 0 for d in seven_dates_iso}
+        total_predictions = 0
         total_anomalies = 0
-        for row in rows:
+        total_safe = 0
+
+        def classify_prediction(prediction_like: object) -> str:
+            if not isinstance(prediction_like, dict):
+                return "pending"
+
+            prediction_value = prediction_like.get("prediction")
+            if prediction_value == 1:
+                return "unsafe"
+            if prediction_value == 0:
+                return "safe"
+
+            label_value = str(prediction_like.get("label") or "").strip().lower()
+            if not label_value:
+                return "pending"
+            if any(term in label_value for term in ("unsafe", "anomaly", "attack")):
+                return "unsafe"
+            if any(term in label_value for term in ("safe", "normal", "benign")):
+                return "safe"
+            return "pending"
+
+        for row in prediction_rows:
+            day_key = row["d"]
+            if day_key not in predictions_per_day_map:
+                continue
+
             try:
                 pr = row["prediction_results"]
                 pr_obj = json.loads(pr) if isinstance(pr, str) else pr
                 preds = pr_obj.get("predictions") or []
-                if preds and isinstance(preds, list):
-                    first = preds[0]
-                    if isinstance(first, dict) and first.get("prediction") == 1:
-                        total_anomalies += 1
+                if not preds or not isinstance(preds, list):
+                    continue
+
+                first = preds[0]
+                if not isinstance(first, dict):
+                    continue
+
+                total_predictions += 1
+                predictions_per_day_map[day_key] += 1
+
+                status = classify_prediction(first)
+                if status == "unsafe":
+                    total_anomalies += 1
+                    anomalies_per_day_map[day_key] += 1
+                elif status == "safe":
+                    total_safe += 1
             except Exception:
                 continue
 
-        total_safe = max(total_predictions - total_anomalies, 0)
+        # If some records are classified but the label is pending, keep the safe count
+        # aligned with the classified total so the card still renders a sane split.
+        if total_safe == 0 and total_predictions > total_anomalies:
+            total_safe = total_predictions - total_anomalies
+
+        predictions_per_day = [predictions_per_day_map.get(d, 0) for d in seven_dates_iso]
+        anomalies_per_day = [anomalies_per_day_map.get(d, 0) for d in seven_dates_iso]
+
         # Use total events for the headline anomaly rate so new safe events immediately
         # dilute the percentage even if a prediction update is still in flight.
         anomaly_rate = (
