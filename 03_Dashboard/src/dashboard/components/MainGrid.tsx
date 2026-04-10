@@ -38,7 +38,7 @@ function getCachedKpis(): Record<string, unknown> | null {
     const raw = sessionStorage.getItem(KPI_CACHE_KEY);
     if (!raw) return null;
     const cached = JSON.parse(raw) as { data: Record<string, unknown>; ts: number };
-    if (Date.now() - cached.ts > 60000) return null; // stale after 60s
+    if (Date.now() - cached.ts > 5000) return null; // stale after 5s
     return cached.data;
   } catch { return null; }
 }
@@ -82,6 +82,9 @@ export default function MainGrid() {
     total_predictions?: number;
     predictions_per_day?: number[];
     total_anomalies?: number;
+    safe_records?: number;
+    unsafe_records?: number;
+    classified_records?: number;
     anomalies_per_day?: number[];
     anomaly_rate?: number;
   }) => {
@@ -89,6 +92,9 @@ export default function MainGrid() {
     const totalEvents = json.total_events ?? 0;
     const totalPredictions = json.total_predictions ?? 0;
     const totalAnomalies = json.total_anomalies ?? 0;
+    const safeRecords = json.safe_records ?? Math.max(totalPredictions - totalAnomalies, 0);
+    const unsafeRecords = json.unsafe_records ?? totalAnomalies;
+    const classifiedRecords = json.classified_records ?? totalPredictions;
     const anomalyRate = json.anomaly_rate ?? 0;
     const pad = (v: number) => Array(7).fill(v) as number[];
     const usersChartData =
@@ -106,11 +112,11 @@ export default function MainGrid() {
     const anomaliesChartData =
       Array.isArray(json.anomalies_per_day) && json.anomalies_per_day.length === 7
         ? json.anomalies_per_day
-        : pad(anomalyRate);
+        : pad(totalAnomalies);
     setCards([
       { title: 'Users', value: totalUsers.toLocaleString(), interval: 'Users created per day (last 7 days)', trend: 'neutral', data: usersChartData, chartVariant: 'sparkline', gaugeValue: 0 },
       { title: 'Events', value: totalEvents.toLocaleString(), interval: 'Events per day (last 7 days)', trend: 'neutral', data: eventsChartData, chartVariant: 'bar', gaugeValue: 0 },
-      { title: 'Anomalies', value: `${totalAnomalies.toLocaleString()} (${anomalyRate.toFixed(1)}%)`, interval: 'Predicted anomalies', trend: anomalyRate > 50 ? 'up' : 'neutral', data: anomaliesChartData, chartVariant: 'progress', gaugeValue: anomalyRate },
+      { title: 'Anomalies', value: `${unsafeRecords.toLocaleString()} (${anomalyRate.toFixed(1)}%)`, interval: `Safe ${safeRecords.toLocaleString()} / unsafe ${unsafeRecords.toLocaleString()} of ${classifiedRecords.toLocaleString()} classified`, trend: anomalyRate > 50 ? 'up' : 'neutral', data: anomaliesChartData, chartVariant: 'progress', gaugeValue: anomalyRate },
       { title: 'Predictions', value: totalPredictions.toLocaleString(), interval: 'Predictions per day (last 7 days)', trend: 'neutral', data: predictionsChartData, chartVariant: 'sparkline', gaugeValue: 0 },
     ]);
   }, []);
@@ -168,7 +174,7 @@ export default function MainGrid() {
     };
 
     fetchKpis(true);
-    const interval = setInterval(() => fetchKpis(false), 10000);
+    const interval = setInterval(() => fetchKpis(false), 3000);
     return () => {
       cancelled = true;
       clearInterval(interval);

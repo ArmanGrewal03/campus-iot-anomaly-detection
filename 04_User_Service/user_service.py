@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 from starlette.requests import Request
 import json
 import os
@@ -674,35 +674,6 @@ async def clear_history():
 _kpi_cache: dict = {"data": None, "ts": 0}
 _KPI_CACHE_TTL = 5  # seconds
 
-
-def _is_prediction_unsafe(prediction: dict) -> bool:
-    """Normalize model outputs and decide whether a prediction should be treated as anomaly/unsafe."""
-    if not isinstance(prediction, dict):
-        return False
-
-    # 1) Binary outputs used by some models
-    pred_value = prediction.get("prediction")
-    if pred_value in (1, "1", True):
-        return True
-
-    # 2) Label-based outputs used by other models
-    label = str(prediction.get("label") or "").strip().lower()
-    if label:
-        if any(token in label for token in ["unsafe", "anomaly", "attack", "malicious"]):
-            return True
-        if any(token in label for token in ["safe", "normal", "benign"]):
-            return False
-
-    # 3) Probability fallback when only scores are available
-    prob_unsafe = prediction.get("probability_unsafe")
-    try:
-        if prob_unsafe is not None and float(prob_unsafe) >= 0.5:
-            return True
-    except (TypeError, ValueError):
-        pass
-
-    return False
-
 @app.get("/dashboard-kpis")
 async def get_dashboard_kpis():
     """
@@ -819,7 +790,7 @@ async def get_dashboard_kpis():
                     preds = pr_obj.get("predictions") or []
                     if preds and isinstance(preds, list):
                         first = preds[0]
-                        if _is_prediction_unsafe(first):
+                        if isinstance(first, dict) and first.get("prediction") == 1:
                             anom_by_day[d] = anom_by_day.get(d, 0) + 1
                 except Exception:
                     continue
@@ -845,14 +816,17 @@ async def get_dashboard_kpis():
                 preds = pr_obj.get("predictions") or []
                 if preds and isinstance(preds, list):
                     first = preds[0]
-                    if _is_prediction_unsafe(first):
+                    if isinstance(first, dict) and first.get("prediction") == 1:
                         total_anomalies += 1
             except Exception:
                 continue
 
+        total_safe = max(total_predictions - total_anomalies, 0)
+        # Use total events for the headline anomaly rate so new safe events immediately
+        # dilute the percentage even if a prediction update is still in flight.
         anomaly_rate = (
-            round((total_anomalies / total_predictions) * 100, 2)
-            if total_predictions > 0
+            round((total_anomalies / total_events) * 100, 2)
+            if total_events > 0
             else 0.0
         )
 
@@ -866,6 +840,9 @@ async def get_dashboard_kpis():
             "total_predictions": total_predictions,
             "predictions_per_day": predictions_per_day,
             "total_anomalies": total_anomalies,
+            "safe_records": total_safe,
+            "unsafe_records": total_anomalies,
+            "classified_records": total_predictions,
             "anomalies_per_day": anomalies_per_day,
             "anomaly_rate": anomaly_rate,
         }
@@ -2069,7 +2046,7 @@ def add_demo_users_batch():
 async def demo_users_worker():
     """Every 30 seconds, add 1–7 new users with current timestamp."""
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(40)
         try:
             add_demo_users_batch()
         except Exception as e:
@@ -2451,12 +2428,47 @@ def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
     if db_stats is None:
         db_stats = get_database_statistics(feature_names)
     
-    # Occasionally generate anomalous patterns (5% chance)
-    is_anomaly_pattern = random.random() < 0.05
+    # Keep anomaly generation intentionally low so analytics is not dominated by unsafe events.
+    anomaly_pattern_rate = float(os.getenv("ANOMALY_PATTERN_RATE", "0.015"))
+    anomaly_pattern_rate = max(0.0, min(0.25, anomaly_pattern_rate))
+    is_anomaly_pattern = random.random() < anomaly_pattern_rate
     
     proto_features = [f for f in feature_names if f.startswith("proto_")]
     state_features = [f for f in feature_names if f.startswith("state_")]
     service_features = [f for f in feature_names if f.startswith("service_")]
+
+    def sample_one_hot_feature(group_features: list) -> Optional[str]:
+        """Pick one active feature for a one-hot group using observed means as weights."""
+        if not group_features:
+            return None
+
+        weighted = []
+        total_weight = 0.0
+        for feature in group_features:
+            weight = 1.0
+            if db_stats and feature in db_stats:
+                stat = db_stats[feature]
+                mean_val = stat.get("mean")
+                if isinstance(mean_val, (int, float)):
+                    # Clamp and smooth so rare-but-valid categories can still appear.
+                    weight = max(0.02, min(1.0, float(mean_val)))
+            weighted.append((feature, weight))
+            total_weight += weight
+
+        if total_weight <= 0:
+            return random.choice(group_features)
+
+        pick = random.uniform(0.0, total_weight)
+        upto = 0.0
+        for feature, weight in weighted:
+            upto += weight
+            if pick <= upto:
+                return feature
+        return weighted[-1][0]
+
+    selected_proto_feature = sample_one_hot_feature(proto_features)
+    selected_state_feature = sample_one_hot_feature(state_features)
+    selected_service_feature = sample_one_hot_feature(service_features)
     
     def get_feature_range(feature: str, default_min: float, default_max: float) -> tuple:
         """Get min/max range for a feature from database stats or use defaults."""
@@ -2499,7 +2511,7 @@ def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
             if is_integer:
                 decimals = 0
         
-        if is_anomaly_pattern and random.random() < 0.3:
+        if is_anomaly_pattern and random.random() < 0.12:
             # Anomaly: extend beyond max range
             anomaly_max = max_val * anomaly_multiplier
             value = random.uniform(max_val, anomaly_max)
@@ -2549,7 +2561,7 @@ def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
         min_val = int(min_val)
         max_val = int(max_val)
         
-        if is_anomaly_pattern and random.random() < 0.4:
+        if is_anomaly_pattern and random.random() < 0.16:
             # Anomaly: extend beyond max range
             anomaly_max = int(max_val * anomaly_multiplier)
             return random.randint(max_val, anomaly_max)
@@ -2591,34 +2603,18 @@ def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
         if feature == "dur":
             # Duration: use database range, check if integer type
             if db_stats and feature in db_stats and db_stats[feature].get('is_integer', False):
-                data[feature] = generate_integer_value(feature, 0, 5000, anomaly_multiplier=10.0)
+                data[feature] = generate_integer_value(feature, 0, 5000, anomaly_multiplier=3.5)
             else:
-                data[feature] = generate_numeric_value(feature, 0.0, 5000.0, anomaly_multiplier=10.0)
+                data[feature] = generate_numeric_value(feature, 0.0, 5000.0, anomaly_multiplier=3.5)
         elif feature.startswith("proto_"):
-            # Protocol features: binary, use database to determine probability distribution
-            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
-                # Use actual values from database
-                unique_vals = db_stats[feature]['unique_values']
-                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.15 else 0)
-            else:
-                prob = 0.3 if is_anomaly_pattern else random.uniform(0.05, 0.25)
-                data[feature] = 1 if random.random() < prob else 0
+            # Protocol one-hot features should mirror the dataset: exactly one active value at a time.
+            data[feature] = 1 if feature == selected_proto_feature else 0
         elif feature.startswith("state_"):
-            # State features: binary
-            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
-                unique_vals = db_stats[feature]['unique_values']
-                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.25 else 0)
-            else:
-                prob = 0.5 if is_anomaly_pattern else random.uniform(0.1, 0.4)
-                data[feature] = 1 if random.random() < prob else 0
+            # State one-hot features should mirror the dataset: exactly one active value at a time.
+            data[feature] = 1 if feature == selected_state_feature else 0
         elif feature.startswith("service_"):
-            # Service features: binary
-            if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
-                unique_vals = db_stats[feature]['unique_values']
-                data[feature] = random.choice(unique_vals) if unique_vals else (1 if random.random() < 0.15 else 0)
-            else:
-                prob = 0.4 if is_anomaly_pattern else random.uniform(0.05, 0.3)
-                data[feature] = 1 if random.random() < prob else 0
+            # Service one-hot features should mirror the dataset: exactly one active value at a time.
+            data[feature] = 1 if feature == selected_service_feature else 0
         elif feature.lower() in ["spkts", "dpkts", "sbytes", "dbytes", "sttl", "dttl", 
                          "sloss", "dloss", "swin", "stcpb", "dtcpb", "dwin",
                          "tcprtt", "synack", "ackdat", "trans_depth", "response_body_len",
@@ -2635,15 +2631,15 @@ def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
                     min_val = stat['min']
                     max_val = stat['max']
                     if stat.get('is_integer', True):
-                        data[feature] = generate_integer_value(feature, int(min_val), int(max_val), anomaly_multiplier=20.0)
+                        data[feature] = generate_integer_value(feature, int(min_val), int(max_val), anomaly_multiplier=4.0)
                     else:
                         # Some might be floats, use appropriate decimals
                         decimals = 2 if (max_val - min_val) > 1000 else 6
-                        data[feature] = generate_numeric_value(feature, float(min_val), float(max_val), anomaly_multiplier=20.0, decimals=decimals)
+                        data[feature] = generate_numeric_value(feature, float(min_val), float(max_val), anomaly_multiplier=4.0, decimals=decimals)
                 else:
                     # Stats exist but no min/max - use conservative defaults
                     logger.warning(f"Feature '{feature}': stats exist but missing min/max, using conservative defaults")
-                    data[feature] = generate_integer_value(feature, 0, 1000, anomaly_multiplier=20.0)
+                    data[feature] = generate_integer_value(feature, 0, 1000, anomaly_multiplier=4.0)
             else:
                 # Try case-insensitive match
                 matched = False
@@ -2655,15 +2651,15 @@ def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
                                 min_val = stat['min']
                                 max_val = stat['max']
                                 if stat.get('is_integer', True):
-                                    data[feature] = generate_integer_value(feature, int(min_val), int(max_val), anomaly_multiplier=20.0)
+                                    data[feature] = generate_integer_value(feature, int(min_val), int(max_val), anomaly_multiplier=4.0)
                                 else:
                                     decimals = 2 if (max_val - min_val) > 1000 else 6
-                                    data[feature] = generate_numeric_value(feature, float(min_val), float(max_val), anomaly_multiplier=20.0, decimals=decimals)
+                                    data[feature] = generate_numeric_value(feature, float(min_val), float(max_val), anomaly_multiplier=4.0, decimals=decimals)
                                 matched = True
                                 break
                 if not matched:
                     logger.warning(f"Feature '{feature}': not found in db_stats, using conservative defaults")
-                    data[feature] = generate_integer_value(feature, 0, 1000, anomaly_multiplier=20.0)
+                    data[feature] = generate_integer_value(feature, 0, 1000, anomaly_multiplier=4.0)
         elif feature.lower() in ["rate"]:
             # Rate/load features: use database range (typically floats)
             if db_stats and feature in db_stats:
@@ -2682,9 +2678,9 @@ def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
                     decimals = 2
                 else:
                     decimals = 0
-                data[feature] = generate_numeric_value(feature, min_val, max_val, anomaly_multiplier=10.0, decimals=decimals)
+                data[feature] = generate_numeric_value(feature, min_val, max_val, anomaly_multiplier=2.5, decimals=decimals)
             else:
-                data[feature] = generate_numeric_value(feature, 0.0, 1000000.0, anomaly_multiplier=10.0, decimals=2)
+                data[feature] = generate_numeric_value(feature, 0.0, 1000000.0, anomaly_multiplier=2.5, decimals=2)
         elif feature in ["proto", "service", "state"]:
             # Categorical string features: use database unique values if available
             if db_stats and feature in db_stats and 'unique_values' in db_stats[feature]:
@@ -2720,7 +2716,7 @@ def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
                 else:
                     data[feature] = 1 if random.random() < 0.1 else 0
             else:
-                prob = 0.8 if is_anomaly_pattern else random.uniform(0.0, 0.3)
+                prob = 0.55 if is_anomaly_pattern else random.uniform(0.0, 0.2)
                 data[feature] = 1 if random.random() < prob else 0
         elif feature in ["byte_ratio", "pkt_ratio", "flow_rate", "pkt_rate"]:
             # Ratio features: use database range (typically floats with more precision)
@@ -2732,13 +2728,13 @@ def generate_random_data(feature_names: list, db_stats: dict = None) -> dict:
                     max_val = stat['max']
                     # Ratios typically need more precision
                     decimals = 4 if (max_val - min_val) < 10 else 2
-                    data[feature] = generate_numeric_value(feature, float(min_val), float(max_val), anomaly_multiplier=5.0, decimals=decimals)
+                    data[feature] = generate_numeric_value(feature, float(min_val), float(max_val), anomaly_multiplier=2.0, decimals=decimals)
                 else:
                     logger.warning(f"Feature '{feature}': stats exist but missing min/max, using conservative defaults")
-                    data[feature] = generate_numeric_value(feature, 0.0, 10.0, anomaly_multiplier=5.0, decimals=4)
+                    data[feature] = generate_numeric_value(feature, 0.0, 10.0, anomaly_multiplier=2.0, decimals=4)
             else:
                 logger.warning(f"Feature '{feature}': not found in db_stats, using conservative defaults")
-                data[feature] = generate_numeric_value(feature, 0.0, 10.0, anomaly_multiplier=5.0, decimals=4)
+                data[feature] = generate_numeric_value(feature, 0.0, 10.0, anomaly_multiplier=2.0, decimals=4)
         else:
             # Default: use database range or fallback, check if integer type
             min_val, max_val = get_feature_range(feature, 0.0, 10000.0)
@@ -2781,47 +2777,86 @@ async def fetch_random_test_data(dataset_name: str = None) -> Optional[dict]:
     try:
         url = f"{DATA_INGESTION_SERVICE_URL}/random-test"
         headers = {}
-        
-        # The /random-test endpoint requires dataset_name header, so always send it
-        # Use "default" if not provided
+
+        # The /random-test endpoint requires dataset_name header, so always send it.
         headers["dataset_name"] = dataset_name if dataset_name else "default"
-        
+
+        target_safe_rate = float(os.getenv("TARGET_SAFE_EVENT_RATE", "0.65"))
+        target_safe_rate = max(0.0, min(0.98, target_safe_rate))
+        unsafe_acceptance_probability = 1.0 - target_safe_rate
+        max_selection_attempts = int(os.getenv("SAFE_EVENT_SELECTION_ATTEMPTS", "4"))
+        max_selection_attempts = max(1, min(8, max_selection_attempts))
+
         logger.info(f"Fetching random test data from: {url} with headers: {list(headers.keys())}")
-        
+
+        def parse_binary_label(label_value: Any) -> Optional[int]:
+            if label_value is None:
+                return None
+            if isinstance(label_value, bool):
+                return 1 if label_value else 0
+            if isinstance(label_value, (int, float)):
+                if int(label_value) in (0, 1):
+                    return int(label_value)
+                return None
+            label_str = str(label_value).strip().lower()
+            if label_str in {"0", "safe", "normal", "benign"}:
+                return 0
+            if label_str in {"1", "unsafe", "anomaly", "attack", "malicious"}:
+                return 1
+            return None
+
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url, headers=headers)
-            
-            # Log response details for debugging
-            logger.info(f"Response status: {response.status_code}, URL: {url}")
-            if response.status_code != 200:
-                response_text = response.text[:500]  # First 500 chars
-                logger.warning(f"Non-200 response from /random-test: {response.status_code} - {response_text}")
-            
-            response.raise_for_status()
-            result = response.json()
-            
-            if result.get("status") != "success":
-                logger.warning(f"Data Ingestion Service returned non-success status: {result.get('status')}")
-                return None
-            
-            # The response structure is: {"status": "success", "data": {...}}
-            # Where data contains: {"id": ..., "upload_timestamp": ..., "T": ..., "data": {...actual features...}}
-            data_record = result.get("data", {})
-            if not data_record:
-                logger.warning("No data returned from /random-test endpoint")
-                return None
-            
-            # Extract the actual data dictionary (the features)
-            test_data = data_record.get("data", {})
-            
-            if not test_data or not isinstance(test_data, dict):
-                logger.warning("Invalid test data format")
-                return None
-            
-            # Log which record ID we got to verify randomness
-            record_id = data_record.get("id", "unknown")
-            logger.info(f"Fetched random test data from /random-test endpoint: record_id={record_id}")
-            return test_data
+            last_candidate = None
+
+            for attempt in range(max_selection_attempts):
+                response = await client.get(url, headers=headers)
+
+                logger.info(f"Response status: {response.status_code}, URL: {url}")
+                if response.status_code != 200:
+                    response_text = response.text[:500]
+                    logger.warning(f"Non-200 response from /random-test: {response.status_code} - {response_text}")
+
+                response.raise_for_status()
+                result = response.json()
+
+                if result.get("status") != "success":
+                    logger.warning(f"Data Ingestion Service returned non-success status: {result.get('status')}")
+                    return None
+
+                data_record = result.get("data", {})
+                if not data_record:
+                    logger.warning("No data returned from /random-test endpoint")
+                    return None
+
+                test_data = data_record.get("data", {})
+                if not test_data or not isinstance(test_data, dict):
+                    logger.warning("Invalid test data format")
+                    return None
+
+                record_id = data_record.get("id", "unknown")
+                parsed_label = parse_binary_label(test_data.get("label"))
+                last_candidate = (record_id, test_data, parsed_label)
+
+                # Prefer safe-labelled rows to balance analytics, but keep some unsafe samples.
+                if parsed_label == 1 and attempt < (max_selection_attempts - 1):
+                    if random.random() > unsafe_acceptance_probability:
+                        logger.debug(
+                            f"Skipping unsafe random-test row {record_id} on attempt {attempt + 1}/{max_selection_attempts} "
+                            f"to maintain target safe rate {target_safe_rate:.2f}"
+                        )
+                        continue
+
+                logger.info(f"Fetched random test data from /random-test endpoint: record_id={record_id}")
+                return test_data
+
+            if last_candidate is not None:
+                record_id, test_data, parsed_label = last_candidate
+                logger.info(
+                    f"Using final random-test candidate after {max_selection_attempts} attempts: "
+                    f"record_id={record_id}, parsed_label={parsed_label}"
+                )
+                return test_data
+            return None
             
     except httpx.HTTPStatusError as e:
         error_detail = e.response.text[:500] if hasattr(e.response, 'text') else str(e)
@@ -2962,7 +2997,7 @@ async def websocket_generate_data(websocket: WebSocket):
             else:
                 logger.debug(f"Message queue disabled - skipping publish for network_id: {network_id}")
             
-            wait_time = random.uniform(60, 90)  # Wait 60-90 seconds between data generation
+            wait_time = random.uniform(5,10 )  # Wait 60-90 seconds between data generation
             logger.info(f"Waiting {wait_time:.2f} seconds before next data generation")
             await asyncio.sleep(wait_time)
             
